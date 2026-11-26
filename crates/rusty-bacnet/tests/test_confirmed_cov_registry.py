@@ -101,7 +101,7 @@ class ConfirmedCovRegistryTests(unittest.IsolatedAsyncioTestCase):
         return reply["apdu"]
 
     async def test_endpoint_segmented_cov_follows_device_receive_capability(self):
-        for capability in (None, rb.Segmentation.SEGMENTED_TRANSMIT,
+        for capability in (None, rb.Segmentation.NO_SEGMENTATION, rb.Segmentation.SEGMENTED_TRANSMIT,
                            rb.Segmentation.SEGMENTED_RECEIVE, rb.Segmentation.SEGMENTED_BOTH):
             with self.subTest(capability=capability):
                 async with rb.BipEndpoint(**self.kwargs, device_instance=100, vendor_id=42,
@@ -112,7 +112,7 @@ class ConfirmedCovRegistryTests(unittest.IsolatedAsyncioTestCase):
                     events = await client.cov_notifications()
                     body = notification(8, 17.0)[2:]
                     first = await self.segmented_apdu(to, 10, 0, True, body[:8], 50)
-                    if capability in (None, rb.Segmentation.SEGMENTED_TRANSMIT):
+                    if capability in (rb.Segmentation.NO_SEGMENTATION, rb.Segmentation.SEGMENTED_TRANSMIT):
                         self.assertEqual(first, bytes.fromhex("71 0a 04"))
                         continue
                     self.assertEqual(first, bytes.fromhex("41 0a 00 02"))

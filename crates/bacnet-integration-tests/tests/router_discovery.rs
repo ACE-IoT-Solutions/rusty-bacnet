@@ -211,14 +211,8 @@ async fn routed_site() -> (
     let (client_end, router_near) = LoopbackTransport::pair(vec![0x0A], vec![ROUTER_MAC]);
     let (router_far, station) = LoopbackTransport::pair(vec![0x02], vec![STATION]);
     let ports = vec![
-        RouterPort {
-            transport: AnyTransport::Loopback(router_near),
-            network_number: 1,
-        },
-        RouterPort {
-            transport: AnyTransport::Loopback(router_far),
-            network_number: REMOTE,
-        },
+        RouterPort::new(AnyTransport::Loopback(router_near), 1),
+        RouterPort::new(AnyTransport::Loopback(router_far), REMOTE),
     ];
     let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
         .await
@@ -246,7 +240,7 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
         networks: vec![REMOTE],
     };
     for network in [None, Some(REMOTE)] {
-        let routers = client.discover_routers(network, None, WAIT).await.unwrap();
+        let routers = client.discover_routers(network, WAIT).await.unwrap();
         assert_eq!(
             routers,
             std::slice::from_ref(&expected),
@@ -255,24 +249,16 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
     }
     // A network nobody reaches: the router searches further and stays
     // quiet, so nothing is listed.
-    assert_eq!(
-        client.discover_routers(Some(77), None, WAIT).await.unwrap(),
-        []
-    );
+    assert_eq!(client.discover_routers(Some(77), WAIT).await.unwrap(), []);
     // Nor is the router kept when, during that wait, it lists only others.
-    let (scoped, asked) = tokio::join!(client.discover_routers(Some(77), None, WAIT), async {
+    let (scoped, asked) = tokio::join!(client.discover_routers(Some(77), WAIT), async {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        client.who_is_router_to_network(None, None).await
+        client.who_is_router_to_network(None).await
     });
     asked.unwrap();
     assert_eq!(scoped.unwrap(), []);
-    assert!(client.discover_routers(Some(0), None, WAIT).await.is_err());
-    assert!(
-        client
-            .discover_routers(Some(u16::MAX), None, WAIT)
-            .await
-            .is_err()
-    );
+    assert!(client.discover_routers(Some(0), WAIT).await.is_err());
+    assert!(client.discover_routers(Some(u16::MAX), WAIT).await.is_err());
 
     // The device behind the router is read through it.
     let ack = client
@@ -372,9 +358,8 @@ async fn the_routing_table_of_a_three_port_router_is_read() {
     let (client_end, near) = LoopbackTransport::pair(vec![0x0A], vec![ROUTER_MAC]);
     let (far_a, _station_a) = LoopbackTransport::pair(vec![0x02], vec![0x05]);
     let (far_b, _station_b) = LoopbackTransport::pair(vec![0x03], vec![0x06]);
-    let port = |transport, network_number| RouterPort {
-        transport: AnyTransport::Loopback(transport),
-        network_number,
+    let port = |transport, network_number| {
+        RouterPort::new(AnyTransport::Loopback(transport), network_number)
     };
     let StartedRouter { mut router, .. } = BACnetRouter::start(
         vec![port(near, 1), port(far_a, 2), port(far_b, 3)],
@@ -441,9 +426,8 @@ async fn the_routing_table_of_a_three_port_router_is_read() {
 /// network 3 holds the far router's other port.
 #[tokio::test(start_paused = true)]
 async fn routing_table_reaches_a_second_router_by_either_of_its_ports() {
-    let port = |transport, network_number| RouterPort {
-        transport: AnyTransport::Loopback(transport),
-        network_number,
+    let port = |transport, network_number| {
+        RouterPort::new(AnyTransport::Loopback(transport), network_number)
     };
     let (node, first) = LoopbackTransport::pair(vec![10], vec![11]);
     let (middle_first, middle_second) = LoopbackTransport::pair(vec![21], vec![22]);

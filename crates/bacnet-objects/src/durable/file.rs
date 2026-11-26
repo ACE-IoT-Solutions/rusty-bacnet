@@ -8,7 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 
 use super::sync_parent_dir;
 
@@ -78,9 +78,9 @@ impl ObjectFile {
     pub(crate) fn new(path: &Path, max_bytes: u64, what: &'static str) -> Result<Self, Error> {
         if path.as_os_str().is_empty() {
             let kind = what.strip_suffix(" file").unwrap_or(what);
-            return Err(Error::OutOfRange(format!(
+            return Err(Error::InvalidConfig(Refusal::text(format!(
                 "{kind} persistence path must not be empty"
-            )));
+            ))));
         }
         Ok(Self {
             path: path.to_path_buf(),
@@ -103,7 +103,7 @@ impl ObjectFile {
 
     /// The file's octets, header and all, up to one past the size cap, or
     /// `None` when there is no file.
-    pub(crate) fn read(&self) -> Result<Option<Vec<u8>>, Error> {
+    pub(crate) fn read_octets(&self) -> Result<Option<Vec<u8>>, Error> {
         #[cfg(feature = "test-support")]
         if let Some(memory) = &self.memory {
             return Ok(memory.read(0, (self.max_bytes + 1) as usize));

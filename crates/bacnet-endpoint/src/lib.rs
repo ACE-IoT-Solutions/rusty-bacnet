@@ -3,10 +3,8 @@
 #![forbid(unsafe_code)]
 
 pub mod bip;
-mod held_database;
 pub mod identity;
 pub mod mstp;
-pub mod roles;
 pub mod sc;
 pub mod session;
 mod source_audit;
@@ -20,7 +18,6 @@ mod test_rows;
 mod wrapped_session_tests;
 
 pub use identity::{DeviceIdentity, NetworkPortEntry, build_database_with_extra};
-pub use roles::{ClientRoleHandle, EndpointApduDestination};
 pub use session::{
-    EndpointSession, PolicyCountersSnapshot, SessionConfig, SessionExit, SessionRole,
+    EndpointSession, PolicyCountersSnapshot, SessionConfig, SessionExit, SessionRole, StartError,
 };

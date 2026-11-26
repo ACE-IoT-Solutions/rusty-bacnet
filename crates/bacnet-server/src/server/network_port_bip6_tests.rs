@@ -109,7 +109,9 @@ async fn start_with(
         ..Default::default()
     };
     let transport = TestTransport::builder().bip6_port(port).build();
-    BACnetServer::start(config, db, transport).await
+    BACnetServer::start(config, db, transport)
+        .await
+        .map_err(Error::from)
 }
 
 async fn start(mode: BipPortMode, handler: bool) -> BACnetServer<TestTransport> {
@@ -328,11 +330,12 @@ async fn bbmd_mode_serves_ipv6_tables_and_activates_a_written_bdt() {
     );
 }
 
-/// The message a start that should fail failed with.
+/// The message a start that should fail failed with: a configuration
+/// refusal, the server's or bacnet-objects' (#1833).
 fn refusal(started: Result<BACnetServer<TestTransport>, Error>) -> String {
     match started {
-        Err(Error::Encoding(message)) => message,
-        Err(other) => panic!("an Encoding refusal: {other:?}"),
+        Err(Error::InvalidConfig(message)) => message.to_string(),
+        Err(other) => panic!("a configuration refusal: {other:?}"),
         Ok(_) => panic!("the start should fail"),
     }
 }
@@ -348,10 +351,11 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         NetworkPortObject::new_bip(1, "Port", BipPortConfig::default()).unwrap(),
     ))
     .unwrap();
-    assert_eq!(
-        refusal(start_with(bind(BipPortMode::Normal), ipv4, false).await),
-        "registration requires an IPV6 port"
-    );
+    // bacnet-objects' configuration refusal (#1833).
+    assert!(matches!(
+        start_with(bind(BipPortMode::Normal), ipv4, false).await,
+        Err(Error::InvalidConfig(message)) if message.to_string() == "registration requires an IPV6 port"
+    ));
     // These are refused even when the object declares the same address.
     let concrete = "registered B/IPv6 requires a concrete unicast interface";
     let mapped: Ipv6Addr = "::ffff:192.0.2.1".parse().unwrap();
@@ -414,7 +418,11 @@ async fn registration_refuses_a_b_ipv6_link_that_does_not_match() {
         ))
         .build();
     assert_eq!(
-        refusal(BACnetServer::start(config, database(), transport).await),
+        refusal(
+            BACnetServer::start(config, database(), transport)
+                .await
+                .map_err(Error::from)
+        ),
         "registration requires an IPV4 port"
     );
 }
@@ -448,7 +456,7 @@ async fn registration_refuses_a_vmac_that_is_not_the_served_devices() {
         let error =
             network_port::prepare(&mut db, &mut transport, Some(port_oid()), DEVICE_INSTANCE);
         assert!(
-            matches!(&error, Err(Error::Encoding(message)) if message == expected),
+            matches!(&error, Err(Error::InvalidConfig(message)) if message.to_string() == expected),
             "{error:?}"
         );
         assert_eq!(db.registered_port_internal(), None, "{expected}");

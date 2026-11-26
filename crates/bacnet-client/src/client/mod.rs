@@ -44,8 +44,10 @@ use bacnet_transport::port::{TransportPort, TransportProvenance};
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
 use bacnet_types::MacAddr;
-use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
-use bacnet_types::error::{Error, RemoteError};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, RejectReason, Segmentation, UnconfirmedServiceChoice,
+};
+use bacnet_types::error::{Error, Lifecycle, Refusal, RemoteError};
 
 use crate::discovery::{Change, DeviceTable, DiscoveredDevice, RoutedDeviceConfig};
 use crate::segmentation::{
@@ -151,15 +153,42 @@ pub struct ClientConfig {
     /// transport's limit at that moment, so it follows a limit that changes
     /// after start (#2086).
     pub max_apdu_length: u16,
-    /// Maximum segments this client accepts (`None` = unspecified).
+    /// Maximum segments this client accepts (`None` = unspecified): what
+    /// its requests state, and the most it keeps of one segmented answer or
+    /// notification. Stated only while the client receives segments.
     ///
     /// Values 0 and 1 are invalid. Finite values between the BACnet wire
     /// encodings are conservatively rounded down (for example, 5 advertises 4).
     pub max_segments: Option<u8>,
-    /// Whether this client accepts segmented responses.
-    pub segmented_response_accepted: bool,
+    /// Which ways this client segments (default
+    /// [`Segmentation::SEGMENTED_BOTH`]), as a Device's
+    /// Segmentation_Supported says it (#2617).
+    ///
+    /// While it receives segments (SEGMENTED_BOTH or SEGMENTED_RECEIVE) its
+    /// requests state that it accepts a segmented answer, and it reassembles
+    /// a confirmed request its sender segments before it answers it
+    /// (#2646); otherwise such a request's first segment draws an Abort
+    /// (SEGMENTATION_NOT_SUPPORTED). While it transmits them (SEGMENTED_BOTH
+    /// or SEGMENTED_TRANSMIT) it sends a request too long for one APDU as
+    /// segments; otherwise such a request fails before anything is sent,
+    /// with [`SegmentationError::LocalCannotTransmit`](bacnet_types::error::SegmentationError::LocalCannotTransmit).
+    /// Any other value fails the build. An endpoint session's client takes
+    /// its Device's.
+    pub segmentation: Segmentation,
     /// Proposed window size for segmented transfers (1-127, default 1).
+    /// A segmented request sends segment zero alone with it and takes the
+    /// window from the answer; a peer that leaves segment zero unanswered
+    /// for a segment timeout gets the whole first window at once from then
+    /// on (#2742).
     pub proposed_window_size: u8,
+    /// The segment timeout in milliseconds (Clause 5.3): how long a
+    /// segmented request waits for each Segment-ACK before it sends its
+    /// window again, and, four times over, how long a segmented answer may
+    /// pause between segments. `None` (the default) takes
+    /// [`apdu_timeout_ms`](Self::apdu_timeout_ms); zero fails the build. An
+    /// endpoint session's client takes its Device's APDU_Segment_Timeout
+    /// (#2617).
+    pub apdu_segment_timeout_ms: Option<u64>,
     /// Least time, in milliseconds, from the latest confirmed request sent
     /// to a destination finishing (reply, error or cancellation) to the next
     /// being sent; while it is still outstanding, the next waits that long
@@ -174,6 +203,15 @@ pub struct ClientConfig {
     /// [`MAX_MIN_REQUEST_INTERVAL_MS`], an hour; more fails the build. The
     /// endpoint client takes the same setting from its session (#1542).
     pub min_request_interval_ms: u64,
+    /// Whether a Complex-ACK completes a request whose service is
+    /// acknowledged with a Simple-ACK, such as WriteProperty, as a success
+    /// (default `false`: it fails the request with
+    /// [`Error::UnexpectedAck`],
+    /// #2721). Turn it on only for a device found in the field that
+    /// answers such requests with a Complex-ACK, whose answer this client
+    /// then takes as the success the device means. A Simple-ACK for a
+    /// service whose answer carries data stays an error either way.
+    pub accept_complex_ack_for_simple_services: bool,
 }
 
 /// Additional client startup options.
@@ -207,9 +245,11 @@ impl Default for ClientConfig {
             apdu_retries: 3,
             max_apdu_length: 1476,
             max_segments: None,
-            segmented_response_accepted: true,
+            segmentation: Segmentation::SEGMENTED_BOTH,
             proposed_window_size: 1,
+            apdu_segment_timeout_ms: None,
             min_request_interval_ms: 0,
+            accept_complex_ack_for_simple_services: false,
         }
     }
 }
@@ -234,24 +274,12 @@ pub(crate) fn new_coordinated_tsm(
     Tsm::new_coordinated(
         TsmConfig {
             apdu_timeout_ms: config.apdu_timeout_ms,
-            apdu_segment_timeout_ms: config.apdu_timeout_ms,
+            apdu_segment_timeout_ms: config.segment_timeout_ms(),
             apdu_retries: config.apdu_retries,
+            accept_complex_ack_for_simple_services: config.accept_complex_ack_for_simple_services,
         },
         coordinator,
     )
-}
-
-pub(crate) fn confirmed_response_result(response: TsmResponse) -> Result<Bytes, Error> {
-    match response {
-        TsmResponse::SimpleAck => Ok(Bytes::new()),
-        TsmResponse::ComplexAck { service_data } => Ok(service_data),
-        TsmResponse::Remote {
-            error: RemoteError::Error { class, code },
-            detail,
-        } => Err(Error::with_detail(class, code, detail)),
-        TsmResponse::Remote { error, .. } => Err(Error::Remote(error)),
-        TsmResponse::NetworkPathTooLong { dnet } => Err(Error::RoutedPathTooLong { dnet }),
-    }
 }
 
 impl ClientOptions {
@@ -259,22 +287,6 @@ impl ClientOptions {
     pub fn with_cov_channel_capacity(mut self, capacity: usize) -> Self {
         self.cov_channel_capacity = capacity;
         self
-    }
-
-    fn validate(&self) -> Result<(), Error> {
-        if !(1..=MAX_COV_CHANNEL_CAPACITY).contains(&self.cov_channel_capacity) {
-            return Err(Error::Encoding(format!(
-                "invalid cov-channel-capacity {}; expected 1..={}",
-                self.cov_channel_capacity, MAX_COV_CHANNEL_CAPACITY
-            )));
-        }
-        if !(1..=MAX_EVENT_CHANNEL_CAPACITY).contains(&self.event_channel_capacity) {
-            return Err(Error::Encoding(format!(
-                "invalid event-channel-capacity {}; expected 1..={}",
-                self.event_channel_capacity, MAX_EVENT_CHANNEL_CAPACITY
-            )));
-        }
-        Ok(())
     }
 }
 
@@ -315,7 +327,7 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
     pub async fn build(self) -> Result<BACnetClient<T>, Error> {
         let transport = self
             .transport
-            .ok_or_else(|| Error::Encoding("transport not set on ClientBuilder".into()))?;
+            .ok_or(Error::invalid_config("transport not set on ClientBuilder"))?;
         BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }
@@ -815,9 +827,9 @@ impl ScClientBuilder {
     /// are checked (scheme, host) before dialling.
     ///
     /// [`build`](Self::build) starts on the failover hub when the primary
-    /// cannot be dialled, and the connector also turns to it when the primary
-    /// refuses the first Connect-Request or the reconnect attempts to the
-    /// primary are used up. While on the failover hub it keeps trying the
+    /// cannot be dialled or refuses the first Connect-Request. After a lost
+    /// connection, each reconnect round tries the primary and then the
+    /// failover hub. While on the failover hub it keeps trying the
     /// primary and returns to it when it can. Follow it through
     /// `connection_events()` and `connection_status()` on
     /// [`BACnetClient::transport`].
@@ -828,10 +840,11 @@ impl ScClientBuilder {
 
     /// Enable automatic reconnection with the given configuration.
     ///
-    /// Reconnects redial the hub that was in use, with exponential backoff
-    /// from `initial_delay_ms` up to `max_delay_ms`, for `max_retries`
-    /// attempts, before turning to the failover hub, if one is set. Required
-    /// by [`failover_hub_url`](Self::failover_hub_url).
+    /// After a lost connection, each reconnect round waits its backoff
+    /// (exponential, from `initial_delay_ms` up to `max_delay_ms`), then
+    /// dials the primary hub and, if that fails, the failover hub when one is
+    /// set. `max_retries` bounds the rounds; `None` keeps going. Required by
+    /// [`failover_hub_url`](Self::failover_hub_url).
     pub fn reconnect(mut self, config: bacnet_transport::sc::ScReconnectConfig) -> Self {
         self.reconnect = Some(config);
         self
@@ -839,14 +852,14 @@ impl ScClientBuilder {
 
     fn validate_identity(&self) -> Result<(), Error> {
         match self.vmac {
-            bacnet_transport::sc_frame::UNKNOWN_VMAC => Err(Error::Encoding(
-                "SC client builder: vmac must not be the reserved unknown VMAC".into(),
+            bacnet_transport::sc_frame::UNKNOWN_VMAC => Err(Error::invalid_config(
+                "SC client builder: vmac must not be the reserved unknown VMAC",
             )),
-            bacnet_transport::sc_frame::BROADCAST_VMAC => Err(Error::Encoding(
-                "SC client builder: vmac must not be the reserved broadcast VMAC".into(),
+            bacnet_transport::sc_frame::BROADCAST_VMAC => Err(Error::invalid_config(
+                "SC client builder: vmac must not be the reserved broadcast VMAC",
             )),
-            _ if self.device_uuid == [0; 16] => Err(Error::Encoding(
-                "SC client builder: device_uuid is required and must not be all zero".into(),
+            _ if self.device_uuid == [0; 16] => Err(Error::invalid_config(
+                "SC client builder: device_uuid is required and must not be all zero",
             )),
             _ => Ok(()),
         }
@@ -884,13 +897,18 @@ fn max_apdu_bucket_at_or_below(limit: u16) -> Option<u16> {
     bacnet_encoding::apdu::max_apdu_header_at_or_below(u32::from(limit)).ok()
 }
 
+/// Called for every request: the refusal is built out of line, so this
+/// stays small enough to inline (#1833).
 fn cap_max_apdu_to_transport(configured: u16, transport_limit: u16) -> Result<u16, Error> {
     let limit = configured.min(transport_limit);
-    max_apdu_bucket_at_or_below(limit).ok_or_else(|| {
-        Error::Encoding(format!(
-            "transport max-APDU-length {transport_limit} leaves no valid BACnet APDU bucket"
-        ))
-    })
+    max_apdu_bucket_at_or_below(limit).ok_or_else(|| no_apdu_bucket(transport_limit))
+}
+
+#[cold]
+#[inline(never)]
+fn no_apdu_bucket(transport_limit: u16) -> Error {
+    let label = "transport max-APDU-length {} leaves no valid BACnet APDU bucket";
+    Error::InvalidConfig(Refusal::new(label).with_value(u64::from(transport_limit)))
 }
 
 mod audit;
@@ -903,9 +921,11 @@ mod builder_options;
 mod cov;
 mod cov_notifications;
 mod cov_registry;
-pub(crate) mod request_reassembly;
 pub use cov_registry::ConfirmedCovLease;
 mod cov_renewal;
+mod data_attributes;
+use data_attributes::Attributes;
+pub use data_attributes::WithDataAttributes;
 mod device_events;
 mod device_mgmt;
 mod discovery;
@@ -916,6 +936,7 @@ mod inbound_replies;
 use inbound_replies::InboundReply;
 mod event_notifications;
 mod file_list;
+pub(crate) mod first_window;
 mod i_have;
 mod lifecycle;
 mod messages;
@@ -924,8 +945,10 @@ mod object_mgmt;
 pub(crate) mod pacing;
 mod property;
 mod read_range;
+pub(crate) mod request_reassembly;
 mod requests;
 mod response_admission;
+mod route_checks;
 mod routed_path_limits;
 mod routed_path_listing;
 mod routing_table;
@@ -934,7 +957,10 @@ pub use seat::SeatedClientBuilder;
 mod segmentation;
 mod segmentation_abort;
 mod segmentation_context;
+mod segmented_receive;
 mod segmented_request;
+mod send_checks;
+pub use send_checks::RemoteBroadcast;
 mod service;
 mod source_audit;
 mod source_audit_targets;
@@ -971,6 +997,7 @@ pub use event_notifications::{
 pub use i_have::{I_HAVE_CHANNEL_CAPACITY, MAX_I_HAVE_REPLIES, ReceivedIHave, collect_answers};
 pub use network_reports::{DiscoveredRouter, NETWORK_REPORT_CHANNEL_CAPACITY};
 pub use pacing::MAX_MIN_REQUEST_INTERVAL_MS;
+pub use routed_path_limits::DEFAULT_ROUTED_PATH_MAX_NPDU;
 pub use routed_path_listing::{RoutedPathLimit, RoutedPathLimitSource};
 pub use routing_table::{
     DEFAULT_ROUTING_TABLE_MAX_ENTRIES, RoutingTable, RoutingTableError, RoutingTableWait,
@@ -979,7 +1006,11 @@ use station::ConfirmedTarget;
 pub use station::{Broadcast, Station, ToStation};
 
 #[cfg(test)]
+mod ack_kind_tests;
+#[cfg(test)]
 mod acknowledge_alarm_tests;
+#[cfg(test)]
+mod answer_path_tests;
 #[cfg(test)]
 mod answer_refresh_tests;
 #[cfg(test)]
@@ -1042,6 +1073,8 @@ mod response_correlation_tests;
 mod routed_max_apdu_tests;
 #[cfg(test)]
 mod routed_path_answered_tests;
+#[cfg(test)]
+mod routed_path_change_tests;
 #[cfg(test)]
 mod routed_path_floor_tests;
 #[cfg(test)]

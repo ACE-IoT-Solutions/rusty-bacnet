@@ -1,10 +1,10 @@
 //! Outputs that wait in the queue, and how each is written when polled.
 
+use super::Storage;
 use super::config::{PortConfig, isolated_pair};
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
-use super::{ReplyPlan, Storage};
-use crate::discovery::Omitted;
+use crate::discovery::{Gap, Omitted};
 use crate::message::{NetworkNumberIs, Networks, RoutingEntries};
 use crate::npdu::{Address, NetworkPriority, Npdu};
 use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
@@ -26,42 +26,82 @@ pub(super) enum TaskKind {
     /// An Initialize-Routing-Table-Ack with no data, to `to` on `port`.
     UpdateAck,
     /// The next Initialize-Routing-Table-Ack of a table answer, to `to` on
-    /// `port`, from network `cursor` on.
+    /// `port`, from network `cursor` on, with `origin` as its DNET and DADR
+    /// when `origin_network` isn't 0, and the router's address on port
+    /// `named - 1` as its SNET and SADR when `named` isn't 0.
     TableAck,
     /// A Network-Number-Is answering on `port`.
     NumberIs,
     /// The startup announcements, from `cursor` = port index × 2 + step.
     Announce,
-    /// The two startup-style announcements for one port, after it recovers.
+    /// Announcements on one recovered port.
     AnnouncePort,
 }
 
 /// A queued output: all zero bits when empty.
+///
+/// It stays as small as it was before routed table answers (#2699): a
+/// routed answer's source is always one of the router's own port
+/// addresses, so the task keeps that port's index and the writer rebuilds
+/// the address from the port's configuration. In every router's storage,
+/// firmware included, that saves an 18-octet MAC per queued task.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Task {
     pub(super) kind: TaskKind,
-    reply: ReplyPlan,
+    port: PortId,
     network: u16,
     reason: RejectMessageReason,
+    to: Mac,
+    origin_network: u16,
+    origin: Mac,
+    /// The port, plus one, whose address a routed query named; 0 for none.
+    named: u8,
     search_gap: Omitted,
     pub(super) cursor: u32,
+}
+
+/// `octets` as a [`Mac`]: a parsed or configured address is never over the
+/// bound.
+fn mac(octets: &[u8]) -> Mac {
+    Mac::from_slice(octets).unwrap_or(Mac::EMPTY)
 }
 
 impl Task {
     pub(super) const EMPTY: Self = Self {
         kind: TaskKind::Empty,
-        reply: ReplyPlan::return_to(PortId(0), Mac::EMPTY, None),
+        port: PortId(0),
         network: 0,
         reason: RejectMessageReason::OTHER,
-        search_gap: Omitted::None,
+        to: Mac::EMPTY,
+        origin_network: 0,
+        origin: Mac::EMPTY,
+        named: 0,
+        search_gap: Omitted::NONE,
         cursor: 0,
     };
 
     const fn of(kind: TaskKind, port: PortId) -> Self {
         let mut task = Self::EMPTY;
         task.kind = kind;
-        task.reply = ReplyPlan::return_to(port, Mac::EMPTY, None);
+        task.port = port;
         task
+    }
+
+    /// `origin` as the task's destination fields: network 0 for none.
+    fn with_origin(mut self, origin: Option<Address<'_>>) -> Self {
+        if let Some(origin) = origin {
+            self.origin_network = origin.network;
+            self.origin = mac(origin.mac);
+        }
+        self
+    }
+
+    /// The destination a reject or table answer carries, if any.
+    fn origin(&self) -> Option<Address<'_>> {
+        (self.origin_network != 0).then(|| Address {
+            network: self.origin_network,
+            mac: self.origin.as_slice(),
+        })
     }
 
     /// Search from `except`, restricted to a previous search's gap when it has one.
@@ -82,14 +122,13 @@ impl Task {
         network: u16,
         reason: RejectMessageReason,
     ) -> Self {
-        // A parsed address is never over the bound.
-        let mac = |octets: &[u8]| Mac::from_slice(octets).unwrap_or(Mac::EMPTY);
         Self {
             network,
             reason,
-            reply: ReplyPlan::return_to(port, mac(to), origin.map(|a| (a.network, mac(a.mac)))),
+            to: mac(to),
             ..Self::of(TaskKind::Reject, port)
         }
+        .with_origin(origin)
     }
 
     /// An I-Am-Router on `port` for `network`, or for every network beyond
@@ -104,17 +143,31 @@ impl Task {
     /// The data-less Ack to an update, to `to` on `port`.
     pub(super) fn update_ack(port: PortId, to: Mac) -> Self {
         Self {
-            reply: ReplyPlan::return_to(port, to, None),
+            to,
             ..Self::of(TaskKind::UpdateAck, port)
         }
     }
 
-    /// The whole table, in Acks to `to` on `port`.
-    pub(super) fn table_ack(reply: ReplyPlan) -> Self {
+    /// The whole table, in Acks to `to` on `port`: to `origin` beyond it
+    /// when the query came from another network, and from the router's
+    /// address on port `named` when the query named that address on a port
+    /// other than `port`.
+    pub(super) fn table_ack(
+        port: PortId,
+        to: &[u8],
+        origin: Option<Address<'_>>,
+        named: Option<PortId>,
+    ) -> Self {
         Self {
-            reply,
-            ..Self::of(TaskKind::TableAck, reply.port())
+            to: mac(to),
+            // At most 255 ports, so index 254 plus one fits.
+            named: named.map_or(0, |port| {
+                debug_assert!(port.0 < u8::MAX, "Router::new caps ports at 255");
+                port.0.saturating_add(1)
+            }),
+            ..Self::of(TaskKind::TableAck, port)
         }
+        .with_origin(origin)
     }
 
     /// A Network-Number-Is on `port`.
@@ -123,15 +176,14 @@ impl Task {
     }
 
     /// The startup announcements.
-    pub(super) fn announce() -> Self {
-        Self::of(TaskKind::Announce, PortId(0))
-    }
-
-    /// The startup-style announcements for one recovered `port`.
     pub(super) fn announce_port(port: PortId) -> Self {
         let mut task = Self::of(TaskKind::AnnouncePort, port);
         task.cursor = u32::from(port.0) * 2;
         task
+    }
+
+    pub(super) fn announce() -> Self {
+        Self::of(TaskKind::Announce, PortId(0))
     }
 }
 
@@ -208,10 +260,10 @@ impl<
                 let data = task.network.to_be_bytes();
                 let npdu = Npdu::message(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &data);
                 let len = npdu.encode_into(&mut self.scratch).ok();
-                let target = match task.search_gap {
-                    Omitted::None => Target::AllBut(task.reply.port()),
-                    Omitted::IsolatedPorts => Target::IsolatedBut(task.reply.port()),
-                    Omitted::OrdinaryPort(port) => Target::Broadcast(port),
+                let target = match task.search_gap.gap {
+                    Gap::None => Target::AllBut(task.port),
+                    Gap::IsolatedPorts => Target::IsolatedBut(task.port),
+                    Gap::OrdinaryPort => Target::Broadcast(task.search_gap.port),
                 };
                 Some((len, Kind::Solicit, Cause::Ingress, target))
             }
@@ -222,9 +274,9 @@ impl<
                 }
                 .to_bytes();
                 let mut npdu = Npdu::message(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK, &data);
-                npdu.destination = task.reply.destination();
+                npdu.destination = task.origin();
                 let len = npdu.encode_into(&mut self.scratch).ok();
-                let target = Target::Unicast(task.reply.port(), task.reply.peer());
+                let target = Target::Unicast(task.port, task.to.as_slice());
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
             TaskKind::IAmAnswer => {
@@ -233,14 +285,14 @@ impl<
                     .table
                     .routes()
                     .filter(move |(_, route)| {
-                        route.port() != task.reply.port()
-                            && !isolated_pair(ports, task.reply.port(), route.port())
+                        route.port() != task.port
+                            && !isolated_pair(ports, task.port, route.port())
                             && route.reachability() != Reachability::Unreachable
                     })
                     .map(|(network, _)| network)
                     .peekable();
                 let kind = Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK);
-                let target = Target::Broadcast(task.reply.port());
+                let target = Target::Broadcast(task.port);
                 let message = NetworkMessageType::I_AM_ROUTER_TO_NETWORK;
                 if task.network != 0 {
                     let len = write_message(&mut self.scratch, message, |data| {
@@ -261,17 +313,24 @@ impl<
                 let npdu = Npdu::message(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK, &[]);
                 let len = npdu.encode_into(&mut self.scratch).ok();
                 let kind = Kind::Answer(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK);
-                let target = Target::Unicast(task.reply.port(), task.reply.peer());
+                let target = Target::Unicast(task.port, task.to.as_slice());
                 Some((len, kind, Cause::Ingress, target))
             }
             TaskKind::TableAck => {
                 let message = NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK;
+                let named = task
+                    .named
+                    .checked_sub(1)
+                    .and_then(|index| self.ports[..self.port_count].get(usize::from(index)));
                 let header = Npdu {
-                    source: task.reply.source(),
-                    destination: task.reply.destination(),
+                    source: named.map(|port| Address {
+                        network: port.network,
+                        mac: port.mac.as_slice(),
+                    }),
+                    destination: task.origin(),
                     ..Npdu::message(message, &[])
                 };
-                let port = task.reply.port();
+                let port = task.port;
                 let link_limit = self.ports[usize::from(port.0)].max_npdu.get(false);
                 let budget = link_limit.min(self.scratch.len()).min(501);
                 // A relay may retain the destination and add its ingress source.
@@ -310,22 +369,17 @@ impl<
                     len,
                     Kind::Answer(message),
                     Cause::Ingress,
-                    Target::Unicast(port, task.reply.peer()),
+                    Target::Unicast(port, task.to.as_slice()),
                 ))
             }
             TaskKind::NumberIs => {
-                let len = self.write_number_is(task.reply.port());
+                let len = self.write_number_is(task.port);
                 let kind = Kind::Answer(NetworkMessageType::NETWORK_NUMBER_IS);
-                Some((
-                    len,
-                    kind,
-                    Cause::Ingress,
-                    Target::Broadcast(task.reply.port()),
-                ))
+                Some((len, kind, Cause::Ingress, Target::Broadcast(task.port)))
             }
             TaskKind::Announce | TaskKind::AnnouncePort => {
                 let end = if task.kind == TaskKind::AnnouncePort {
-                    (u32::from(task.reply.port().0) + 1) * 2
+                    (u32::from(task.port.0) + 1) * 2
                 } else {
                     self.announce_end()
                 };
@@ -382,7 +436,7 @@ impl<
 
     /// Write the next startup announcement from `cursor` (port index × 2 +
     /// step): a Network-Number-Is with the port's number (Clause 6.4.20);
-    /// then an I-Am-Router listing the networks visible from that port, in
+    /// then an I-Am-Router listing every other port's network, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
     fn next_announcement(&mut self, cursor: u32, end: u32) -> Option<(u32, Option<usize>)> {
@@ -411,3 +465,16 @@ impl<
 #[cfg(test)]
 #[path = "table_reply_tests.rs"]
 mod table_reply_tests;
+
+/// A queued task is as small as before routed table answers: 52 octets,
+/// where a task holding a whole reply plan (three MACs) took 76. Every
+/// router's storage holds four (#2699).
+#[cfg(test)]
+#[test]
+fn a_task_keeps_one_mac_per_address_it_cannot_rebuild() {
+    assert!(
+        core::mem::size_of::<Task>() <= 52,
+        "{}",
+        core::mem::size_of::<Task>()
+    );
+}

@@ -193,51 +193,29 @@ impl ScServerBuilder {
     /// Connect to the hub and start the server.
     ///
     /// Reconnect configuration is validated before UUID validation, binding-table
-    /// construction, TLS lookup, or dialing, and again when the transport starts. An error
-    /// still consumes this builder and drops its inputs; this does not promise
-    /// generic endpoint rollback.
+    /// construction, TLS lookup, or dialing, and again when the transport starts. A
+    /// refusal, a hub that refuses the dial among them, hands back the database
+    /// ([`StartError`]); the builder's other inputs are dropped.
     pub async fn build(
         mut self,
     ) -> Result<
         BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
-        Error,
+        StartError,
     > {
-        if let Some(config) = &self.reconnect {
-            config.validate()?;
-        }
-        if self.device_uuid == [0; 16] {
-            return Err(Error::Encoding(
-                "SC server builder: device_uuid is required and must not be all zero".into(),
-            ));
-        }
-        // The SC link's only group address is its broadcast VMAC.
-        DeviceBindingTable::from_configured(self.configured_device_bindings.clone(), |mac| {
-            mac == bacnet_transport::sc_frame::BROADCAST_VMAC
-        })?;
-
-        let tls_config = self
-            .tls_config
-            .ok_or_else(|| Error::Encoding("SC server builder: tls_config is required".into()))?;
-
-        self.config.request_admission_policy.validate()?;
-        self.config.validate_dcc_config()?;
-        self.config.time_sync_policy.validate()?;
-        self.config.read_property_multiple_budget.validate()?;
-        self.config.get_alarm_summary_budget.validate()?;
-        self.config.get_enrollment_summary_budget.validate()?;
-        self.config.atomic_read_file_budget.validate()?;
-        self.config.atomic_write_file_budget.validate()?;
-        self.config.read_range_budget.validate()?;
-        self.config.get_event_information_budget.validate()?;
-        self.config.cov_policy.validate()?;
+        let mut db = self.db.take();
+        let tls_config = self.check().map_err(StartError::taking(&mut db))?;
         let db = crate::local_device::prepare_database(
-            &mut self.config, self.db,
+            &mut self.config, db,
             bacnet_transport::sc::ScTransport::<bacnet_transport::sc_tls::TlsWebSocket>::LOCAL_RECEIVE_APDU_CAPACITY,
         )?;
-        super::segmented_receive::validate_segment_timeout(&self.config)?;
-
-        let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone())
-            .await?;
+        let dialled = async {
+            super::segmented_receive::validate_segment_timeout(&self.config)?;
+            bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone()).await
+        };
+        let ws = match dialled.await {
+            Ok(ws) => ws,
+            Err(error) => return Err(StartError::new(error, Some(db))),
+        };
 
         let mut transport = bacnet_transport::sc::ScTransport::new(ws, self.vmac)
             .with_device_uuid(self.device_uuid)
@@ -265,6 +243,41 @@ impl ScServerBuilder {
             self.configured_device_bindings,
         )
         .await
+    }
+
+    /// What `build` refuses before it takes the database or dials: the
+    /// reconnect configuration, the UUID, the bindings, the TLS policy and
+    /// every policy and budget. Gives the TLS policy, taken out.
+    fn check(&mut self) -> Result<bacnet_transport::sc_tls::ScNodeTlsConfig, Error> {
+        if let Some(config) = &self.reconnect {
+            config.validate()?;
+        }
+        if self.device_uuid == [0; 16] {
+            return Err(Error::invalid_config(
+                "SC server builder: device_uuid is required and must not be all zero",
+            ));
+        }
+        // The SC link's only group address is its broadcast VMAC.
+        DeviceBindingTable::from_configured(self.configured_device_bindings.clone(), |mac| {
+            mac == bacnet_transport::sc_frame::BROADCAST_VMAC
+        })?;
+
+        let tls_config = self.tls_config.take().ok_or(Error::invalid_config(
+            "SC server builder: tls_config is required",
+        ))?;
+
+        self.config.request_admission_policy.validate()?;
+        self.config.validate_dcc_config()?;
+        self.config.time_sync_policy.validate()?;
+        self.config.read_property_multiple_budget.validate()?;
+        self.config.get_alarm_summary_budget.validate()?;
+        self.config.get_enrollment_summary_budget.validate()?;
+        self.config.atomic_read_file_budget.validate()?;
+        self.config.atomic_write_file_budget.validate()?;
+        self.config.read_range_budget.validate()?;
+        self.config.get_event_information_budget.validate()?;
+        self.config.cov_policy.validate()?;
+        Ok(tls_config)
     }
 }
 
@@ -307,10 +320,11 @@ mod tests {
             let error = tokio::time::timeout(std::time::Duration::from_secs(1), builder.build())
                 .await
                 .expect("UUID failure must not wait for TLS/network I/O")
+                .map_err(Error::from)
                 .err()
                 .expect("missing/zero UUID must fail before dialing");
             assert!(
-                matches!(&error, Error::Encoding(message) if message == "SC server builder: device_uuid is required and must not be all zero"),
+                matches!(&error, Error::InvalidConfig(message) if message.to_string() == "SC server builder: device_uuid is required and must not be all zero"),
                 "expected UUID configuration error, got {error:?}"
             );
             assert_eq!(
@@ -347,7 +361,7 @@ mod tests {
                 .get_alarm_summary_budget(budget);
             assert_eq!(builder.config.get_alarm_summary_budget, budget);
             assert!(
-                matches!(builder.build().await.err(), Some(Error::Encoding(m)) if m.contains("alarm_summary_max_"))
+                matches!(builder.build().await.map_err(Error::from).err(), Some(Error::InvalidConfig(m)) if m.to_string().contains("alarm_summary_max_"))
             );
         }
     }
@@ -370,16 +384,19 @@ mod tests {
                 .device_uuid(TEST_DEVICE_UUID)
                 .read_property_multiple_budget(budget);
             assert_eq!(builder.config.read_property_multiple_budget, budget);
-            let error = builder.build().await.err().unwrap();
-            assert!(matches!(error, Error::Encoding(m) if m.contains("rpm_max_")));
+            let error = builder.build().await.map_err(Error::from).err().unwrap();
+            assert!(matches!(error, Error::InvalidConfig(m) if m.to_string().contains("rpm_max_")));
             let error = BACnetServer::sc_builder()
                 .device_uuid(TEST_DEVICE_UUID)
                 .read_property_multiple_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err()
                 .unwrap();
-            assert!(matches!(error, Error::Encoding(m) if m.contains("tls_config")));
+            assert!(
+                matches!(error, Error::InvalidConfig(m) if m.to_string().contains("tls_config"))
+            );
         }
     }
 
@@ -391,8 +408,7 @@ mod tests {
                     let mut builder = BACnetServer::sc_builder().reconnect(ScReconnectConfig {
                         initial_delay_ms,
                         max_delay_ms,
-                        max_retries,
-                        retry_forever: false,
+                        max_retries: Some(max_retries),
                     });
                     if broadcast_binding {
                         let device = ObjectIdentifier::new(ObjectType::DEVICE, 46).unwrap();
@@ -406,10 +422,11 @@ mod tests {
                     let error = builder
                         .build()
                         .await
+                        .map_err(Error::from)
                         .err()
                         .expect("invalid reconnect must fail");
                     assert!(
-                        matches!(&error, Error::OutOfRange(message) if message.contains("reconnect")),
+                        matches!(&error, Error::InvalidConfig(message) if message.to_string().contains("reconnect")),
                         "expected reconnect error before TLS/bindings, got {error:?}"
                     );
                 }
@@ -425,14 +442,12 @@ mod tests {
             Some(ScReconnectConfig {
                 initial_delay_ms: 1,
                 max_delay_ms: 1,
-                max_retries: 0,
-                retry_forever: false,
+                max_retries: Some(0),
             }),
             Some(ScReconnectConfig {
                 initial_delay_ms: 1,
                 max_delay_ms: 2,
-                max_retries: u32::MAX,
-                retry_forever: false,
+                max_retries: Some(u32::MAX),
             }),
         ] {
             let mut builder = BACnetServer::sc_builder().device_uuid(TEST_DEVICE_UUID);
@@ -440,8 +455,8 @@ mod tests {
                 builder = builder.reconnect(config);
             }
             assert!(matches!(
-                builder.build().await,
-                Err(Error::Encoding(message)) if message == "SC server builder: tls_config is required"
+                builder.build().await.map_err(Error::from),
+                Err(Error::InvalidConfig(message)) if message.to_string() == "SC server builder: tls_config is required"
             ));
         }
     }
@@ -468,9 +483,12 @@ mod tests {
             })
             .build()
             .await
+            .map_err(Error::from)
             .err()
             .unwrap();
-        assert!(matches!(error, Error::Encoding(m) if m.contains("max_subscriptions_global")));
+        assert!(
+            matches!(error, Error::InvalidConfig(m) if m.to_string().contains("max_subscriptions_global"))
+        );
     }
 
     #[tokio::test]
@@ -489,9 +507,12 @@ mod tests {
                 .request_admission_policy(policy)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err()
                 .unwrap();
-            assert!(matches!(error, Error::Encoding(m) if m.contains("max_unconfirmed_in_flight")));
+            assert!(
+                matches!(error, Error::InvalidConfig(m) if m.to_string().contains("max_unconfirmed_in_flight"))
+            );
             let error = BACnetServer::sc_builder()
                 .request_admission_policy(policy)
                 .reconnect(ScReconnectConfig {
@@ -500,9 +521,12 @@ mod tests {
                 })
                 .build()
                 .await
+                .map_err(Error::from)
                 .err()
                 .unwrap();
-            assert!(matches!(error, Error::OutOfRange(m) if m.contains("reconnect")));
+            assert!(
+                matches!(error, Error::InvalidConfig(m) if m.to_string().contains("reconnect"))
+            );
         }
     }
 
@@ -520,10 +544,11 @@ mod tests {
                 .request_admission_policy(policy)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err()
                 .unwrap();
             assert!(
-                matches!(error, Error::Encoding(m) if m.contains("confirmed_recovery_reserve"))
+                matches!(error, Error::InvalidConfig(m) if m.to_string().contains("confirmed_recovery_reserve"))
             );
             let error = BACnetServer::sc_builder()
                 .request_admission_policy(policy)
@@ -533,9 +558,12 @@ mod tests {
                 })
                 .build()
                 .await
+                .map_err(Error::from)
                 .err()
                 .unwrap();
-            assert!(matches!(error, Error::OutOfRange(m) if m.contains("reconnect")));
+            assert!(
+                matches!(error, Error::InvalidConfig(m) if m.to_string().contains("reconnect"))
+            );
         }
     }
 
@@ -557,8 +585,8 @@ mod tests {
                     .device_uuid(TEST_DEVICE_UUID)
                     .request_admission_policy(policy);
                 assert_eq!(builder.config.request_admission_policy, policy);
-                let error = builder.build().await.err().unwrap();
-                assert!(matches!(error, Error::Encoding(m) if m.contains(name)));
+                let error = builder.build().await.map_err(Error::from).err().unwrap();
+                assert!(matches!(error, Error::InvalidConfig(m) if m.to_string().contains(name)));
             }
         }
     }

@@ -18,8 +18,12 @@
 //!   [`bacnet_encoding::constructed::property_element()`]), and the
 //!   octets decode as that collection's elements, the value is a typed read
 //!   (#1310): each element keeps its octets, and `.value` gives the shape
-//!   the typed write takes. A value that doesn't decode that way goes on to
-//!   the rules below.
+//!   the typed write takes. A Network Port's BDT and FDT (#2690) read this
+//!   way too, as entry mappings; a whole BDT or FDT read that doesn't
+//!   decode that way but holds only application-tagged elements is
+//!   [`PropertyValue::ApplicationData`] with its octets as received, so a
+//!   write-back sends them unchanged. Any other value that doesn't decode
+//!   that way goes on to the rules below.
 //! - When any element carries a context tag, the value is a constructed
 //!   production (a timestamp CHOICE, a vendor's structure and so on) the
 //!   binding has no typed form for. Nothing in the octets says where one
@@ -69,20 +73,23 @@ pub(crate) fn decode_read_value(
     octets: &[u8],
 ) -> Result<PyPropertyValue, Error> {
     let mut starts = application_elements(octets)?;
-    if let Some(table) =
-        super::network_port_value::NetworkPortTable::of(object_type, property, array_index)
-    {
-        let value = match table.read(octets) {
-            Ok(value) => value,
-            Err(_) if starts.is_none() && tag_tree::is_tree(octets) => {
-                PyPropertyValue::tree(octets.to_vec())
-            }
-            Err(_) => PyPropertyValue::from_rust(PropertyValue::ApplicationData(octets.to_vec())),
-        };
-        return Ok(value.read_from(property));
-    }
     if let Some(value) = constructed_read::decode(object_type, property, array_index, octets) {
         return Ok(value.read_from(property));
+    }
+    // A BDT or FDT whose entries don't decode, sent as application values:
+    // a plain list of them would re-encode them and so change what a
+    // write-back sends, so keep the octets as received (#2690). Context-tagged
+    // content reads as a tree below, which keeps them too, and an empty value
+    // is the empty table.
+    if starts.is_some()
+        && array_index.is_none()
+        && !octets.is_empty()
+        && constructed_read::keeps_octets_when_refused(object_type, property)
+    {
+        return Ok(
+            PyPropertyValue::from_rust(PropertyValue::ApplicationData(octets.to_vec()))
+                .read_from(property),
+        );
     }
     if starts.is_none() && property == PropertyIdentifier::PRIORITY_ARRAY {
         // Each BACnetPriorityValue choice is one tagged element, the

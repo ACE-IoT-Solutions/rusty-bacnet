@@ -5,13 +5,14 @@
 
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use bacnet_bip_codec::{self as codec, BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::Duration as CoreDuration;
 use bacnet_bip_core::node::{ExchangeId, ExchangeRefusal, LocalFailure};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
+use bacnet_types::sync::MutexExt;
 use bytes::BytesMut;
 use tokio::sync::oneshot;
 
@@ -52,9 +53,12 @@ pub enum BvlcExchangeError {
     /// was sent; a busy refusal may pass on a later try.
     Refused(ExchangeRefusal),
     /// The request failed on this side or the answer could not be read: the
-    /// transport is not started (or stopped while the request waited, which
-    /// fails the same way), the send failed, the request could not be
-    /// encoded or the response was malformed.
+    /// transport is not started or had stopped, with nothing sent (an
+    /// [`Error::State`] of [`Lifecycle::NotRunning`], #1833); it stopped
+    /// while the request waited for its answer, which may have been
+    /// carried out ([`Error::RequestCutOff`] with `sent: true`); the send
+    /// failed, the request could not be encoded or the response was
+    /// malformed.
     Transport(Error),
 }
 
@@ -150,10 +154,12 @@ impl NodeHandle {
         match response.await {
             Ok(outcome) => Ok(outcome?),
             // Its waiter went without an answer: it was given up, or the
-            // node dropped it as the transport stopped, and then it fails as
-            // a request made after the stop does (#2612, #2617).
+            // node dropped it as the transport stopped (#2612, #2617). The
+            // request had gone out, and a change it asked for (a new BDT,
+            // an FDT entry deleted) may have been made, so it is cut off as
+            // sent, not refused as one after the stop is (#1833).
             Err(_) if give_up.is_some_and(BvlcGiveUp::is_given_up) => Err(given_up()),
-            Err(_) => Err(crate::port::stopped().into()),
+            Err(_) => Err(BvlcExchangeError::Transport(cut_off_as_sent())),
         }
     }
 
@@ -202,8 +208,9 @@ impl Exchange {
                 .waiters
                 .get_mut(&self.id)
                 .and_then(|waiter| waiter.early.take());
-            let outcome =
-                early.unwrap_or_else(|| Err(Error::Encoding("BVLC response lost".into())));
+            // The request went out and its early answer was lost: what it
+            // did is unknown, so it is cut off as sent (#1833).
+            let outcome = early.unwrap_or_else(|| Err(cut_off_as_sent()));
             state.complete(self.id, outcome);
         });
     }
@@ -238,14 +245,24 @@ impl NodeHandle {
 /// ends it then, or keeps it from starting.
 ///
 /// A read given up, waiting for its answer or not yet started, fails with
-/// [`BvlcExchangeError::Transport`] carrying an [`Error::Encoding`] that
-/// says it was given up; one that had already ended keeps its own outcome.
+/// [`BvlcExchangeError::Transport`] carrying an [`Error::State`] with
+/// [`Lifecycle::Closed`] that says it was given up; one that had already
+/// ended keeps its own outcome.
 #[derive(Clone, Debug, Default)]
 pub struct BvlcGiveUp(Arc<Mutex<GiveUp>>);
 
+/// What an exchange whose request went out gets when the transport's stop
+/// drops its waiter, or its answer is lost (#1833): the request may have
+/// been carried out.
+#[cold]
+#[inline(never)]
+fn cut_off_as_sent() -> Error {
+    Error::RequestCutOff { sent: true }
+}
+
 /// The error of a read given up through its [`BvlcGiveUp`].
 fn given_up() -> BvlcExchangeError {
-    BvlcExchangeError::Transport(Error::Encoding("BVLC table read given up".into()))
+    BvlcExchangeError::Transport(Error::state(Lifecycle::Closed, "BVLC table read given up"))
 }
 
 /// Where a [`BvlcGiveUp`]'s read is.
@@ -273,7 +290,7 @@ impl BvlcGiveUp {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, GiveUp> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.locked()
     }
 
     /// Whether the read was given up.

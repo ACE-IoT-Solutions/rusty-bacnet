@@ -71,5 +71,5 @@ Thumbs.db
 *.swo
 *~
 
-# Local code-search index (cocoindex-code), never committed
-/.cocoindex_code/
+# A local cargo run in a website sample (#2648).
+/website/examples/rust/*/Cargo.lock

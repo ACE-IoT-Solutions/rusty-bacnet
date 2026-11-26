@@ -382,10 +382,28 @@ fn storage_holding_what_no_write_leaves_fails_the_build() {
         notify_type: Some(NotifyType::from_raw(5)),
         ..ReportingWriteConfig::default()
     }));
-    for storage in [timer, unknown] {
+    for (storage, kind, text) in [
+        (
+            timer,
+            bacnet_types::error::PersistenceErrorKind::OtherObject,
+            "saved write configuration is not reporting settings",
+        ),
+        (
+            unknown,
+            bacnet_types::error::PersistenceErrorKind::Damaged,
+            "saved reporting settings holds an unknown Notify_Type",
+        ),
+    ] {
         let built = AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS)
             .and_then(|object| object.with_reporting_persistence(persistence(&storage)));
-        assert!(matches!(built, Err(Error::Encoding(_))));
+        // Persisted state refused (#1833), its text as before with no
+        // category in front, in every build: the codec's static reason.
+        assert!(
+            matches!(&built, Err(Error::Persistence(why))
+                if why.kind() == kind && why.to_string() == text),
+            "{:?}",
+            built.err()
+        );
     }
 }
 

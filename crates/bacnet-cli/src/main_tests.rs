@@ -109,6 +109,57 @@ fn a_refused_one_shot_never_reaches_the_network() {
     }
 }
 
+/// A format the command doesn't print is a usage error (status 2) before
+/// the write guard, `sc-check`, `mstp-ports` or the network path (#2778);
+/// one it prints goes on as before.
+#[test]
+fn a_refused_format_never_reaches_the_network() {
+    let usage = std::process::ExitCode::from(2);
+    for args in [
+        &[
+            "bacnet", "read", "10.0.0.1", "av:1", "pv", "--format", "csv",
+        ][..],
+        &[
+            "bacnet", "--format", "csv", "write", "10.0.0.1", "av:1", "pv", "1",
+        ],
+        &["bacnet", "--json", "export", "223-experimental", "10.0.0.1"],
+        &["bacnet", "--json", "tui"],
+        &[
+            "bacnet",
+            "mcp",
+            "serve",
+            "--stdio",
+            "--passive",
+            "--format",
+            "json",
+        ],
+        &[
+            "bacnet",
+            "sc-check",
+            "--sc-cert",
+            "missing",
+            "--format",
+            "csv",
+        ],
+        &["bacnet", "mstp-ports", "--format", "csv"],
+    ] {
+        assert_eq!(run_guarded(args), (usage, false), "{args:?}");
+    }
+    for args in [
+        &["bacnet", "inventory", "10.0.0.1", "--format", "csv"][..],
+        &[
+            "bacnet", "--format", "table", "read", "10.0.0.1", "av:1", "pv",
+        ],
+        &["bacnet", "export", "223-experimental", "10.0.0.1"],
+    ] {
+        assert_eq!(
+            run_guarded(args),
+            (std::process::ExitCode::SUCCESS, true),
+            "{args:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn sc_check_parser_preserves_non_utf8_credential_bytes() {
@@ -192,4 +243,23 @@ fn a_fatal_error_reports_with_display_and_its_sources() {
     );
     let held = bacnet_types::error::Error::Transport(std::io::Error::other("denied"));
     assert_eq!(reported(&held), "Error: transport error: denied\n");
+}
+
+/// A broadcast refused on a loopback interface names the CLI's own option,
+/// whether it arrives as the client's error or inside bacnet-ops' (#2691).
+#[test]
+fn a_refused_loopback_broadcast_names_the_broadcast_option() {
+    let refused = || {
+        let io = std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            bacnet_transport::bip::LoopbackBroadcastRefused::default(),
+        );
+        bacnet_types::error::Error::Transport(io)
+    };
+    let hint = "127.255.255.255 (the -b/--broadcast option)\n";
+    assert!(reported(&refused()).ends_with(hint));
+    let ops = bacnet_ops::OpsError::Client(refused());
+    assert!(reported(&ops).ends_with(hint), "{}", reported(&ops));
+    let other = bacnet_types::error::Error::Transport(std::io::Error::other("denied"));
+    assert!(!reported(&other).contains("--broadcast"));
 }

@@ -1,13 +1,57 @@
 //! Resolve Device declarations while the session still owns an unstarted link.
 use crate::session::EndpointSession;
+use bacnet_objects::object_profile::FileTagsPersistence;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
+    /// Keep what peers write to the Device the session builds in the file at
+    /// `path` (#2730), as a server builder's
+    /// [`device_storage_path`](bacnet_server::server::ServerBuilder::device_storage_path)
+    /// does for the Device it builds, with the same rules for a missing,
+    /// damaged or unwritable file. A relative `path` is resolved against the
+    /// current directory here. The session builds the Device from its
+    /// [`device`](Self::device) identity when no database was given, at
+    /// [`start`](Self::start), which refuses the path on a
+    /// [`SessionRole::ClientOnly`](crate::session::SessionRole::ClientOnly)
+    /// session, which runs no server to write it, and beside a
+    /// [`with_database`](Self::with_database) database, whose Device brings
+    /// its own storage. A server builder given to
+    /// [`with_server`](Self::with_server) takes no path of its own here:
+    /// the session builds the node's Device. Peers write to it only
+    /// through a server whose policy lets them; the read-only one lets
+    /// none.
+    ///
+    /// # Panics
+    /// Panics if startup has already consumed the session configuration.
+    pub fn with_device_storage_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.assert_configurable();
+        let path = path.into();
+        self.device_storage_path = Some(std::path::absolute(&path).unwrap_or(path));
+        self
+    }
+
     pub(super) async fn prepare_identity(&mut self) -> Result<(), Error> {
+        if let Some(path) = &self.device_storage_path {
+            if matches!(self.role, crate::session::SessionRole::ClientOnly) {
+                return Err(storage_refused(
+                    path,
+                    "a client-only session runs no server, so it has no Device for peers to \
+                     write",
+                ));
+            }
+            if self.database.is_some() {
+                return Err(storage_refused(
+                    path,
+                    "the session was given a database, whose Device brings its own storage",
+                ));
+            }
+        }
         let Some(identity) = self.identity.as_ref() else {
+            // A serving session with no identity was refused before this (it
+            // needs one to run its server), and a client-only one above.
             return Ok(());
         };
         let identity = identity.resolve(self.local_receive_capacity)?;
@@ -19,13 +63,32 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             }
         }
         if self.database.is_none() {
-            self.database = Some(Arc::new(RwLock::new(identity.build_database()?)));
+            let database = match &self.device_storage_path {
+                Some(path) => {
+                    bacnet_objects::device_identity::build_database_with_tags_persistence(
+                        &identity,
+                        Arc::new(FileTagsPersistence::new(path)?),
+                        Vec::new(),
+                    )?
+                }
+                None => identity.build_database()?,
+            };
+            self.database = Some(Arc::new(RwLock::new(database)));
         }
         self.client_config.max_apdu_length = identity.max_apdu_length();
         self.config.max_apdu_length = identity.max_apdu_length();
         self.identity = Some(identity);
         Ok(())
     }
+}
+
+/// A start refused for its Device storage path: `why`. Owned text, as it
+/// names the path.
+fn storage_refused(path: &std::path::Path, why: &str) -> Error {
+    Error::InvalidConfig(Refusal::text(format!(
+        "device storage path {} is for the Device the session builds from its identity: {why}",
+        path.display()
+    )))
 }
 
 /// Keep generated declarations local to a successful preflight. In particular,
@@ -82,10 +145,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         // changes (#2617).
         preparation.session.default_server();
         preparation.session.check_server_builder()?;
-        preparation
-            .session
-            .validate_anonymous_segmentation()
-            .await?;
         preparation.session.prepare_identity().await?;
         preparation.session.check_server_settings().await?;
         let routes = preparation.session.prepare_source_audit_reporter()?;
@@ -99,36 +158,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         preparation.committed = true;
         Ok(routes)
     }
-
-    /// With an identity, prepare_identity validates the selected Device against
-    /// its declarations. An anonymous session cannot adopt a segmentation
-    /// capability or segment timeout from an unbound database.
-    async fn validate_anonymous_segmentation(&self) -> Result<(), Error> {
-        use bacnet_types::enums::{PropertyIdentifier, Segmentation};
-        use bacnet_types::primitives::PropertyValue;
-        if self.identity.is_some() {
-            return Ok(());
-        }
-        if let Some(database) = self.database.as_ref() {
-            let database = database.read().await;
-            if let Some(oid) = database.selected_device() {
-                let device = database
-                    .get(&oid)
-                    .expect("selected under same database guard");
-                let mode =
-                    device.read_property(PropertyIdentifier::SEGMENTATION_SUPPORTED, None)?;
-                if mode
-                    != PropertyValue::Enumerated(u32::from(Segmentation::NO_SEGMENTATION.to_raw()))
-                {
-                    return Err(Error::Encoding(
-                        "EndpointSession selected Device requires segmentation NO_SEGMENTATION"
-                            .into(),
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
@@ -141,9 +170,14 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if let Some(database) = &self.database {
             database
                 .try_write()
-                .map_err(|_| Error::Encoding("endpoint database is locked at start".into()))?
+                // Another holder has the database's lock.
+                .map_err(|_| Error::limit_reached("endpoint database is locked at start"))?
                 .bind_local_device_internal(device);
         }
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "session_storage_tests.rs"]
+mod tests;

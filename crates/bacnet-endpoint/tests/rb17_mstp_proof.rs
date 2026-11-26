@@ -145,7 +145,7 @@ async fn prompt_reply_impl(mode: MstpExecutionMode, frames: Frames) {
     expect_present_value(&reply, 9, 11.0);
     assert_eq!(h.session.active_leases(), 0);
     assert_eq!(
-        h.session.policy_counters().await,
+        h.session.policy_counters(),
         PolicyCountersSnapshot::default(),
         "clean prompt path owns no policy outcomes"
     );
@@ -193,7 +193,7 @@ async fn bidirectional_impl(mode: MstpExecutionMode, frames: Frames) {
 
     // Outbound: the session client initiates a confirmed request; the token
     // drive carries it (MAC self-organization is the backstop).
-    let client = h.session.cloned_client_handle().expect("client role");
+    let client = h.session.client().expect("the session's client");
     let outbound = tokio::spawn(async move {
         client
             .read_property(
@@ -399,4 +399,38 @@ async fn mstp_builder_bounds_reject() {
             .build_session()
             .is_ok()
     );
+}
+
+/// A refused MS/TP build hands back the database it was given (#2766), and
+/// the same database serves from a session the MS/TP builder builds again:
+/// the peer reads AI-1, its one object beside the Device, over the link.
+#[tokio::test(start_paused = true)]
+async fn mstp_a_refused_build_hands_back_a_database_the_builder_serves() {
+    let id = identity(Frames::Standard);
+    let db = db_with_analog(&id, 1, 11.0);
+    let refused = MstpEndpointBuilder::new(LoopbackSerial::pair().0, SESSION_MAC)
+        .max_master(2)
+        .database(db)
+        .device(id.clone())
+        .build_session()
+        .err()
+        .expect("a station past max_master is refused");
+    let (error, db) = refused.into_parts();
+    let db = db.unwrap_or_else(|| panic!("no database came back with: {error}"));
+    let mut h = Harness::with_database(
+        MstpExecutionMode::Tokio,
+        SessionRole::ServerOnly,
+        Frames::Standard,
+        id,
+        db,
+    )
+    .await;
+    h.peer_deliver(&data_expecting(1, 9)).await;
+    let reply = h
+        .wait_for("the read's ComplexAck", |f| {
+            f.frame_type == FrameType::BACNET_DATA_NOT_EXPECTING_REPLY && f.destination == PEER_MAC
+        })
+        .await;
+    expect_present_value(&reply, 9, 11.0);
+    h.shutdown().await;
 }

@@ -19,11 +19,12 @@
 //! the peer's [`LoopbackTransport::receive_drops`] (#1713).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use bacnet_types::MacAddr;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
+use bacnet_types::sync::MutexExt;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
@@ -150,7 +151,7 @@ impl LoopbackTransport {
     /// stopped, the error for a stopped transport.
     fn reserve(&self) -> Result<Option<mpsc::Permit<'_, ReceivedNpdu>>, Error> {
         if self.stopped.load(Ordering::Acquire) {
-            return Err(crate::port::stopped());
+            return Err(crate::port::stopped_for_good());
         }
         match self.peer_tx.try_reserve() {
             Ok(permit) => Ok(Some(permit)),
@@ -202,10 +203,7 @@ impl LoopbackTransport {
             permit.send(msg);
             return Ok(());
         };
-        let _order = self
-            .record_order
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _order = self.record_order.locked();
         // A dropped record receiver only stops the record.
         let _ = destinations.send(MacAddr::from_slice(mac));
         permit.send(msg);
@@ -221,7 +219,7 @@ impl LoopbackTransport {
 }
 
 fn peer_closed() -> Error {
-    Error::Encoding("loopback peer channel closed".to_string())
+    Error::state(Lifecycle::Closed, "loopback peer channel closed")
 }
 
 impl TransportPort for LoopbackTransport {
@@ -229,10 +227,21 @@ impl TransportPort for LoopbackTransport {
         Some(DataLink::Loopback)
     }
 
+    /// A second start is refused: while this side runs, as already
+    /// started; once it stopped, as closed, since it doesn't start again
+    /// (#1833).
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.self_rx
-            .take()
-            .ok_or_else(|| Error::Encoding("loopback transport already started".to_string()))
+        let stopped = self.stopped.load(Ordering::Acquire);
+        self.self_rx.take().ok_or_else(|| {
+            if stopped {
+                crate::port::stopped_for_good()
+            } else {
+                Error::state(
+                    Lifecycle::AlreadyStarted,
+                    "loopback transport already started",
+                )
+            }
+        })
     }
 
     /// Refuse every later send (#2617). The loopback has no task and holds
@@ -242,6 +251,11 @@ impl TransportPort for LoopbackTransport {
     async fn stop(&self) -> Result<(), Error> {
         self.stopped.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// Refuse every later send, as a stop does (#2617).
+    fn abort(&self) {
+        self.stopped.store(true, Ordering::Release);
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
@@ -333,7 +347,16 @@ mod tests {
     async fn start_twice_fails() {
         let (mut a, _b) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
         let _rx = a.start().await.unwrap();
-        assert!(a.start().await.is_err());
+        assert!(matches!(
+            a.start().await,
+            Err(Error::State(Lifecycle::AlreadyStarted, _))
+        ));
+        // Stopped, it doesn't start again: closed, as its sends say.
+        a.stop().await.unwrap();
+        assert!(matches!(
+            a.start().await,
+            Err(Error::State(Lifecycle::Closed, _))
+        ));
     }
 
     #[tokio::test]
@@ -468,8 +491,9 @@ mod tests {
     }
 
     /// A stop through a shared reference fails every later send of that
-    /// side, with the stopped error, and delivers nothing (#2617). The peer
-    /// still sends.
+    /// side, with the stopped error, and delivers nothing (#2617). The
+    /// loopback doesn't start again, so the error is a closed state
+    /// (#1833). The peer still sends.
     #[tokio::test]
     async fn a_stopped_side_sends_nothing() {
         let (mut a, mut b) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
@@ -490,7 +514,7 @@ mod tests {
                 .await,
         ] {
             assert!(
-                matches!(&sent, Err(Error::Transport(io)) if io.kind() == std::io::ErrorKind::NotConnected),
+                matches!(&sent, Err(Error::State(Lifecycle::Closed, _))),
                 "{sent:?}"
             );
         }

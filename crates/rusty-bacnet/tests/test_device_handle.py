@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import copy
+import enum
 import inspect
 import pickle
 import unittest
@@ -211,6 +212,71 @@ class ReadTests(Lab):
             self.assertIsNotNone(everything.get(AO, "priority-array"))
             with self.assertRaisesRegex(ValueError, "whole properties"):
                 dev.read_object("ao:1", ["priority-array[8]"])
+
+    async def test_one_str_or_bytes_for_the_list_raises_before_the_future(self) -> None:
+        # A str iterates as its characters and bytes as ints: each is
+        # refused whole, naming the fix, before anything is sent.
+        async with client() as c:
+            dev = await c.device(self.address)
+            for call, example in (
+                (dev.read_many, r"\['ai:1', 'ao:2 priority-array\[8\]'\]"),
+                (lambda bad: dev.read_object("ao:1", bad), r"\['pv', 'units'\]"),
+            ):
+                for bad in ("ao:1 pv", "", b"ao:1 pv", bytearray(b"ao:1 pv")):
+                    kind = type(bad).__name__
+                    with self.subTest(example=example, properties=bad), self.assertRaisesRegex(
+                        TypeError,
+                        f"^properties is a list such as {example}, not {kind}: put one in a list$",
+                    ):
+                        call(bad)
+        self.assertEqual(self.relay.requests, [])
+
+    async def test_any_iterable_names_the_properties(self) -> None:
+        async with client() as c:
+            dev = await c.device(self.address)
+            many = ["ao:1 pv", ("ao:1", "units")]
+            for given in (many, tuple(many), (item for item in many)):
+                with self.subTest(properties=type(given).__name__):
+                    read = await dev.read_many(given)
+                    self.assertEqual([row.property_id for row in read],
+                                     [PV, PropertyIdentifier.UNITS])
+            some = ["pv", PropertyIdentifier.UNITS]
+            for given in (some, tuple(some), (item for item in some)):
+                with self.subTest(properties=type(given).__name__):
+                    read = await dev.read_object("ao:1", given)
+                    self.assertEqual([row.property_id for row in read],
+                                     [PV, PropertyIdentifier.UNITS])
+        self.assertEqual(self.relay.services, [READ_PROPERTY_MULTIPLE] * 6)
+
+    async def test_a_str_subclass_is_an_item_never_the_list(self) -> None:
+        class Text(str):
+            pass
+
+        texts = [(Text("ao:1 pv"), Text("pv"))]
+        if hasattr(enum, "StrEnum"):  # Python 3.11 on
+
+            class Point(enum.StrEnum):
+                DAMPER = "ao:1 pv"
+                VALUE = "pv"
+
+            texts.append((Point.DAMPER, Point.VALUE))
+        async with client() as c:
+            dev = await c.device(self.address)
+            for point, property in texts:
+                kind = type(point).__name__
+                with self.subTest(kind=kind):
+                    with self.assertRaisesRegex(TypeError, f"not {kind}: put one in a list$"):
+                        dev.read_many(point)
+                    with self.assertRaisesRegex(TypeError, f"not {kind}: put one in a list$"):
+                        dev.read_object("ao:1", property)
+                    self.assertEqual(self.relay.requests, [])
+                    read = await dev.read_many([point])
+                    self.assertEqual([(row.object_id, row.property_id) for row in read],
+                                     [(AO, PV)])
+                    read = await dev.read_object("ao:1", [property])
+                    self.assertEqual([(row.object_id, row.property_id) for row in read],
+                                     [(AO, PV)])
+                    self.relay.requests.clear()
 
     async def test_objects_and_summary(self) -> None:
         async with client() as c:
@@ -586,6 +652,24 @@ class TargetTests(unittest.IsolatedAsyncioTestCase):
                 await pinned.read("ai:0")
 
 
+class AddDeviceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_mac_past_18_octets_is_refused(self) -> None:
+        # The hex form takes any number of pairs; the table holds a station's
+        # MAC to 1 to 18 octets, as a routed one's (#2606).
+        longest = ":".join(["0a"] * 18)
+        async with client() as c:
+            with self.assertRaises(BacnetError) as caught:
+                await c.add_device(7, longest + ":0b")
+            self.assertIs(type(caught.exception), BacnetError)
+            self.assertIn("device MAC address must contain 1..=18 octets",
+                          str(caught.exception))
+            self.assertEqual(await c.discovered_devices(), [])
+            await c.add_device(7, longest)
+            [row] = await c.discovered_devices()
+            self.assertEqual((row.object_identifier.instance, row.mac_address),
+                             (7, bytes([0x0A] * 18)))
+
+
 class LifecycleTests(Lab):
     async def test_a_handle_after_stop_and_after_a_restart(self) -> None:
         c = client()
@@ -721,7 +805,7 @@ class RoutedTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_router_client_names_devices_by_network(self) -> None:
         c = BACnetClient(transport="router", router=self.router, apdu_timeout_ms=2000)
         async with c:
-            self.assertIsNone(c.resolve_scope)
+            self.assertEqual(c.resolve_scope, "local")
             # Works: a routed instance, a routed address, and an instance
             # the client has heard from.
             for network in (1, 5):
@@ -733,22 +817,24 @@ class RoutedTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await known.read("ai:0")).data, 25.5)
             self.assertEqual(sorted(row.instance for row in
                                     await c.discover(scope="global", wait=1.0)), [7001, 7005])
-            # Raises, with nothing sent: a local address, a bare instance
-            # it hasn't heard from (it has no network to ask on), and a
-            # local or directed discovery.
+            # The local scope is each of the router's networks (#2601): a
+            # discovery finds both devices, and a bare instance no one
+            # claims is asked for there.
+            self.assertEqual(sorted(row.instance for row in await c.discover(wait=1.0)),
+                             [7001, 7005])
+            with self.assertRaisesRegex(BacnetLookupError, "did not answer a local Who-Is"):
+                await asyncio.wait_for(c.device(7999), 10)
+            # Raises, with nothing sent: a local address, and a directed
+            # discovery by one, name no one of the router's networks.
             local = self.locals[1]
             for target in (local, (0, bytes([127, 0, 0, 1, 0xBA, 0xC0]))):
                 with self.subTest(target=target):
-                    with self.assertRaisesRegex(ValueError, "no network of its own"):
+                    with self.assertRaisesRegex(ValueError, "names no one station"):
                         await c.device(target)
-            with self.assertRaisesRegex(BacnetLookupError, "no network of its own"):
-                await c.device(7999)
-            for scope in (None, "local", local):
-                with self.subTest(scope=scope):
-                    with self.assertRaisesRegex(ValueError, "no network of its own"):
-                        c.discover(scope=scope)
-        with self.assertRaisesRegex(ValueError, "resolve_scope='local'"):
-            BACnetClient(transport="router", router=self.router, resolve_scope="local")
+            with self.assertRaisesRegex(ValueError, "names no one station"):
+                c.discover(scope=local)
+        named = BACnetClient(transport="router", router=self.router, resolve_scope="local")
+        self.assertEqual(named.resolve_scope, "local")
 
     async def test_a_router_client_given_a_scope_asks_there(self) -> None:
         # Given a network to ask on, a bare instance is looked for there.
@@ -871,6 +957,8 @@ class StubParityTests(unittest.TestCase):
             ("BacnetLookupError", ["BacnetError", "LookupError"]),
             ("BacnetAmbiguousDeviceError", ["BacnetLookupError"]),
             ("BacnetPagingError", ["BacnetError"]),
+            # A call refused for its component's state (#1833).
+            ("BacnetStateError", ["BacnetError", "RuntimeError"]),
         ):
             with self.subTest(exception=name):
                 node = stub_class(name)
@@ -880,6 +968,7 @@ class StubParityTests(unittest.TestCase):
         for attribute in ("target", "instance", "candidates"):
             self.assertIsNone(getattr(BacnetLookupError, attribute))
         self.assertIsNone(rusty_bacnet.BacnetPagingError.service)
+        self.assertIsNone(rusty_bacnet.BacnetStateError.state)
 
 
 if __name__ == "__main__":

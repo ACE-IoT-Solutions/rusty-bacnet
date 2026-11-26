@@ -104,33 +104,38 @@ class EndpointStubParityTests(unittest.TestCase):
                            "network_port_instance", "max_apdu", "segmentation",
                            "device_uuid", "queue_capacity",
                            "apdu_timeout_ms", "apdu_retries", "registered_network_port",
+                           "apdu_segment_timeout_ms",
                            "read_work_limit", "share_port_by_address", "share_wildcard_port",
                            "min_request_interval_ms", "bbmd", "foreign_device", "multicast",
                            "on_reinitialize", "after_reinitialize", "reinit_password",
-                           "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
+                           "mutation_policy", "cov_policy", "time_sync_policy", "device_storage_path",
+                           "source_audit_reporter",
                            "audit_recipient", "audit_device_bindings"]),
             (ScEndpoint, ["device_instance", "sc_hub", "sc_vmac", "sc_ca_cert",
                           "sc_client_cert", "sc_client_key", "sc_device_uuid",
                           "device_name", "vendor_id", "sc_heartbeat_interval_ms",
                           "sc_heartbeat_timeout_ms", "network_number",
                           "network_port_instance", "max_apdu", "segmentation",
-                          "queue_capacity", "read_work_limit",
+                          "apdu_segment_timeout_ms", "queue_capacity", "read_work_limit",
                           "min_request_interval_ms", "on_reinitialize",
                           "after_reinitialize", "reinit_password",
-                          "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
+                          "mutation_policy", "cov_policy", "time_sync_policy", "device_storage_path",
+                          "source_audit_reporter",
                           "audit_recipient", "audit_device_bindings", "reconnect",
                           "sc_failover_hub", "sc_connect_timeout_ms"]),
             (MstpEndpoint, ["device_instance", "serial_port", "device_name", "vendor_id",
                             "mstp_baud", "mstp_mac", "mstp_max_master",
                             "mstp_max_info_frames", "max_apdu", "segmentation",
                             "device_uuid", "queue_capacity",
-                            "apdu_timeout_ms", "apdu_retries", "read_work_limit",
+                            "apdu_timeout_ms", "apdu_retries", "apdu_segment_timeout_ms",
+                            "read_work_limit",
                             "min_request_interval_ms", "mstp_extended_frames",
                             "mstp_echo", "mstp_echo_grace_ms",
                             "mstp_transmit_latency_pad_ms", "mstp_usage_timeout_ms",
                             "mstp_reply_timeout_ms", "on_reinitialize",
                             "after_reinitialize", "reinit_password",
-                            "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
+                            "mutation_policy", "cov_policy", "time_sync_policy", "device_storage_path",
+                            "source_audit_reporter",
                             "audit_recipient", "audit_device_bindings"]),
         ]
         for cls, expected in cases:
@@ -257,15 +262,17 @@ class EndpointStubParityTests(unittest.TestCase):
                 self.assertEqual(runtime_arg_kinds(getattr(BACnetClient, name)),
                                  stub_arg_kinds(node))
         # The server role is the standalone class, whose runtime calls the
-        # endpoint's server has.
+        # endpoint's server has: the binary physical side and Polarity among
+        # them (#2594).
+        binary_io = ("set_physical_input_local", "set_polarity_local", "physical_output_local")
         for name in ("read_property", "write_property_local", "set_present_value_local",
-                     "set_reliability_local", "comm_state", "start", "stop"):
+                     "set_reliability_local", *binary_io, "comm_state", "start", "stop"):
             with self.subTest(method=name):
                 self.assertTrue(callable(getattr(BACnetServer, name)))
                 stub_method(classes["BACnetServer"], name)
         # The local changes are the server's, not the endpoint's (#2617).
         for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
-            for gone in ("set_present_value_local", "set_reliability_local"):
+            for gone in ("set_present_value_local", "set_reliability_local", *binary_io):
                 with self.subTest(cls=cls.__name__, gone=gone):
                     self.assertFalse(hasattr(cls, gone))
 

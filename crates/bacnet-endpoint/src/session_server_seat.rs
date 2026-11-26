@@ -53,10 +53,12 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///   lists what the node's client executes (I-Am, I-Have, both COV
     ///   notifications) beside the server's services (Clause 12.11.14);
     /// - Segmentation_Supported, Max_Segments_Accepted and
-    ///   APDU_Segment_Timeout are the identity's, which the server follows.
-    ///   A [`full_client`](Self::full_client) follows the Device's receive capability
-    ///   and segment timeout for incoming confirmed COV. Its outbound requests
-    ///   retain their own segmented-response acceptance;
+    ///   APDU_Segment_Timeout are the identity's, and both roles do what
+    ///   they say: the server reassembles segmented requests and segments
+    ///   its answers as the identity allows, and the
+    ///   [`client`](Self::client) follows it too, reassembling a segmented
+    ///   COV notification of either form when the identity receives
+    ///   segments (#2646);
     /// - a registered Network Port ([`with_registered_network_port`](Self::with_registered_network_port))
     ///   is the session's to reserve and publish, and the server serves it
     ///   for wildcard reads; written values take effect through the
@@ -67,8 +69,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// session without a server role ([`SessionRole::ClientOnly`]); a
     /// server role, with this builder or the default, without a Device
     /// identity ([`device`](Self::device)); a builder with a
-    /// transport, a database (give it to the session) or a registered
-    /// Network Port (name it on the session) of its own, or with device
+    /// transport, a database (give it to the session), a registered
+    /// Network Port or a Device storage path (name either on the session)
+    /// of its own, or with device
     /// settings that contradict the session's as above; a builder whose
     /// settings a server's start would refuse, which the session checks as
     /// the server will get them (policies and budgets, device bindings,
@@ -88,8 +91,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// One check needs the started link, and comes after it: target Audit's
     /// recipient as the started link sees it, an Address that names this
     /// network by its number or a group address only the bound link
-    /// reveals. Its refusal ends the session and drops the database the
-    /// server was given.
+    /// reveals. Its refusal ends the session, and the start's
+    /// [`StartError`] hands back the database (#2766).
     ///
     /// **Source Audit beside the server.** The session's source Audit
     /// sends its records through the server's pool of notifications, which
@@ -104,17 +107,18 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// request goes unanswered while the server builds. A start that fails after the server is built
     /// stops it; one cancelled there leaves it holding what waits,
     /// unanswered, until [`stop`](Self::stop) or drop. A server build that
-    /// fails or is cancelled drops the database it was given.
+    /// fails ends the session, whose start hands the database back; one
+    /// cancelled drops it.
     ///
     /// **Who answers what.** The server answers every confirmed request but
-    /// a ConfirmedCOVNotification, which is a full client's; a
-    /// ConfirmedEventNotification is the server's to acknowledge, and a full
+    /// a ConfirmedCOVNotification, which is the client's; a
+    /// ConfirmedEventNotification is the server's to acknowledge, and the
     /// client hears a copy. It hears every unconfirmed request (Who-Is among
-    /// them), as a full client does.
+    /// them), as the client does.
     ///
     /// **A server that falls behind.** The session never waits for it:
     /// what its seat's queue has no room for is dropped and counted in
-    /// [`server_seat_counters`](Self::server_seat_counters), and a full
+    /// [`server_seat_counters`](Self::server_seat_counters), and the
     /// client's traffic goes on. The queue is as deep as the session's
     /// request queue ([`SessionConfig::queue_capacity`]). Unconfirmed
     /// requests fill at most half of it, confirmed requests all but its last
@@ -124,13 +128,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// refuses work its handlers have no room for.
     ///
     /// **One pool of invoke IDs.** The server and the client roles lease
-    /// from the session's one pool of 256. The server holds at most 64 at
-    /// once: its confirmed notifications (COV, event and Audit, the source
-    /// Audit's records among them) and the reads its runs make. Past that,
-    /// each does what it does when the pool is empty: an event notification
-    /// waits for an ID, a COV notification's subscription waits for one of
-    /// the server's IDs to come back and is then looked at again, an Audit
-    /// record is counted lost. The client's requests find the rest.
+    /// from the session's one pool of 256, in which each role the session
+    /// runs keeps a reserve ([`SessionRole`], #2617). With both roles the
+    /// server always finds 64 for its confirmed notifications (COV, event
+    /// and Audit, the source Audit's records among them) and the requests
+    /// its runs make, and may hold 128; the client always finds 128 and may
+    /// hold 192. Past its share, each piece of the server's work does what
+    /// it does when the pool is empty: an event notification waits for an
+    /// ID, a COV notification's subscription waits for an ID to come back
+    /// and is then looked at again, an Audit record is counted lost or kept
+    /// for a retry. A waiting event notification is passed over by the
+    /// client only while the server holds its reserve or more.
     ///
     /// **DeviceCommunicationControl binds the node.** The standard has it
     /// bind the whole device (Clause 16.1). While the server holds a
@@ -139,15 +147,15 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// server holds its own requests and notifications, and its
     /// [`broadcast_i_am`](BACnetServer::broadcast_i_am) fails with a
     /// SERVICES / COMMUNICATION_DISABLED [`Error::Remote`], as on a
-    /// standalone server; the full client's requests and unconfirmed sends,
-    /// the narrow [`client`](Self::client)'s requests and the session's own
+    /// standalone server; the [`client`](Self::client)'s requests and
+    /// unconfirmed sends and the session's own
     /// [`broadcast_i_am`](Self::broadcast_i_am) fail with
     /// [`Error::InitiationDisabled`] and `sent: false`. A client request
     /// already waiting ends with `sent: true` when its retry falls due.
     /// Answers, and network-layer messages, still go. It ends when the
     /// control's duration runs out, on an ENABLE or an accepted WARMSTART or
     /// COLDSTART ReinitializeDevice, or when the server stops or is dropped.
-    /// A full client its operator started with
+    /// A client its operator started with
     /// [`ClientOptions::with_node_dcc_override`](bacnet_client::client::ClientOptions::with_node_dcc_override)
     /// keeps initiating; the session logs a warning then.
     pub fn with_server(mut self, builder: ServerBuilder<T>) -> Self {
@@ -207,38 +215,52 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         let Some(builder) = &self.server_builder else {
             return Ok(());
         };
-        let refused = |why: &str| Err(Error::Encoding(format!("no full server here: {why}")));
+        // Each a static label: the reason after one shared lead-in.
+        macro_rules! refused {
+            ($why:literal) => {
+                Err(Error::invalid_config(concat!(
+                    "no full server here: ",
+                    $why
+                )))
+            };
+        }
         if !matches!(self.role, SessionRole::ServerOnly | SessionRole::Both) {
-            return refused("the session has no server role (ServerOnly or Both)");
+            return refused!("the session has no server role (ServerOnly or Both)");
         }
         if self.identity.is_none() {
-            return refused(
+            return refused!(
                 "a session with a server role runs a full server, which needs the node's \
                  Device identity, its one set of device settings: compose one with device(), \
                  or make a node that only asks a SessionRole::ClientOnly session (a link \
-                 builder's role(), or the role EndpointSession::new takes)",
+                 builder's role(), or the role EndpointSession::new takes)"
             );
         }
         let facts = builder.node_facts();
         if facts.transport {
-            return refused("the builder has a transport: the server takes the session's link");
+            return refused!("the builder has a transport: the server takes the session's link");
         }
         if facts.database {
-            return refused(
+            return refused!(
                 "the builder has a database: give it to the session (with_database), whose \
-                 database the server serves",
+                 database the server serves"
             );
         }
         if facts.registered_network_port {
-            return refused(
+            return refused!(
                 "the builder names a registered Network Port: name it on the session \
-                 (with_registered_network_port), which reserves and publishes it",
+                 (with_registered_network_port), which reserves and publishes it"
+            );
+        }
+        if facts.device_storage {
+            return refused!(
+                "the builder names a Device storage path: name it on the session \
+                 (with_device_storage_path), which builds the node's Device"
             );
         }
         if self.source_audit_reporter.is_some() && facts.audit_reporters {
-            return refused(
+            return refused!(
                 "the builder has Audit Reporters beside the session's source Audit Reporter: \
-                 the Device has one Audit recipient",
+                 the Device has one Audit recipient"
             );
         }
         Ok(())
@@ -351,9 +373,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 Ok(db) => builder.database(db.into_inner()),
                 Err(db) => {
                     self.database = Some(db);
-                    return Err(Error::Encoding(
-                        "endpoint database is shared at start".into(),
-                    ));
+                    // Another holder keeps the database the server takes.
+                    return Err(Error::limit_reached("endpoint database is shared at start"));
                 }
             },
             None => builder,
@@ -377,7 +398,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 }
             }));
         }
-        let server = seated.build().await?;
+        // A refused build hands the database back (#2752), and the session
+        // holds it again: the refused start's cleanup gives it to the
+        // caller (#2766).
+        let server = match seated.build().await {
+            Ok(server) => server,
+            Err(refused) => {
+                let (error, db) = refused.into_parts();
+                self.database = db.map(|db| Arc::new(RwLock::new(db)));
+                return Err(error);
+            }
+        };
         self.database = Some(Arc::clone(server.database()));
         self.server = Some(server);
         self.server_gate = Some(gate);
@@ -388,12 +419,20 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// while the link is still up. Kept through a cancelled stop, whose
     /// next call stops it again; its error is the stop's. A server still
     /// held by an unfinished start stops without taking what it holds.
+    /// Stopped, it gives its handle on the database back once its tasks
+    /// have let go of theirs, rather than from a task of its drop, so a
+    /// refused start's cleanup leaves the session the only handle (#2766).
     pub(super) async fn stop_server(&mut self) {
         if let Some(server) = self.server.as_mut() {
             if let Err(error) = server.stop().await {
                 self.server_stop_error.get_or_insert(error);
             }
-            self.server = None;
+            if let Some(server) = self.server.take() {
+                // The session keeps its own handle: this one just goes.
+                drop(drop_database_off_runtime(
+                    server.__endpoint_into_database().await,
+                ));
+            }
         }
         self.server_gate = None;
     }
@@ -437,8 +476,13 @@ pub fn read_only_server<T: TransportPort + 'static>() -> ServerBuilder<T> {
         })
 }
 
-fn missing_ingress() -> Error {
-    Error::Encoding("endpoint session ingress owner is missing".into())
+/// A session without its ingress, which it keeps from `new` to its drop, so
+/// this is never met: one without it could never run again (#1833).
+pub(super) fn missing_ingress() -> Error {
+    Error::state(
+        bacnet_types::error::Lifecycle::Closed,
+        "endpoint session ingress owner is missing",
+    )
 }
 
 /// Pauses a test puts into a start (#2617), to widen the windows the start

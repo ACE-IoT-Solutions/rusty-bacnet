@@ -38,13 +38,17 @@
 //!   Unconfirmed-Requests do.
 //! - An APDU the classifier refuses goes to the policy queue, and is dropped
 //!   when that is full.
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use bacnet_encoding::apdu::{ConfirmedRequest, encode_apdu};
+use bacnet_types::sync::MutexExt;
+use bytes::{Bytes, BytesMut};
+
 use super::*;
-use crate::coordinator::LeaseHolder;
-use crate::seat::{Attached, SeatSlot};
+use crate::coordinator::{CanonicalPeer, LeaseHolder};
+use crate::seat::{Attached, CopyBudget, ReservedCopy, SeatSlot};
 
 /// ConfirmedCOVNotification, as a confirmed service choice octet.
 const CONFIRMED_COV_NOTIFICATION: u8 = 1;
@@ -229,7 +233,7 @@ impl IngressDrops {
 
     fn report(&self, force: bool) -> Option<DropReport> {
         let now = tokio::time::Instant::now();
-        let mut log = self.logged.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut log = self.logged.locked();
         let counters = self.counters();
         let since = counters.since(&log.reported);
         let dropped = since.total();
@@ -392,13 +396,127 @@ fn lease_holder(
         return None;
     }
     received.apdu.get(1).and_then(|invoke_id| {
-        coordinator.holder_of_source(
-            &received.source_mac,
-            received.source_network.as_ref(),
-            local_network,
-            *invoke_id,
-        )
+        coordinator
+            .holder_of_source(
+                &received.source_mac,
+                received.source_network.as_ref(),
+                local_network,
+                *invoke_id,
+            )
+            .or_else(|| {
+                relayed_to_a_client_request(coordinator, received, local_network, *invoke_id)
+            })
     })
+}
+
+/// The client, when `received` is relayed with this network as its SNET and
+/// the client has a request with its invoke ID open straight to the station
+/// its SADR names. Such an answer completes nothing (#2831), but the client
+/// takes it, to refuse it and count it in its off-path answer drops as it
+/// does on a link of its own. Looked up only for that SNET.
+fn relayed_to_a_client_request(
+    coordinator: &OutboundTransactionCoordinator,
+    received: &ReceivedApdu,
+    local_network: Option<u16>,
+    invoke_id: u8,
+) -> Option<LeaseHolder> {
+    let station = received
+        .source_network
+        .as_ref()
+        .filter(|source| !source.mac_address.is_empty() && Some(source.network) == local_network)?;
+    coordinator
+        .holder_of(&CanonicalPeer::direct(&station.mac_address), invoke_id)
+        .filter(|holder| *holder == LeaseHolder::Client)
+}
+
+/// The share of a Confirmed-Request for `service`, whole or `segmented`, of
+/// a client seat beside a server role (`server_role`) or not (see
+/// [`crate::seat`]).
+fn confirmed_share(server_role: bool, segmented: bool, service: Option<u8>) -> SeatShare {
+    if !server_role {
+        return SeatShare::Whole;
+    }
+    match service {
+        // A COV notification of either form is about the client's own
+        // subscription: the client answers it (#2654).
+        Some(CONFIRMED_COV_NOTIFICATION | CONFIRMED_COV_NOTIFICATION_MULTIPLE) => SeatShare::Whole,
+        // The server answers an event notification, and the client hears a
+        // copy of one that comes whole. Of one in segments the server hands
+        // the client the request once it is whole ([`share_reassembled`],
+        // #2743): a copy of each segment would only take the seat's room.
+        Some(CONFIRMED_EVENT_NOTIFICATION) if !segmented => SeatShare::Copy,
+        _ => SeatShare::None,
+    }
+}
+
+/// Whether a client may hear a copy of `request` once the server has
+/// reassembled it: only beside a server role, by [`confirmed_share`], so a
+/// request of any other service needs no look at the seats.
+pub(crate) fn copied_when_reassembled(request: &ConfirmedRequest) -> bool {
+    let service = Some(request.service_choice.to_raw());
+    matches!(confirmed_share(true, false, service), SeatShare::Copy)
+}
+
+/// A reassembled request's copy, with its share of the octets such copies
+/// may hold on the client seat. The share goes back when the last view of
+/// the octets drops, once the client is done with the copy.
+struct BudgetedCopy {
+    octets: BytesMut,
+    _budget: CopyBudget,
+}
+
+impl AsRef<[u8]> for BudgetedCopy {
+    fn as_ref(&self) -> &[u8] {
+        &self.octets
+    }
+}
+
+/// Offer the client seat a copy of `request`, which the server role
+/// reassembled from segments, the last of them in `last`, as ingress offers
+/// it a copy of a request that comes whole (#2743): under the same rule
+/// ([`confirmed_share`]), in the same tier of its queue, as one APDU with no
+/// reply authority, and within the octets such copies may hold
+/// ([`MAX_REASSEMBLED_COPY_OCTETS`](crate::seat::MAX_REASSEMBLED_COPY_OCTETS)).
+/// It never waits.
+///
+/// Whether the client hears it and has room for it is decided under the
+/// seats' lock before anything is made, and a refusal is counted there. The
+/// copy is made outside the lock and handed, without it, to the seat that
+/// decision was made for and no other: a client dropped and made again in
+/// between, on a new seat, gets nothing its own checks didn't admit. A seat
+/// that filled in between, or whose client is gone, drops and counts it.
+pub(crate) fn share_reassembled(seats: &SeatSlot, last: &ReceivedApdu, request: &ConfirmedRequest) {
+    let service = Some(request.service_choice.to_raw());
+    // A whole Confirmed-Request's header is 4 octets.
+    let octets = 4 + request.service_request.len();
+    let reserved = seats.with(|client, _| {
+        let client = client?;
+        let share = confirmed_share(client.roles.server, false, service);
+        if !matches!(share, SeatShare::Copy) {
+            return None;
+        }
+        seats.reserve_reassembled(client, octets)
+    });
+    let Some(ReservedCopy { seat, budget }) = reserved.flatten() else {
+        return;
+    };
+    let whole = ConfirmedRequest {
+        segmented: false,
+        more_follows: false,
+        sequence_number: None,
+        proposed_window_size: None,
+        ..request.clone()
+    };
+    let mut apdu = BytesMut::with_capacity(octets);
+    if encode_apdu(&mut apdu, &Apdu::ConfirmedRequest(whole)).is_err() {
+        return;
+    }
+    let mut copy = seat_copy(last);
+    copy.apdu = Bytes::from_owner(BudgetedCopy {
+        octets: apdu,
+        _budget: budget,
+    });
+    seats.offer_reassembled(&seat, copy);
 }
 
 /// The client seat's share of a valid APDU, from its first octets and the
@@ -413,20 +531,12 @@ fn client_share(
     let first = apdu.first().copied().unwrap_or(0);
     match (route, first >> 4) {
         (IngressRoute::InboundRequest, 1) => SeatShare::Copy,
-        (IngressRoute::InboundRequest, _) if !attached.roles.server => SeatShare::Whole,
         (IngressRoute::InboundRequest, _) => {
             // The service choice follows the sequence number and window
             // size when the request is segmented.
-            let service = if first & 0x08 == 0 { 3 } else { 5 };
-            match apdu.get(service).copied() {
-                // A COV notification of either form is about the client's
-                // own subscription: the client answers it (#2654).
-                Some(CONFIRMED_COV_NOTIFICATION | CONFIRMED_COV_NOTIFICATION_MULTIPLE) => {
-                    SeatShare::Whole
-                }
-                Some(CONFIRMED_EVENT_NOTIFICATION) => SeatShare::Copy,
-                _ => SeatShare::None,
-            }
+            let segmented = first & 0x08 != 0;
+            let service = apdu.get(if segmented { 5 } else { 3 }).copied();
+            confirmed_share(attached.roles.server, segmented, service)
         }
         (IngressRoute::TerminalOrSegment, _) if holder == Some(LeaseHolder::Client) => {
             SeatShare::Whole

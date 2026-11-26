@@ -1,8 +1,8 @@
-//! The endpoint client's minimum interval between confirmed requests to one
-//! destination, on paused time (#1542). It is `BACnetClient`'s pacer, so
-//! these check the wiring through the session: requests to one device are
-//! spaced, other devices don't wait, zero changes nothing, and a retry keeps
-//! the turn its request took.
+//! The session's client's minimum interval between confirmed requests to
+//! one destination, on paused time (#1542). The pacer is `BACnetClient`'s
+//! own, so these check that the session's configuration reaches it:
+//! requests to one device are spaced, other devices don't wait, zero
+//! changes nothing, and a retry keeps the turn its request took.
 use super::*;
 use bacnet_encoding::apdu::{ComplexAck, decode_apdu, encode_apdu};
 use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
@@ -15,6 +15,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::time::{Duration, Instant};
 
 type Sends = Arc<StdMutex<Vec<(Instant, MacAddr)>>>;
+type Client = Arc<bacnet_client::client::BACnetClient<TestTransport>>;
 
 const A: &[u8] = &[0x0A];
 const B: &[u8] = &[0x0B];
@@ -107,13 +108,13 @@ fn answer(
 }
 
 /// A started client-only session over [`devices`] with a 100 ms APDU
-/// timeout, `retries` retries and the given interval.
+/// timeout, `retries` retries and the given interval, and its client.
 async fn paced(
     interval_ms: u64,
     retries: u8,
     unanswered: usize,
     reply_after: Duration,
-) -> (EndpointSession<TestTransport>, Sends) {
+) -> (EndpointSession<TestTransport>, Client, Sends) {
     let sends = Sends::default();
     let devices = devices(&sends, unanswered, reply_after);
     let config = SessionConfig {
@@ -124,10 +125,11 @@ async fn paced(
     };
     let mut session = EndpointSession::new(devices, SessionRole::ClientOnly, config).unwrap();
     session.start().await.unwrap();
-    (session, sends)
+    let client = Arc::new(session.client().unwrap());
+    (session, client, sends)
 }
 
-async fn try_read(client: &ClientRoleHandle, mac: &[u8]) -> Result<(), Error> {
+async fn try_read(client: &Client, mac: &[u8]) -> Result<(), Error> {
     let analog = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     client
         .read_property(mac, analog, PropertyIdentifier::PRESENT_VALUE, None)
@@ -135,8 +137,8 @@ async fn try_read(client: &ClientRoleHandle, mac: &[u8]) -> Result<(), Error> {
         .map(drop)
 }
 
-async fn read(session: &EndpointSession<TestTransport>, mac: &[u8]) {
-    try_read(session.client().unwrap(), mac).await.unwrap();
+async fn read(client: &Client, mac: &[u8]) {
+    try_read(client, mac).await.unwrap();
 }
 
 /// When each request to `mac` left, relative to `start`.
@@ -156,10 +158,10 @@ fn ms(values: &[u64]) -> Vec<Duration> {
 
 #[tokio::test(start_paused = true)]
 async fn endpoint_requests_to_one_destination_are_spaced_by_the_interval() {
-    let (mut session, sends) = paced(50, 0, 0, Duration::ZERO).await;
+    let (mut session, client, sends) = paced(50, 0, 0, Duration::ZERO).await;
     let start = Instant::now();
     for _ in 0..3 {
-        read(&session, A).await;
+        read(&client, A).await;
     }
     assert_eq!(sent_to(&sends, A, start), ms(&[0, 50, 100]));
     session.stop().await.unwrap();
@@ -169,10 +171,10 @@ async fn endpoint_requests_to_one_destination_are_spaced_by_the_interval() {
 /// takes 30 ms to answer still gets the whole 50 ms before the next request.
 #[tokio::test(start_paused = true)]
 async fn an_endpoint_request_waits_the_interval_from_a_slow_answer() {
-    let (mut session, sends) = paced(50, 0, 0, Duration::from_millis(30)).await;
+    let (mut session, client, sends) = paced(50, 0, 0, Duration::from_millis(30)).await;
     let start = Instant::now();
     for _ in 0..3 {
-        read(&session, A).await;
+        read(&client, A).await;
     }
     assert_eq!(sent_to(&sends, A, start), ms(&[0, 80, 160]));
     session.stop().await.unwrap();
@@ -180,10 +182,10 @@ async fn an_endpoint_request_waits_the_interval_from_a_slow_answer() {
 
 #[tokio::test(start_paused = true)]
 async fn endpoint_requests_to_two_destinations_do_not_wait_on_each_other() {
-    let (mut session, sends) = paced(50, 0, 0, Duration::ZERO).await;
+    let (mut session, client, sends) = paced(50, 0, 0, Duration::ZERO).await;
     let start = Instant::now();
-    tokio::join!(read(&session, A), read(&session, B));
-    tokio::join!(read(&session, A), read(&session, B));
+    tokio::join!(read(&client, A), read(&client, B));
+    tokio::join!(read(&client, A), read(&client, B));
     assert_eq!(sent_to(&sends, A, start), ms(&[0, 50]));
     assert_eq!(sent_to(&sends, B, start), ms(&[0, 50]));
     session.stop().await.unwrap();
@@ -191,10 +193,10 @@ async fn endpoint_requests_to_two_destinations_do_not_wait_on_each_other() {
 
 #[tokio::test(start_paused = true)]
 async fn an_endpoint_interval_of_zero_sends_at_once() {
-    let (mut session, sends) = paced(0, 0, 0, Duration::ZERO).await;
+    let (mut session, client, sends) = paced(0, 0, 0, Duration::ZERO).await;
     let start = Instant::now();
     for _ in 0..3 {
-        read(&session, A).await;
+        read(&client, A).await;
     }
     assert_eq!(sent_to(&sends, A, start), [Duration::ZERO; 3]);
     session.stop().await.unwrap();
@@ -205,10 +207,10 @@ async fn an_endpoint_interval_of_zero_sends_at_once() {
 /// answer to the retry.
 #[tokio::test(start_paused = true)]
 async fn an_endpoint_retry_is_not_held_back_by_the_interval() {
-    let (mut session, sends) = paced(500, 1, 1, Duration::ZERO).await;
+    let (mut session, client, sends) = paced(500, 1, 1, Duration::ZERO).await;
     let start = Instant::now();
-    read(&session, A).await;
-    read(&session, A).await;
+    read(&client, A).await;
+    read(&client, A).await;
     assert_eq!(sent_to(&sends, A, start), ms(&[0, 100, 600]));
     session.stop().await.unwrap();
 }
@@ -218,8 +220,7 @@ async fn an_endpoint_retry_is_not_held_back_by_the_interval() {
 /// waiting leaves nothing behind.
 #[tokio::test(start_paused = true)]
 async fn an_endpoint_request_given_up_counts_as_finished_when_given_up() {
-    let (mut session, sends) = paced(50, 0, 1, Duration::ZERO).await;
-    let client = session.cloned_client_handle().unwrap();
+    let (mut session, client, sends) = paced(50, 0, 1, Duration::ZERO).await;
     let start = Instant::now();
     // Sent at 0, never answered, given up at 20.
     let abandoned = tokio::time::timeout(Duration::from_millis(20), try_read(&client, A)).await;
@@ -227,29 +228,49 @@ async fn an_endpoint_request_given_up_counts_as_finished_when_given_up() {
     // Due at 70; given up while waiting, at 30.
     let waiting = tokio::time::timeout(Duration::from_millis(10), try_read(&client, A)).await;
     assert!(waiting.is_err());
-    read(&session, A).await;
+    read(&client, A).await;
     assert_eq!(sent_to(&sends, A, start), ms(&[0, 70]));
     session.stop().await.unwrap();
 }
 
-/// A request waiting for its turn when the session stops fails at once
-/// with the shutdown error, rather than at its turn minutes later.
+/// A request waiting for its turn when the session stops fails at once,
+/// rather than at its turn minutes later, with the error a request the stop
+/// cut off in flight gets (#2720).
 #[tokio::test(start_paused = true)]
 async fn a_waiting_endpoint_request_fails_at_once_when_the_session_stops() {
-    let (mut session, sends) = paced(300_000, 0, 0, Duration::ZERO).await;
-    let client = session.cloned_client_handle().unwrap();
-    read(&session, A).await;
-    let waiting = tokio::spawn(async move { try_read(&client, A).await });
+    let (mut session, client, sends) = paced(300_000, 0, 0, Duration::ZERO).await;
+    read(&client, A).await;
+    let waiter = Arc::clone(&client);
+    let waiting = tokio::spawn(async move { try_read(&waiter, A).await });
     // Run until idle: the read is waiting for its turn.
     tokio::time::sleep(Duration::from_secs(1)).await;
     session.stop().await.unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(1), waiting).await;
     let error = ended.expect("ended at once").unwrap().unwrap_err();
     assert!(
-        matches!(&error, Error::Encoding(message) if message == "endpoint shutdown"),
+        matches!(error, Error::RequestCutOff { sent: false }),
         "{error:?}"
     );
     assert_eq!(sends.lock().unwrap().len(), 1);
+}
+
+/// A request already sent when the session stops is cut off as one that may
+/// have gone out (#1833): the device may have carried it out.
+#[tokio::test(start_paused = true)]
+async fn an_open_endpoint_request_is_cut_off_as_sent_when_the_session_stops() {
+    let (mut session, client, sends) = paced(0, 0, 1, Duration::ZERO).await;
+    let reader = Arc::clone(&client);
+    let open = tokio::spawn(async move { try_read(&reader, A).await });
+    // Well inside the 100 ms APDU timeout: the device stays silent.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(sends.lock().unwrap().len(), 1, "the read went out");
+    session.stop().await.unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(1), open).await;
+    let error = ended.expect("ended at once").unwrap().unwrap_err();
+    assert!(
+        matches!(error, Error::RequestCutOff { sent: true }),
+        "{error:?}"
+    );
 }
 
 /// More than an hour is refused when the session is made, as
@@ -266,5 +287,9 @@ fn an_endpoint_interval_past_an_hour_is_refused() {
     };
     let hour = bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS;
     assert!(new(hour).is_ok());
-    assert!(matches!(new(hour + 1), Err(Error::Encoding(_))));
+    assert!(matches!(
+        new(hour + 1),
+        Err(Error::InvalidConfig(text)) if text.to_string()
+            == "endpoint session min-request-interval 3600001 ms is more than 3600000 ms"
+    ));
 }

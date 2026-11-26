@@ -7,9 +7,9 @@
 #![forbid(unsafe_code)]
 
 use std::future::Future;
+use std::net::Ipv4Addr;
 use std::pin::Pin;
 use std::time::Duration;
-use std::{io::IsTerminal, net::Ipv4Addr};
 
 use crate::destination::Destination;
 use bacnet_client::client::BACnetClient;
@@ -28,6 +28,7 @@ mod decode;
 mod destination;
 mod entry;
 mod foreign;
+mod formats;
 mod heap;
 #[cfg(feature = "mcp")]
 mod mcp;
@@ -50,23 +51,6 @@ use args::{Cli, Command};
 use bip_commands::execute_bip_command;
 use heap::boxed;
 use output::OutputFormat;
-
-fn resolve_format(cli: &Cli) -> OutputFormat {
-    if cli.json {
-        return OutputFormat::Json;
-    }
-    match cli.format.as_deref() {
-        Some("json") => OutputFormat::Json,
-        Some("table") => OutputFormat::Table,
-        _ => {
-            if std::io::stdout().is_terminal() {
-                OutputFormat::Table
-            } else {
-                OutputFormat::Json
-            }
-        }
-    }
-}
 
 /// A boxed future, as the one-shot dispatch's helpers return them (see
 /// [`heap`]).
@@ -100,8 +84,9 @@ fn routed_wait() -> Duration {
 }
 
 /// Resolve a device command's target string: besides an address or a
-/// discovered instance, it takes `dnet:instance` and `dnet:0xMAC` for a
-/// device behind a router. Boxed, as each command is (see [`heap`]).
+/// discovered instance, it takes `dnet:instance` and `dnet:0xMAC` (with
+/// `:one-station` for a MAC that looks like a broadcast) for a device
+/// behind a router. Boxed, as each command is (see [`heap`]).
 fn resolve_destination<'a, T: TransportPort + 'static>(
     client: &'a BACnetClient<T>,
     target_str: &'a str,
@@ -117,9 +102,6 @@ async fn execute_command<T: TransportPort + 'static>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Plain `bacnet` became `tui` while parsing (see `entry`).
     let cmd = cli.command.as_ref().expect("a command after parsing");
-    // `--format csv` is the inventory's alone; `--json` outranks it, as it
-    // does `--format table`.
-    let csv = !cli.json && cli.format.as_deref() == Some("csv");
     match cmd {
         Command::Tui { .. }
         | Command::Mcp { .. }
@@ -188,21 +170,8 @@ async fn execute_command<T: TransportPort + 'static>(
         Command::Export { format } => {
             boxed(|| commands::export::export_cmd(client, format)).await?
         }
-        Command::Inventory {
-            target,
-            types,
-            values,
-            settings,
-            csv_exact,
-        } => {
-            let args = commands::inventory::InventoryArgs {
-                target,
-                types,
-                values: *values,
-                settings: *settings,
-                csv_exact: *csv_exact,
-                layout: commands::inventory::Layout::of(csv, format),
-            };
+        Command::Inventory { .. } => {
+            let args = commands::inventory::InventoryArgs::of(cmd, formats::layout(cli));
             boxed(|| commands::inventory::inventory_cmd(client, args)).await?;
         }
         Command::Readm { target, specs } => {
@@ -355,9 +324,9 @@ async fn execute_command<T: TransportPort + 'static>(
         | Command::Unregister { .. } => {
             return Err("BBMD management commands (bdt, fdt, register, unregister) are only supported on BACnet/IP transport".into());
         }
-        Command::WhoisRouter { dnet, via, wait } => {
+        Command::WhoisRouter { dnet, router, wait } => {
             boxed(|| {
-                commands::router::whois_router_cmd(client, *dnet, via.as_deref(), *wait, format)
+                commands::router::whois_router_cmd(client, *dnet, router.as_deref(), *wait, format)
             })
             .await?;
         }
@@ -503,15 +472,21 @@ fn main() -> std::process::ExitCode {
     })
 }
 
-/// Write a fatal error as `Error: ` and its Display text, then each source
-/// whose text the line doesn't already hold, after `: `. Most errors here
-/// put their source in their own message, and that isn't repeated. A
-/// BACnet/SC connection failure ends with its error code by name (#2438).
+/// Write a fatal error as `Error: ` and its [`error_text`].
 fn report(
     error: &(dyn std::error::Error + 'static),
     out: &mut dyn std::io::Write,
 ) -> std::io::Result<()> {
-    let mut line = format!("Error: {error}");
+    writeln!(out, "Error: {}", error_text(error))
+}
+
+/// A fatal error's text: its Display text, then each source whose text the
+/// line doesn't already hold, after `: `. Most errors here put their source
+/// in their own message, and that isn't repeated. A BACnet/SC connection
+/// failure ends with its error code by name (#2438). Stderr gets it after
+/// `Error: `, and a JSON stream that fails ends with it (#2783).
+pub(crate) fn error_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut line = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
         let text = cause.to_string();
@@ -524,7 +499,33 @@ fn report(
     if let Some(code) = sc_error_code(error) {
         line.push_str(&format!(" (BACnet/SC error code {code})"));
     }
-    writeln!(out, "{line}")
+    if loopback_broadcast_refused(error) {
+        line.push_str(" (the -b/--broadcast option)");
+    }
+    line
+}
+
+/// Whether `error` or one of its sources is a broadcast a B/IP transport
+/// on a loopback interface refused (#2691), whose message can't name the
+/// CLI's option.
+fn loopback_broadcast_refused(error: &(dyn std::error::Error + 'static)) -> bool {
+    use bacnet_transport::bip::LoopbackBroadcastRefused as Refused;
+    let mut next = Some(error);
+    while let Some(error) = next {
+        let found = match (
+            error.downcast_ref::<bacnet_types::error::Error>(),
+            error.downcast_ref::<std::io::Error>(),
+        ) {
+            (Some(bacnet), _) => Refused::from_error(bacnet).is_some(),
+            (_, Some(io)) => Refused::from_io_error(io).is_some(),
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+        next = error.source();
+    }
+    false
 }
 
 /// The error code Annex AB.7.5 gives a failed BACnet/SC connection, when
@@ -553,11 +554,16 @@ fn dispatch(
     confirm: &mut dyn guard::Confirm,
     network: impl FnOnce(Cli) -> CliResult,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+    // A format the command doesn't print is a usage error, before anything
+    // else runs (#2778).
+    if let Some(status) = formats::refuse(&cli) {
+        return Ok(status);
+    }
     if let Some(Command::ScCheck { at_unix }) = cli.command {
         let status = sc_check::execute(
             &cli,
             at_unix,
-            resolve_format(&cli),
+            formats::output(&cli),
             &mut std::io::stdout().lock(),
             &mut std::io::stderr().lock(),
         );
@@ -566,7 +572,7 @@ fn dispatch(
     if let Some(Command::MstpPorts) = cli.command {
         let status = mstp::ports_cmd(
             mstp::list_ports(),
-            resolve_format(&cli),
+            formats::output(&cli),
             &mut std::io::stdout().lock(),
             &mut std::io::stderr().lock(),
         );
@@ -574,7 +580,7 @@ fn dispatch(
     }
     if let Err(refusal) = guard_one_shot(&cli, confirm) {
         // Errors go to stderr and leave stdout empty, in either format.
-        match resolve_format(&cli) {
+        match formats::output(&cli) {
             OutputFormat::Json => eprintln!("{}", refusal.to_json()),
             OutputFormat::Table => output::print_error(&refusal.message),
         }
@@ -640,7 +646,7 @@ async fn cli_main(cli: Box<Cli>) -> CliResult {
         return boxed(|| run_mcp(*cli)).await;
     }
     output::setup_tracing(cli.verbose);
-    let format = resolve_format(&cli);
+    let format = formats::output(&cli);
 
     // A one-shot binds --interface, or every interface without it.
     let interface = cli.interface.unwrap_or(Ipv4Addr::UNSPECIFIED);

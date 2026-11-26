@@ -184,23 +184,29 @@ class WhoHasScopeTests(ForeignClient):
 
 
 class RouterApplicationScopeTests(unittest.TestCase):
-    def test_a_local_who_is_on_a_router_application_names_the_scopes_to_use(self):
+    def test_a_station_address_on_a_router_application_names_what_to_pass(self):
+        # The application is on each of the router's networks, so a local
+        # scope asks them all (#2601), but a station's address names no one
+        # of them: refused before anything is sent.
         router = BACnetRouter([BipRouterPort(1, interface="127.0.0.1", port=0)],
                               application="client")
         client = BACnetClient(transport="router", router=router)
+        station = {"scope": "192.168.1.10"}
         for call in (client.who_is, client.discover):
-            for scope in ({}, {"scope": "local"}):
-                with self.subTest(call=call.__name__, scope=scope):
-                    with self.assertRaisesRegex(ValueError, "local Who-Is: pass scope=<network number>.*scope='global'"):
-                        call(**scope)
+            with self.subTest(call=call.__name__):
+                with self.assertRaisesRegex(
+                        ValueError, "names no one station for a directed Who-Is: pass a RoutedTarget"):
+                    call(**station)
         oid = ObjectIdentifier(ObjectType.ANALOG_VALUE, 1)
         for name, call in (("who_has_by_id", lambda **s: client.who_has_by_id(oid, **s)),
                            ("who_has_by_name", lambda **s: client.who_has_by_name("AV-1", **s)),
                            ("who_has_replies", lambda **s: client.who_has_replies(oid, **s))):
-            for scope in ({}, {"scope": "local"}):
-                with self.subTest(call=name, scope=scope):
-                    with self.assertRaisesRegex(ValueError, "local Who-Has: pass scope=<network number>.*scope='global'"):
-                        call(**scope)
+            with self.subTest(call=name):
+                with self.assertRaisesRegex(
+                        ValueError, "names no one station for a directed Who-Has: pass scope=<network number>"):
+                    call(**station)
+        # The local scope is the default there too.
+        self.assertEqual(client.resolve_scope, "local")
 
 
 class DiscoverySignatureTests(unittest.TestCase):
@@ -240,11 +246,11 @@ class DiscoverySignatureTests(unittest.TestCase):
                                  & set(runtime.parameters))
                 self.assertEqual(keyword_only, {arg.arg for arg in method.args.kwonlyargs})
         routers = inspect.signature(BACnetClient.discover_routers).parameters
-        self.assertIsNone(routers["destination"].default)
-        self.assertIs(routers["destination"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIsNone(routers["router"].default)
+        self.assertIs(routers["router"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIs(routers["wait"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual([arg.arg for arg in self.stub_method("discover_routers").args.kwonlyargs],
-                         ["destination", "wait"])
+                         ["router", "wait"])
         for name in ("who_is", "discover", "who_has_by_id", "who_has_by_name", "who_has_replies"):
             with self.subTest(method=name):
                 scope = inspect.signature(getattr(BACnetClient, name)).parameters["scope"]

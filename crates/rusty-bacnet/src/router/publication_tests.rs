@@ -1,5 +1,5 @@
 use super::super::application::Application;
-use super::super::config::PortConfig;
+use super::super::config::{PortConfig, RouterSettings};
 use super::*;
 use bacnet_transport::bip::BipMode;
 use tokio::sync::oneshot;
@@ -15,8 +15,10 @@ async fn started() -> (Lifecycle<NativeSession>, u64) {
                     port: 0,
                     broadcast: std::net::Ipv4Addr::LOCALHOST,
                     mode: BipMode::Normal,
+                    isolated: false,
                 }],
                 Application::None,
+                RouterSettings::default(),
             )
         })
         .await
@@ -37,7 +39,10 @@ async fn lost_publication_at_each_bridge_boundary_joins_its_generation() {
         Python::attach(|py| publication.put_back(py, py.None(), via));
         publication.settled();
         done.await.unwrap();
-        assert!(owner.inspect(|_| ()).await.is_none());
+        assert_eq!(
+            owner.inspect(|_| ()).await,
+            Err(bacnet_types::error::Lifecycle::NotRunning)
+        );
         owner.close().await.unwrap();
     }
 }
@@ -51,7 +56,10 @@ async fn unsettled_drop_cleans_but_a_delivered_result_keeps_ownership() {
     *publication.completed.lock().unwrap() = Some(tx);
     drop(publication);
     done.await.unwrap();
-    assert!(owner.inspect(|_| ()).await.is_none());
+    assert_eq!(
+        owner.inspect(|_| ()).await,
+        Err(bacnet_types::error::Lifecycle::NotRunning)
+    );
     let (owner, generation) = started().await;
     let publication = Publication::new(owner.clone());
     publication.arm(generation);
@@ -60,7 +68,7 @@ async fn unsettled_drop_cleans_but_a_delivered_result_keeps_ownership() {
     publication.settled();
     drop(publication);
     assert!(done.await.is_err());
-    assert!(owner.inspect(|_| ()).await.is_some());
+    assert!(owner.inspect(|_| ()).await.is_ok());
     owner.close().await.unwrap();
 }
 
@@ -76,8 +84,14 @@ async fn unread_start_and_context_entry_clean_before_publication_is_armed() {
             port: 0,
             broadcast: std::net::Ipv4Addr::LOCALHOST,
             mode: BipMode::Normal,
+            isolated: false,
         }];
-        let mut start = Box::pin(publication.start(reenter, configs, Application::None));
+        let mut start = Box::pin(publication.start(
+            reenter,
+            configs,
+            Application::None,
+            RouterSettings::default(),
+        ));
         std::future::poll_fn(|cx| {
             assert!(start.as_mut().poll(cx).is_pending());
             std::task::Poll::Ready(())
@@ -95,7 +109,10 @@ async fn unread_start_and_context_entry_clean_before_publication_is_armed() {
         // Keep the unarmed Publication alive: only the unread receipt can
         // initiate cleanup. Completion is observed after native owner drop.
         done.await.unwrap();
-        assert!(owner.inspect(|_| ()).await.is_none());
+        assert_eq!(
+            owner.inspect(|_| ()).await,
+            Err(bacnet_types::error::Lifecycle::NotRunning)
+        );
         let rebound = std::net::UdpSocket::bind(address).unwrap();
         drop(rebound);
         owner.close().await.unwrap();
@@ -117,15 +134,17 @@ async fn successful_receipt_transfer_arms_the_guard_and_keeps_delivered_owner() 
                     port: 0,
                     broadcast: std::net::Ipv4Addr::LOCALHOST,
                     mode: BipMode::Normal,
+                    isolated: false,
                 }],
                 Application::None,
+                RouterSettings::default(),
             )
             .await
             .unwrap();
         assert_ne!(publication.generation.load(Ordering::SeqCst), 0);
         publication.settled();
         drop(publication);
-        assert!(owner.inspect(|_| ()).await.is_some());
+        assert!(owner.inspect(|_| ()).await.is_ok());
         owner.close().await.unwrap();
     }
 }

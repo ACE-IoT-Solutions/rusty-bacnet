@@ -44,9 +44,9 @@ pub(super) fn wire_port(
                     count_forward: false,
                 }
             };
-            let queued = outgoing
-                .try_send(request)
-                .map_err(|_| Error::Encoding("test wire queue unavailable".into()));
+            let queued = outgoing.try_send(request).map_err(|_| {
+                Error::Transport(std::io::Error::other("test wire queue unavailable"))
+            });
             async move { queued }
         })
         .build()
@@ -70,10 +70,7 @@ pub(super) fn fixture(count: usize) -> (Vec<RouterPort<TestTransport>>, Vec<Peer
             let (tx, rx) = mpsc::channel(1024);
             let (outgoing, wire) = mpsc::channel(32);
             (
-                RouterPort {
-                    transport: wire_port(port as u8 + 1, rx, outgoing),
-                    network_number: network(port),
-                },
+                RouterPort::new(wire_port(port as u8 + 1, rx, outgoing), network(port)),
                 Peer { tx, wire },
             )
         })

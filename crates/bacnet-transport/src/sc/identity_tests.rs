@@ -60,14 +60,22 @@ fn fixture(vmac: Vmac) -> (ScTransport<CountedSocket>, LoopbackWebSocket, Arc<Co
         let counts = counts.clone();
         move || {
             counts.primary_dials.fetch_add(1, Ordering::SeqCst);
-            async { Err(Error::Encoding("unexpected primary dial".into())) }
+            async {
+                Err(Error::Transport(std::io::Error::other(
+                    "unexpected primary dial",
+                )))
+            }
         }
     })
     .with_failover_connector({
         let counts = counts.clone();
         move || {
             counts.failover_dials.fetch_add(1, Ordering::SeqCst);
-            async { Err(Error::Encoding("unexpected failover dial".into())) }
+            async {
+                Err(Error::Transport(std::io::Error::other(
+                    "unexpected failover dial",
+                )))
+            }
         }
     });
     (transport, hub, counts)
@@ -104,6 +112,28 @@ fn assert_untouched(
     assert_eq!(transport.device_uuid, uuid);
 }
 
+/// A restore goodbye left in a poisoned slot is still joined by a stop, and
+/// once (#2559): the stop takes the slot as the panic left it, where it once
+/// left the task running.
+#[tokio::test(start_paused = true)]
+async fn stop_joins_a_restore_goodbye_in_a_poisoned_slot() {
+    let (transport, _hub, _counts) = fixture(VMAC);
+    let slot = Arc::clone(&transport.restore_disconnect_task);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = slot.lock();
+        panic!("poison the restore slot");
+    }));
+    assert!(unwound.is_err() && slot.is_poisoned());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let run = Arc::clone(&runs);
+    *slot.locked() = Some(tokio::spawn(async move {
+        run.fetch_add(1, Ordering::SeqCst);
+    }));
+    transport.stop().await.unwrap();
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert!(slot.locked().is_none());
+}
+
 async fn reject_identity(vmac: Vmac, uuid: Option<[u8; 16]>, expected: &str) {
     let (mut transport, hub, counts) = fixture(vmac);
     if let Some(uuid) = uuid {
@@ -113,7 +143,7 @@ async fn reject_identity(vmac: Vmac, uuid: Option<[u8; 16]>, expected: &str) {
     for _ in 0..2 {
         let error = transport.start().await.unwrap_err();
         assert!(
-            matches!(&error, Error::Encoding(message) if message == expected),
+            matches!(&error, Error::InvalidConfig(message) if message.to_string() == expected),
             "expected {expected}, got {error:?}; counts={counts:?}; state={:?}; connection={}",
             *states.borrow(),
             transport.connection().is_some()
@@ -194,20 +224,23 @@ async fn reconnect_then_heartbeat_then_identity_error_precedence() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 0,
             max_delay_ms: 1,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         });
     let states = transport.connection_state_changes();
     let error = transport.start().await.unwrap_err();
-    assert!(matches!(error, Error::OutOfRange(message) if message.contains("reconnect")));
+    assert!(
+        matches!(error, Error::InvalidConfig(message) if message.to_string().contains("reconnect"))
+    );
     assert_untouched(&transport, &counts, &states, [0; 6], [0; 16]);
     transport = transport.with_reconnect(ScReconnectConfig::default());
     let error = transport.start().await.unwrap_err();
-    assert!(matches!(error, Error::OutOfRange(message) if message.contains("heartbeat interval")));
+    assert!(
+        matches!(error, Error::InvalidConfig(message) if message.to_string().contains("heartbeat interval"))
+    );
     assert_untouched(&transport, &counts, &states, [0; 6], [0; 16]);
     transport = transport.with_heartbeat_interval_ms(30_000);
     let error = transport.start().await.unwrap_err();
-    assert!(matches!(error, Error::Encoding(message) if message == UUID_ERROR));
+    assert!(matches!(error, Error::InvalidConfig(message) if message.to_string() == UUID_ERROR));
     assert_untouched(&transport, &counts, &states, [0; 6], [0; 16]);
 }
 

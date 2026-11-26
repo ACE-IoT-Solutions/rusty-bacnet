@@ -51,8 +51,18 @@ async fn strict_admission_checks_the_wire_source_process_object_and_device() {
     let route = Some((55, remote));
     let _lease = pair
         .client
-        .expect_confirmed_cov(Station::routed(&PEER, 55, remote), 6, object, Some(100))
+        .expect_confirmed_cov(
+            Station::routed(&PEER, 55, remote).one_station(),
+            6,
+            object,
+            Some(100),
+        )
         .unwrap();
+    assert!(matches!(
+        pair.client
+            .expect_confirmed_cov(Station::routed(&PEER, 55, remote), 6, object, Some(100)),
+        Err(Error::InvalidArgument(_))
+    ));
     let other = pair
         .client
         .expect_confirmed_cov(Station::routed(&[0x99], 56, remote), 6, object, None)

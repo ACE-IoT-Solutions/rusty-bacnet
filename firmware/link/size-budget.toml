@@ -868,6 +868,54 @@
 # read plan's row source (114) and the list, rename and backup upkeep in
 # `add`, `remove` and the write path (about 280), with the Device's own
 # list code 212 less. Every budget stays.
+#
+# On 2026-11-20 (#2684, Rust 1.99.0) the router's budgets for text, rodata
+# and flash were raised to --suggest's (decision of the maintainer that
+# day), for port isolation: a router can mark ports as isolated, carry
+# nothing between two of them and hide each from the other. It is a flag
+# on a port at run time, so the two-port image links all of it although it
+# marks none: the checks on the forwarding, answering and relaying paths,
+# the split relay of network lists, the search that remembers which ports
+# it left out, the reject for a blocked sender and the refusal of route
+# moves onto an isolated port. As text / rodata / data / bss, then flash /
+# ram, before (the branch it sits on, 6e260eef6) and after:
+#
+#   thumbv7m router     41996 / 1428 / 0 / 15632   44448 / 15632
+#                       44484 / 1428 / 0 / 15640   46936 / 15640
+#   thumbv6m router     45204 / 1436 / 0 / 15632   46832 / 15632
+#                       47968 / 1436 / 0 / 15640   49596 / 15640
+#   riscv32imc router   48652 / 1956 / 0 / 15632   50630 / 15632
+#                       51612 / 1972 / 0 / 15640   53606 / 15640
+#   thumbv7em router    41884 / 1428 / 0 / 15632   44336 / 15632
+#                       44376 / 1428 / 0 / 15640   46828 / 15640
+#
+# .text is 2,488 / 2,764 / 2,960 / 2,492 octets larger. The contributed
+# feature alone was 1,852 / 2,140 / 2,428 / 1,852 of that (measured on
+# dfe7a4289), which already put riscv32imc over; the rest is the reject,
+# the two counts and the refusals, 140 to 188 of it for settling a
+# refusal over a whole I-Am-Router before any of it is learned. .bss is 8
+# octets larger, the two new u32 counts in the router's storage; the .bss
+# and ram budgets stay at 17,376. The other images are unchanged.
+#
+# On 2026-11-22 (#2395 and #2407, Rust 1.99.0, dev at eb05b52ab) a peer may
+# write the Device clock's zone, behind bacnet-objects' and
+# bacnet-device-core's `zone-writes` feature, which no image turns on, and
+# a Device's Tags file and the Audit Log's slot can hold more. As flash,
+# dev then this change, and in brackets with `zone-writes` on in the
+# objects images; RAM, the memmove counts and the 32 images without a
+# database unchanged:
+#
+#   thumbv7m      objects 143952, 144108 (147752)    points 185068, 185212 (188864)
+#                 reporting 254176, 254472 (256948)  enrollment 326768, 326980 (329860)
+#   thumbv7em     objects 143768, 143924 (147540)    points 185004, 185140 (188764)
+#                 reporting 253540, 253828 (256380)  enrollment 326628, 326812 (329820)
+#   riscv32imac   objects 172618, 172898 (177058)    points 221886, 222170 (226338)
+#                 reporting 308622, 309062 (312354)  enrollment 396650, 397050 (400358)
+#
+# 136 to 440 octets of flash without the feature, from the code it doesn't
+# gate (the Tags format's zone section, the Device's check of a loaded
+# zone and the clock port's three provided methods; not measured part by
+# part). With it, 2.8 to 4.5 KB. Every budget stays.
 
 [thumbv7m-none-eabi.mstp]
 text = 18320
@@ -936,11 +984,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7m-none-eabi.router]
-text = 44416
-rodata = 1456
+text = 49824
+rodata = 1600
 data = 64
 bss = 17376
-flash = 47024
+flash = 52576
 ram = 17376
 fmt_functions = 0
 div64_functions = 0
@@ -1068,11 +1116,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv6m-none-eabi.router]
-text = 47376
-rodata = 1472
+text = 53728
+rodata = 1616
 data = 64
 bss = 17376
-flash = 49056
+flash = 55552
 ram = 17376
 fmt_functions = 0
 div64_functions = 0
@@ -1160,11 +1208,11 @@ memmove_functions = 0
 # measures 51,168 text and 53,170 flash bytes. These two budgets include
 # the usual 12% headroom. Its 15,744-byte static stays entirely in BSS.
 [riscv32imc-unknown-none-elf.router]
-text = 57312
-rodata = 2048
+text = 57808
+rodata = 2208
 data = 64
 bss = 17376
-flash = 59552
+flash = 60048
 ram = 17376
 fmt_functions = 0
 div64_functions = 0
@@ -1248,11 +1296,11 @@ div64_functions = 0
 memmove_functions = 0
 
 [thumbv7em-none-eabihf.router]
-text = 44240
-rodata = 1456
+text = 49712
+rodata = 1600
 data = 64
 bss = 17376
-flash = 46848
+flash = 52448
 ram = 17376
 fmt_functions = 0
 div64_functions = 0

@@ -18,9 +18,10 @@ use std::time::Duration;
 
 use super::*;
 
-/// The error kind every send after a stop fails with.
+/// The error every send after a stop fails with: the transport starts again,
+/// so it is not running (#1833).
 fn stopped(sent: &Result<(), Error>) -> bool {
-    matches!(sent, Err(Error::Transport(io)) if io.kind() == std::io::ErrorKind::NotConnected)
+    matches!(sent, Err(Error::State(Lifecycle::NotRunning, _)))
 }
 
 /// A started transport on loopback, shared, its socket, watched but not
@@ -102,6 +103,29 @@ async fn a_stop_with_another_holder_alive_fails_every_later_send_and_frees_the_p
     assert!(rx.recv().await.is_none(), "the receiver ends");
     // Idempotent: a second stop finds nothing to do.
     other.stop().await.unwrap();
+}
+
+/// A send before start is refused as the state it finds, not running, as
+/// one after a stop is, and so is a second start while the transport runs
+/// (#1833): each is the transport's own refusal, with nothing sent.
+#[tokio::test]
+async fn a_send_before_start_and_a_second_start_are_state_refusals() {
+    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    let (peer, mac) = peer();
+    for sent in [
+        transport.send_unicast(&[0x01, 0x00], &mac).await,
+        transport.send_broadcast(&[0x01, 0x00]).await,
+    ] {
+        assert!(stopped(&sent), "{sent:?}");
+    }
+    let _rx = transport.start().await.unwrap();
+    let again = transport.start().await;
+    assert!(
+        matches!(&again, Err(Error::State(Lifecycle::AlreadyStarted, _))),
+        "{again:?}"
+    );
+    assert!(received_nothing(&peer));
+    transport.stop().await.unwrap();
 }
 
 /// Two stops at once both succeed, and the second, which comes while the
@@ -247,4 +271,47 @@ async fn a_waiting_send_wakes_at_the_stop() {
         .unwrap();
     assert!(stopped(&sent));
     assert!(received_nothing(&peer));
+}
+
+/// An abort through a shared reference (#2617): every later send fails
+/// with the stopped error at once, the socket closes as the runtime drops
+/// the aborted tasks, and a start is refused until a stop has joined them;
+/// then the transport starts again, as after any stop. Each run starts on
+/// a fresh port; see `restart` for why it can lose it.
+#[tokio::test]
+async fn an_abort_fails_later_sends_and_a_start_waits_for_a_stop() {
+    for attempt in 1..=crate::port_ownership::ATTEMPTS {
+        let (transport, socket, mut rx) = shared().await;
+        let other = Arc::clone(&transport);
+        let (_peer, mac) = peer();
+        other.abort();
+        for sent in [
+            transport.send_unicast(&[0x01, 0x00], &mac).await,
+            transport.send_broadcast(&[0x01, 0x00]).await,
+        ] {
+            assert!(stopped(&sent), "{sent:?}");
+        }
+        assert!(rx.recv().await.is_none(), "the receiver ends");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !closed(&socket) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the socket closed");
+        drop(other);
+        let mut transport = Arc::into_inner(transport).unwrap();
+        let refused = transport.start().await;
+        assert!(
+            matches!(&refused, Err(Error::State(Lifecycle::Stopping, _))),
+            "{refused:?}"
+        );
+        transport.stop().await.unwrap();
+        let Some(started) = crate::port_ownership::restart(&mut transport, attempt).await else {
+            continue;
+        };
+        let _rx = started.unwrap();
+        transport.stop().await.unwrap();
+        return;
+    }
 }

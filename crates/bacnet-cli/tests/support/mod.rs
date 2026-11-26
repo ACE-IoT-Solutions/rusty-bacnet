@@ -13,6 +13,9 @@ pub mod paused;
 pub mod relay;
 #[cfg(feature = "sc-tls")]
 pub mod sc;
+pub mod sender;
+pub mod stream;
+pub mod unsent;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 

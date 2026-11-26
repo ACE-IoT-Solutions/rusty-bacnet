@@ -101,10 +101,12 @@ fn mstp_python_wrapper_owns_one_serial_and_returns_none() {
         16,
         6000,
         0,
+        5000,
         256,
         0,
         false,
         false,
+        None,
         None,
         None,
         None,
@@ -326,10 +328,12 @@ fn mstp_python_wrapper_applies_its_read_work_limit() {
         16,
         6000,
         0,
+        5000,
         2,
         0,
         false,
         false,
+        None,
         None,
         None,
         None,
@@ -434,10 +438,12 @@ fn mstp_python_wrapper_hands_out_a_bacnet_client() {
         16,
         6000,
         0,
+        5000,
         256,
         0,
         false,
         false,
+        None,
         None,
         None,
         None,
@@ -478,9 +484,17 @@ async def refused(call, kind):
         await call()
     except Exception as error:
         assert type(error).__name__ == kind, repr(error)
+        return error
     else:
         raise AssertionError(f"{call} was not refused")
+async def not_running(call):
+    # Before start and after close (#2819): the endpoint can start.
+    error = await refused(call, "BacnetStateError")
+    assert isinstance(error, RuntimeError) and error.state == "not_running", repr(error)
+    assert str(error).startswith("endpoint not started"), repr(error)
 async def go():
+    for call in (endpoint.status, endpoint.broadcast_i_am):
+        await not_running(call)
     await endpoint.start()
     client = await endpoint.client()
     assert type(client).__name__ == "BACnetClient", type(client)
@@ -492,7 +506,11 @@ async def go():
     fresh = await endpoint.client()
     assert fresh is not client
     await endpoint.close()
-    await refused(fresh.who_is, "RuntimeError")
+    # The endpoint's client never starts again (#2819): still a RuntimeError.
+    stopped = await refused(fresh.who_is, "BacnetStateError")
+    assert isinstance(stopped, RuntimeError) and stopped.state == "closed", repr(stopped)
+    for call in (endpoint.status, endpoint.broadcast_i_am):
+        await not_running(call)
 asyncio.run(go())
 "#
             ),

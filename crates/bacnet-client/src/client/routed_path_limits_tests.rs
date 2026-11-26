@@ -1,6 +1,8 @@
 use super::*;
+use crate::tsm::CompletionOutcome;
 use bacnet_encoding::npdu::Npdu;
 use bacnet_network::layer::ReceivedNetworkControl;
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bytes::Bytes;
@@ -9,7 +11,7 @@ use bytes::Bytes;
 fn conservative_and_configured_npdu_envelopes_use_forwarded_source() {
     let header = forwarded_npci_len(6, 6).unwrap();
     assert_eq!(header, 21);
-    assert_eq!(CONSERVATIVE_ROUTED_PATH_MAX_NPDU - header, 207);
+    assert_eq!(DEFAULT_ROUTED_PATH_MAX_NPDU - header, 207);
     assert_eq!(1497 - header, 1476);
     assert_eq!(forwarded_npci_len(1, 1).unwrap(), 11);
     assert_eq!(forwarded_npci_len(4, 6).unwrap(), 19);
@@ -33,11 +35,11 @@ fn routed_unicast_needs_one_remote_network_and_one_station() {
     for (dnet, dadr_len) in [(0, 6), (u16::MAX, 6), (100, 0), (100, 19)] {
         assert!(matches!(
             check_routed_unicast(dnet, dadr_len),
-            Err(Error::Encoding(_))
+            Err(Error::InvalidArgument(_))
         ));
     }
     assert!(matches!(forwarded_npci_len(0, 6),
-        Err(Error::Encoding(m)) if m == "routed destination MAC address must contain 1..=18 octets"));
+        Err(Error::InvalidArgument(m)) if m.to_string() == "routed destination MAC address must contain 1..=18 octets"));
 }
 
 /// Every MAC a routed path carries holds to [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN)
@@ -48,16 +50,16 @@ async fn routed_path_macs_hold_to_the_npdu_address_bound() {
     let longest = bacnet_npdu::MAX_MAC_LEN;
     assert_eq!(forwarded_npci_len(longest, longest).unwrap(), 45);
     assert!(matches!(forwarded_npci_len(6, longest + 1),
-        Err(Error::Encoding(m)) if m == "local source MAC address for routed forwarding must contain 1..=18 octets"));
+        Err(Error::InvalidConfig(m)) if m.to_string() == "local source MAC address for routed forwarding must contain 1..=18 octets"));
     assert!(matches!(forwarded_npci_len(longest + 1, 6),
-        Err(Error::Encoding(m)) if m == "routed destination MAC address must contain 1..=18 octets"));
+        Err(Error::InvalidArgument(m)) if m.to_string() == "routed destination MAC address must contain 1..=18 octets"));
 
     let limits = Arc::new(RoutedPathLimits::with_capacity(
         4,
         Duration::from_millis(10),
     ));
     assert!(matches!(limits.acquire(&[2; 19], 100).await,
-        Err(Error::Encoding(m)) if m == "immediate router MAC address must contain 1..=18 octets"));
+        Err(Error::InvalidArgument(m)) if m.to_string() == "immediate router MAC address must contain 1..=18 octets"));
     assert!(limits.state().entries.is_empty());
     drop(limits.acquire(&[2; 18], 100).await.unwrap());
     assert_eq!(limits.state().entries.len(), 1);
@@ -75,6 +77,7 @@ async fn claimed_control_cannot_complete_reused_invoke_id_for_new_owner() {
         router_mac: &router,
         dest_network: 100,
         dest_mac: &dadr,
+        one_station: false,
     };
     let _lease = limits.acquire(&router, 100).await.unwrap();
     let tsm_mac = target.transaction_peer().tsm_mac;
@@ -84,7 +87,7 @@ async fn claimed_control_cannot_complete_reused_invoke_id_for_new_owner() {
         7,
         ConfirmedServiceChoice::READ_PROPERTY,
     );
-    limits.install_active(target, tsm_mac.clone(), 7, old.owner.clone(), 11, 0);
+    limits.install_active(target, &tsm_mac, 7, old.owner.clone(), 11, 0);
     assert!(limits.authorize_attempt(target, &tsm_mac, 7, &old.owner, 300));
     let (claimed, _, _) = limits.claim_active(&router, 100, 1).unwrap();
 
@@ -95,11 +98,11 @@ async fn claimed_control_cannot_complete_reused_invoke_id_for_new_owner() {
         ConfirmedServiceChoice::READ_PROPERTY,
     );
     assert_eq!(
-        tsm.complete_network_path_too_long_for_owner(
+        tsm.complete_network_refusal_for_owner(
             &claimed.tsm_mac,
             claimed.invoke_id,
             &claimed.owner,
-            100,
+            TsmResponse::Failed(Box::new(Error::RoutedPathTooLong { dnet: 100 })),
         ),
         CompletionOutcome::NoTransaction
     );
@@ -121,6 +124,7 @@ async fn a_learned_limit_is_never_below_the_conservative_floor() {
         router_mac: &router,
         dest_network: 100,
         dest_mac: &[3],
+        one_station: false,
     };
     let lease = limits.acquire(&router, 100).await.unwrap();
     let tsm_mac = target.transaction_peer().tsm_mac;
@@ -140,14 +144,17 @@ async fn a_learned_limit_is_never_below_the_conservative_floor() {
     };
     let changed = limits.state().entries[&RoutedPathKey::new(&router, 100)].changed;
     limits.commit_learned_limit(active, 16, changed);
-    assert_eq!(lease.max_apdu(11), CONSERVATIVE_ROUTED_PATH_MAX_NPDU - 11);
+    assert_eq!(
+        lease.open(&[0xFF, b'R'], 11),
+        DEFAULT_ROUTED_PATH_MAX_NPDU - 11
+    );
 }
 
-/// Once a reason 4 is delivered, its request may drop its lease before the
-/// commit, and a change queued on the path may run in between; a clear may
-/// even leave the entry to be reclaimed for another path (#2667). The
-/// commit then learns nothing and does not panic: the change reset learned
-/// evidence, and the reject was for a frame sized before it.
+/// A change of the path's limit may run between a reason 4's claim and its
+/// commit; a clear may even leave the entry to be reclaimed for another
+/// path once the request drops its lease (#2667). The commit then learns
+/// nothing and does not panic: the change reset learned evidence, and the
+/// reject was for a frame sized before it.
 #[tokio::test]
 async fn a_commit_after_a_change_or_a_reclaim_learns_nothing() {
     let limits = Arc::new(RoutedPathLimits::with_capacity(
@@ -160,6 +167,7 @@ async fn a_commit_after_a_change_or_a_reclaim_learns_nothing() {
         router_mac: &router,
         dest_network: 100,
         dest_mac: &[3],
+        one_station: false,
     };
     let tsm_mac = target.transaction_peer().tsm_mac;
     let mut tsm = Tsm::new(TsmConfig::default());
@@ -186,31 +194,21 @@ async fn a_commit_after_a_change_or_a_reclaim_learns_nothing() {
         })
     };
 
-    let lease = limits.acquire(&router, 100).await.unwrap();
-    lease.configure(1497);
+    limits.configure(&router, 100, 1497).unwrap();
     let changed = limits.state().entries[&key].changed;
-    drop(lease);
     // Nothing changed since the claim: it learns.
     limits.commit_learned_limit(active(1), 400, changed);
     assert_eq!(learned(&limits), Some(400));
 
     // A configure ran between the claim and the commit.
     let changed = limits.state().entries[&key].changed;
-    limits
-        .acquire_for_change(&router, 100)
-        .await
-        .unwrap()
-        .configure(1497);
+    limits.configure(&router, 100, 1497).unwrap();
     limits.commit_learned_limit(active(2), 300, changed);
     assert_eq!(learned(&limits), None);
 
     // A clear, and another path took the table's one entry.
     let changed = limits.state().entries[&key].changed;
-    limits
-        .acquire_for_change(&router, 100)
-        .await
-        .unwrap()
-        .clear();
+    limits.clear(&router, 100).unwrap();
     drop(limits.acquire(&[9], 7).await.unwrap());
     assert!(!limits.state().entries.contains_key(&key));
     limits.commit_learned_limit(active(3), 300, changed);
@@ -226,7 +224,10 @@ async fn hostile_pre_tsm_paths_reclaim_idle_entries_at_capacity() {
     for path in 1..=40u16 {
         let lease = limits.acquire(&path.to_be_bytes(), path).await.unwrap();
         // 228 NPDU - (9 + two 18-octet addresses) = 183 APDU.
-        assert_eq!(lease.max_apdu(forwarded_npci_len(18, 18).unwrap()), 183);
+        assert_eq!(
+            lease.open(&[0xFF, b'R'], forwarded_npci_len(18, 18).unwrap()),
+            183
+        );
         drop(lease);
         assert!(limits.state().entries.len() <= 3);
     }
@@ -242,9 +243,7 @@ async fn configured_and_learned_evidence_are_never_evicted_for_capacity() {
     let configured_key = RoutedPathKey::new(&[1], 100);
     let learned_key = RoutedPathKey::new(&[2], 200);
 
-    let configured = limits.acquire(&[1], 100).await.unwrap();
-    configured.configure(1497);
-    drop(configured);
+    limits.configure(&[1], 100, 1497).unwrap();
 
     let learned = limits.acquire(&[2], 200).await.unwrap();
     limits
@@ -347,6 +346,7 @@ async fn control_queued_before_activation_cannot_claim_the_new_generation() {
         router_mac: &router,
         dest_network: 100,
         dest_mac: &dadr,
+        one_station: false,
     };
     let lease = limits.acquire(&router, 100).await.unwrap();
     let tsm_mac = target.transaction_peer().tsm_mac;
@@ -357,18 +357,11 @@ async fn control_queued_before_activation_cannot_claim_the_new_generation() {
         ConfirmedServiceChoice::READ_PROPERTY,
     );
     let tsm = Arc::new(SyncMutex::new(tsm));
-    limits.install_active(
-        target,
-        tsm_mac.clone(),
-        9,
-        registration.owner.clone(),
-        11,
-        5,
-    );
+    limits.install_active(target, &tsm_mac, 9, registration.owner.clone(), 11, 5);
     assert!(limits.authorize_attempt(target, &tsm_mac, 9, &registration.owner, 300));
 
     limits
-        .handle_network_control(&tsm, reason_4_control(&router, 100, 5))
+        .handle_network_control(&tsm, reason_4_control(&router, 100, 5), None)
         .await;
     assert!(
         tsm.lock()
@@ -377,11 +370,11 @@ async fn control_queued_before_activation_cannot_claim_the_new_generation() {
     assert!(registration.response.try_recv().is_err());
 
     limits
-        .handle_network_control(&tsm, reason_4_control(&router, 100, 6))
+        .handle_network_control(&tsm, reason_4_control(&router, 100, 6), None)
         .await;
-    assert!(matches!(
-        registration.response.await.unwrap(),
-        TsmResponse::NetworkPathTooLong { dnet: 100 }
-    ));
+    let TsmResponse::Failed(error) = registration.response.await.unwrap() else {
+        panic!("expected the router's refusal")
+    };
+    assert!(matches!(*error, Error::RoutedPathTooLong { dnet: 100 }));
     drop(lease);
 }

@@ -1,3 +1,4 @@
+use bacnet_types::sync::MutexExt as _;
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
@@ -41,7 +42,7 @@ struct Lease<'a> {
 
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        *self.slot.lock().unwrap() = std::mem::replace(&mut self.owner, Owner::Stopped);
+        *self.slot.locked() = std::mem::replace(&mut self.owner, Owner::Stopped);
     }
 }
 
@@ -96,7 +97,7 @@ impl ManagedAttachment {
             .acquire()
             .await
             .expect("attachment admission stays open");
-        let owner = std::mem::replace(&mut *self.owner.lock().unwrap(), Owner::Stopped);
+        let owner = std::mem::replace(&mut *self.owner.locked(), Owner::Stopped);
         Lease {
             slot: &self.owner,
             owner,
@@ -106,7 +107,7 @@ impl ManagedAttachment {
 
     pub(super) async fn health(&self) -> AttachmentHealth {
         let lease = self.lease().await;
-        let (state, last_error) = *self.status.lock().unwrap();
+        let (state, last_error) = *self.status.locked();
         let local_mac = (!matches!(lease.owner, Owner::Stopped)).then(|| self.local_mac.clone());
         let foreign_device_registration = if matches!(
             &self.config.transport,
@@ -185,7 +186,7 @@ impl ManagedAttachment {
     }
 
     pub(super) async fn stop(&self, deadline: Option<Instant>) -> Result<(), RuntimeError> {
-        *self.status.lock().unwrap() = (AttachmentState::Stopping, None);
+        *self.status.locked() = (AttachmentState::Stopping, None);
         let stop = self.finish_shutdown();
         let result = match deadline {
             Some(deadline) => tokio::time::timeout_at(deadline, stop)
@@ -200,7 +201,7 @@ impl ManagedAttachment {
                 }),
             None => stop.await,
         };
-        *self.status.lock().unwrap() = match &result {
+        *self.status.locked() = match &result {
             Ok(()) => (AttachmentState::Stopped, None),
             Err(error) => (AttachmentState::Failed, Some(error.code)),
         };
@@ -216,7 +217,7 @@ impl ManagedAttachment {
                 unreachable!()
             };
             #[cfg(test)]
-            let barrier = self.stop_barrier.lock().unwrap().take();
+            let barrier = self.stop_barrier.locked().take();
             // Preserve the actual shutdown future: it can own a join removed from the client.
             lease.owner = Owner::Stopping(Box::pin(async move {
                 #[cfg(test)]

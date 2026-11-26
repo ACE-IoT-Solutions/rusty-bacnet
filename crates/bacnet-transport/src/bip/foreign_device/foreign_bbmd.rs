@@ -5,7 +5,7 @@ use std::fmt;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str::FromStr;
 
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 
 use super::super::DEFAULT_BACNET_PORT;
 use crate::bbmd_lookup::BbmdName;
@@ -97,9 +97,9 @@ impl FromStr for ForeignBbmd {
     /// address are refused: no device can register with them.
     fn from_str(text: &str) -> Result<Self, Error> {
         let refused = || {
-            Error::Encoding(format!(
+            Error::InvalidArgument(Refusal::text(format!(
                 "'{text}' is not a BBMD address, host name or either with :port"
-            ))
+            )))
         };
         let (host, port) = match text.rsplit_once(':') {
             Some((host, port)) => (host, port.parse::<u16>().map_err(|_| refused())?),
@@ -114,10 +114,8 @@ impl FromStr for ForeignBbmd {
             }
             return Ok(Self::Address(SocketAddrV4::new(ip, port)));
         }
-        let numeric = host
-            .bytes()
-            .all(|octet| octet.is_ascii_digit() || octet == b'.');
-        if numeric || BbmdName::new(host, port).is_none() {
+        // The rule the Python BDT rows share (#2710).
+        if !crate::bbmd_lookup::is_bbmd_host_name(host) {
             return Err(refused());
         }
         Ok(Self::Name {

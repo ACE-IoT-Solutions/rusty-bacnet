@@ -14,7 +14,7 @@ use bacnet_types::enums::{
 #[tokio::test(start_paused = true)]
 async fn answers_nobody_asked_for_and_octets_that_are_no_apdu_are_counted_and_dropped() {
     let lab = lab(SessionRole::Both).await;
-    let client = lab.session.full_client().unwrap();
+    let client = lab.session.client().unwrap();
     let (node, peer) = (Wire::mac(NODE), Wire::mac(PEER));
     let service_choice = ConfirmedServiceChoice::READ_PROPERTY;
     let stray = [
@@ -67,7 +67,7 @@ async fn answers_nobody_asked_for_and_octets_that_are_no_apdu_are_counted_and_dr
             .deliver(&node, wire::frame(&peer, Bytes::from(npdu), false));
     }
     eventually(WAIT, "each stray answer counted", async || {
-        let counters = lab.session.policy_counters().await;
+        let counters = lab.session.policy_counters();
         (counters.unclaimed_terminal, counters.ingress_policy) == (4, 2)
     })
     .await;
@@ -177,13 +177,13 @@ async fn a_device_with_no_rpm_and_no_segmentation_fails_a_seated_client_as_a_sta
     assert!(expected[0].contains("Reject"), "{expected:?}");
     assert!(expected[1].contains("Abort"), "{expected:?}");
 
-    let client = lab.session.full_client().unwrap();
+    let client = lab.session.client().unwrap();
     let asked = tokio::time::Instant::now();
     assert_eq!(ask_the_old_device(&client).await, expected);
     // Each refusal ended its request at once, not at a timeout.
     assert_eq!(asked.elapsed(), Duration::ZERO);
     assert_eq!(lab.session.active_leases(), 0);
-    assert_eq!(lab.session.policy_counters().await.unclaimed_terminal, 0);
+    assert_eq!(lab.session.policy_counters().unclaimed_terminal, 0);
 
     device.abort();
     drop((client, standalone));

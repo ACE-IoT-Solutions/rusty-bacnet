@@ -147,7 +147,7 @@ async fn prompt_impl(mode: MstpExecutionMode, frames: Frames) {
     assert!(!postponed, "the prompt answer had a Reply Postponed first");
     expect_present_value(&reply, 9, 11.0);
     assert_eq!(h.session.server_seat_counters().apdus, 1);
-    assert_eq!(h.session.policy_counters().await.no_server_role, 0);
+    assert_eq!(h.session.policy_counters().no_server_role, 0);
     h.shutdown().await;
 }
 
@@ -183,7 +183,7 @@ fn cov_notification(invoke_id: u8) -> Bytes {
 /// opportunity, once, with the request's invoke ID.
 async fn postponed_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut h = node(mode, frames).await;
-    let client = h.session.full_client().expect("the node's full client");
+    let client = h.session.client().expect("the node's full client");
     let mut heard = client.cov_notifications();
     let db = Arc::clone(h.session.server().expect("the full server").database());
     let held = db.write().await;
@@ -318,7 +318,7 @@ async fn answer_requests(h: &mut Harness, count: usize) -> Vec<ConfirmedRequest>
 /// goes no second time.
 async fn one_pool_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut h = node(mode, frames).await;
-    let client = Arc::new(h.session.full_client().expect("the node's full client"));
+    let client = Arc::new(h.session.client().expect("the node's full client"));
     h.peer_deliver(&to_node(
         FrameType::BACNET_DATA_EXPECTING_REPLY,
         subscribe(5),
@@ -369,7 +369,7 @@ async fn one_pool_impl(mode: MstpExecutionMode, frames: Frames) {
         "the notification went again: {more:?}"
     );
     assert_eq!(h.session.active_leases(), 0);
-    assert_eq!(h.session.policy_counters().await.unclaimed_terminal, 0);
+    assert_eq!(h.session.policy_counters().unclaimed_terminal, 0);
     drop(client);
     h.shutdown().await;
 }
@@ -440,3 +440,7 @@ variants!(prompt_impl: node_prompt_tokio, node_prompt_dedicated, node_prompt_ext
 variants!(postponed_impl: node_postponed_tokio, node_postponed_dedicated, node_postponed_extended_tokio, node_postponed_extended_dedicated);
 variants!(one_pool_impl: node_one_pool_tokio, node_one_pool_dedicated, node_one_pool_extended_tokio, node_one_pool_extended_dedicated);
 variants!(who_is_impl: node_who_is_tokio, node_who_is_dedicated, node_who_is_extended_tokio, node_who_is_extended_dedicated);
+
+/// The node segments on MS/TP, both roles, both ways (#2617, part 3c).
+#[path = "node_mstp/segmentation.rs"]
+mod segmentation;

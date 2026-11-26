@@ -5,12 +5,13 @@ use super::audit_reporter::{
 use super::*;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::{
-    audit::{AuditReporterChangeSink, TargetAuditAssociation},
+    audit::{AuditReporterChangeSink, AuditReporterStatus, TargetAuditAssociation},
     clock::ClockFrame,
     database::{AuditOwnership, EventSequence},
-    device::{AuditRecipientChangeSink, AuditWriteSource},
+    device::{AuditRecipientChangeSink, AuditWriteSource, DeviceAuthority},
 };
 use bacnet_types::constructed::{AuditPropertyReference, BACnetAuditNotification, BACnetRecipient};
+use bacnet_types::sync::MutexExt;
 use bacnet_types::{enums::AuditOperation, primitives::BACnetTimeStamp};
 
 pub(super) struct TargetAudit<T: TransportPort> {
@@ -33,6 +34,43 @@ pub(super) fn denied() -> Error {
     Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
+/// The audit authority of the identity's built-in Device `device`, which
+/// [`validate`] checks and [`TargetAudit::install`] installs on.
+fn device_authority(
+    db: &mut ObjectDatabase,
+    device: ObjectIdentifier,
+) -> Result<DeviceAuthority<'_>, Error> {
+    db.get_mut(&device)
+        .and_then(|object| object.device_authority_internal())
+        .filter(|authority| authority.object_identifier() == device)
+        .ok_or_else(|| {
+            Error::invalid_config("target Audit requires the identity's built-in Device")
+        })
+}
+
+/// The recipient provisioned on `authority`'s Device.
+fn provisioned_recipient(authority: &DeviceAuthority<'_>) -> Result<BACnetRecipient, Error> {
+    authority
+        .provisioned_audit_recipient()
+        .cloned()
+        .ok_or_else(|| {
+            Error::invalid_config("target Audit requires a provisioned built-in Device recipient")
+        })
+}
+
+/// The status of the Audit Reporter `selected`, which [`validate`] checks
+/// and [`TargetAudit::install`] associates.
+fn reporter_status(
+    db: &ObjectDatabase,
+    selected: &ObjectIdentifier,
+) -> Result<Arc<AuditReporterStatus>, Error> {
+    db.get(selected)
+        .and_then(|object| object.audit_reporter())
+        .filter(|object| object.object_identifier() == *selected)
+        .map(|reporter| reporter.status_internal())
+        .ok_or_else(|| Error::invalid_config("invalid audit reporter: missing read capability"))
+}
+
 /// Validate before transport startup and before installing any capability.
 pub(super) fn validate(
     db: &mut ObjectDatabase,
@@ -47,30 +85,15 @@ pub(super) fn validate(
     // notification's initiator (#2217). The installed runtime refuses new
     // Devices and protects this one while it lives.
     let device = crate::local_device::initiating_device(&config.device);
-    let authority = db
-        .get_mut(&device)
-        .and_then(|object| object.device_authority_internal())
-        .filter(|authority| authority.object_identifier() == device)
-        .ok_or_else(|| {
-            Error::Encoding("target Audit requires the identity's built-in Device".into())
-        })?;
+    let authority = device_authority(db, device)?;
     authority.validate_audit_recipient_installation()?;
-    let value = authority
-        .provisioned_audit_recipient()
-        .cloned()
-        .ok_or_else(|| {
-            Error::Encoding("target Audit requires a provisioned built-in Device recipient".into())
-        })?;
+    let value = provisioned_recipient(&authority)?;
+    let mut statuses = Vec::with_capacity(profile.reporters.len());
     for selected in &profile.reporters {
-        db.get(selected)
-            .and_then(|object| object.audit_reporter())
-            .filter(|object| object.object_identifier() == *selected)
-            .ok_or_else(|| {
-                Error::Encoding("invalid audit reporter: missing read capability".into())
-            })?;
+        statuses.push(reporter_status(db, selected)?);
         db.get_mut(selected).and_then(|object| object.audit_reporter_mut())
             .filter(|object| object.object_identifier() == *selected)
-            .ok_or_else(|| Error::Encoding(format!("invalid audit reporter: selected object {selected:?} is absent or lacks the Audit Reporter capability")))?
+            .ok_or_else(|| Error::InvalidConfig(bacnet_types::error::Refusal::text(format!("invalid audit reporter: selected object {selected:?} is absent or lacks the Audit Reporter capability"))))?
             .validate_installation()?;
     }
     let route = routes.resolve(&value);
@@ -84,15 +107,9 @@ pub(super) fn validate(
     {
         return Err(denied());
     }
-    for selected in &profile.reporters {
-        let status = db
-            .get(selected)
-            .unwrap()
-            .audit_reporter()
-            .unwrap()
-            .status_internal();
+    for status in &statuses {
         super::audit_context_preparation::validate_summary(
-            &status,
+            status,
             &status.configuration(),
             device,
             route.as_ref(),
@@ -101,13 +118,10 @@ pub(super) fn validate(
         // Set here, at prepare and finish, only. A local network number learned
         // later can make a routed binding at the link broadcast MAC unusable
         // (`RecipientRoute::localize`): notifications then find no route, but
-        // this flag keeps its startup value.
-        db.get(selected)
-            .unwrap()
-            .audit_reporter()
-            .unwrap()
-            .status_internal()
-            .set_configured(route.is_some());
+        // this flag keeps its startup value. A confirmed reporter has no route
+        // to a station at a broadcast or group form on another network (#2732).
+        let confirmed = status.configuration().confirmed;
+        status.set_configured(route.as_ref().is_some_and(|route| route.serves(confirmed)));
     }
     Ok(())
 }
@@ -128,26 +142,10 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
             profile
                 .reporters
                 .iter()
-                .map(|oid| {
-                    (
-                        *oid,
-                        db.get(oid)
-                            .unwrap()
-                            .audit_reporter()
-                            .unwrap()
-                            .status_internal(),
-                    )
-                })
-                .collect(),
+                .map(|oid| Ok((*oid, reporter_status(db, oid)?)))
+                .collect::<Result<_, Error>>()?,
         );
-        let recipient = db
-            .get_mut(&device)
-            .unwrap()
-            .device_authority_internal()
-            .unwrap()
-            .provisioned_audit_recipient()
-            .unwrap()
-            .clone();
+        let recipient = provisioned_recipient(&device_authority(db, device)?)?;
         let runtime = Arc::new(Self {
             batches: super::audit_batch_queue::AuditBatchQueue::new(&association),
             owner: AuditOwnership::for_target(device, Arc::clone(&association)),
@@ -161,16 +159,11 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
             max_apdu: u32::from(config.device.max_apdu_length()),
         });
         let sink: Arc<dyn AuditRecipientChangeSink> = runtime.clone();
-        db.get_mut(&device)
-            .unwrap()
-            .device_authority_internal()
-            .unwrap()
-            .install_audit_recipient(&sink)?;
+        device_authority(db, device)?.install_audit_recipient(&sink)?;
         let reporter_sink: Arc<dyn AuditReporterChangeSink> = runtime.clone();
         for selected in &profile.reporters {
             db.get_mut(selected)
-                .unwrap()
-                .audit_reporter_mut()
+                .and_then(|object| object.audit_reporter_mut())
                 .ok_or_else(denied)?
                 .install(&reporter_sink, &runtime.owner)?;
         }
@@ -196,16 +189,17 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
     pub(super) fn current_route(
         &self,
     ) -> Option<Arc<super::event_recipient_route::ConfirmedRecipientRoute>> {
-        self.routes.resolve(&self.recipient.lock().unwrap())
+        self.routes.resolve(&self.recipient.locked())
     }
 
     /// The network's number changed: whether the recipient resolves may have
     /// changed with it, so each Reporter's CONFIGURATION_ERROR follows the
     /// route in force now, not at the next audited operation (#1460).
     pub(super) fn number_changed(&self) {
-        let configured = self.current_route().is_some();
+        let route = self.current_route();
         for (_, status) in self.association.reporters() {
-            status.set_configured(configured);
+            let confirmed = status.configuration().confirmed;
+            status.set_configured(route.as_ref().is_some_and(|route| route.serves(confirmed)));
         }
     }
 
@@ -297,16 +291,25 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
                     .prepare_context(next, reporter.auditing_failure_epoch().is_some())?;
                 contexts.push((Arc::clone(reporter), next, context));
             }
-            // Clause 12.11.66: the change's record reaches both recipients,
-            // or goes by global broadcast. With no route to the old one, the
-            // new recipient gets its copy and an unconfirmed global
-            // broadcast (`None`) stands in for the old one's.
-            let targets = match old_route {
-                Some(old_route) => [Some(old_route), Some(new_route)],
-                None => [Some(new_route), None],
-            };
             let task = status.commit_recipient_change(|confirmed, token| {
-                let mut attempts = Vec::with_capacity(2);
+                // Clause 12.11.66: the change's record reaches both
+                // recipients, or goes by global broadcast. Each recipient with
+                // a route gets its copy, and with no route to one of them an
+                // unconfirmed global broadcast (`None`) stands in for its
+                // copy. A confirmed copy has no route to a station at a
+                // broadcast or group form on another network (#2732).
+                let routes: Vec<_> = [old_route, Some(new_route)]
+                    .into_iter()
+                    .map(|route| route.filter(|route| route.serves(confirmed)))
+                    .collect();
+                let stand_in = routes.iter().any(Option::is_none);
+                let targets: Vec<_> = routes
+                    .into_iter()
+                    .flatten()
+                    .map(Some)
+                    .chain(stand_in.then_some(None))
+                    .collect();
+                let mut attempts = Vec::with_capacity(targets.len());
                 for target in targets {
                     let permit = self.transactions.try_admit_audit().map_err(|_| denied())?;
                     let reservation = match &target {
@@ -334,16 +337,13 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
                 }
                 // No fallible work remains. Worker registration happens under
                 // the same owner lock as this commit and shutdown sealing.
-                *self.recipient.lock().unwrap() = new.clone();
+                *self.recipient.locked() = new.clone();
                 *current = new;
-                for (_, other) in self.association.reporters() {
+                // `contexts` holds every associated Reporter with its next
+                // epoch, so recording them looks nothing up.
+                for (other, next, _) in &contexts {
                     if !Arc::ptr_eq(other, &status) {
-                        let next = contexts
-                            .iter()
-                            .find(|(reporter, _, _)| Arc::ptr_eq(reporter, other))
-                            .unwrap()
-                            .1;
-                        other.commit_recipient_epoch(next);
+                        other.commit_recipient_epoch(*next);
                     }
                 }
                 let network = Arc::clone(&self.network);
@@ -442,3 +442,7 @@ where
         future.await;
     })
 }
+
+#[cfg(test)]
+#[path = "audit_recipient_install_tests.rs"]
+mod install_tests;

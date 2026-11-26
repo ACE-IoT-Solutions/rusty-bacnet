@@ -20,7 +20,9 @@ async fn rejected_start(invalid_mac: bool) {
     }
     // Secondary cleanup failure must not replace the primary startup error,
     // nor skip cleanup of the second attempted transport.
-    first.fail_stop(Error::Encoding("rollback secondary".into()));
+    first.fail_stop(Error::Transport(std::io::Error::other(
+        "rollback secondary",
+    )));
     let start = BACnetRouter::start(vec![a, b, c], RouterOptions::new());
     tokio::pin!(start);
     tokio::select! {
@@ -43,7 +45,9 @@ async fn rejected_start(invalid_mac: bool) {
     };
     if invalid_mac {
         assert!(
-            matches!(error, Error::Encoding(ref text) if text.contains("network 2") && text.contains("MAC longer"))
+            matches!(error, Error::Unsupported(ref text)
+                if text.to_string() == "Router port on network 2 has a MAC longer than 18 octets"),
+            "{error:?}"
         );
     } else {
         assert!(matches!(error, Error::Transport(ref error) if error.raw_os_error() == Some(13)));
@@ -111,7 +115,9 @@ async fn cancellation_while_awaiting_failed_start_rollback_keeps_cleanup_running
     let (a, mut first) = port(false);
     let (mut b, second) = port(false);
     b.network_number = 2;
-    second.fail_start(Error::Encoding("named startup error".into()));
+    second.fail_start(Error::Transport(std::io::Error::other(
+        "named startup error",
+    )));
     {
         let start = BACnetRouter::start(vec![a, b], RouterOptions::new());
         tokio::pin!(start);
@@ -127,12 +133,4 @@ async fn cancellation_while_awaiting_failed_start_rollback_keeps_cleanup_running
     second.completed.await.unwrap();
     assert_eq!(first.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(second.dropped.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test(start_paused = true)]
-async fn unknown_isolated_index_refuses_configuration_before_starting_ports() {
-    let (first, probe) = port(false);
-    let result = BACnetRouter::start(vec![first], RouterOptions::new().isolated_ports([1])).await;
-    assert!(matches!(result, Err(Error::Encoding(message)) if message.contains("index 1")));
-    assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
 }

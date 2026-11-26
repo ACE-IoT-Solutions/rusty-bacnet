@@ -38,12 +38,28 @@ acknowledgments are answered. Time synchronization is off on every
 endpoint until `time_sync_policy` turns it on, whatever the
 `mutation_policy`: a default that differs from `BACnetServer()`'s.
 
+`segmentation` (default `Segmentation.SEGMENTED_BOTH`, #2617) is the
+Device's Segmentation\_Supported, and both roles do what it says: the
+server reassembles segmented requests and sends long answers in segments,
+and `client()` takes segmented answers and sends a long request in
+segments, each only where the value allows it. A request that would
+need segments the endpoint doesn't send fails before anything goes out.
+`Segmentation.NO_SEGMENTATION` keeps every request and answer to one
+APDU, for a constrained link or a peer that can't segment.
+`BACnetServer()` has the same default. The keyword-only
+`apdu_segment_timeout_ms` (default 5000, positive when
+segmenting) is the Device's APDU\_Segment\_Timeout, which both roles use
+while they segment. `client()` reassembles a segmented COV
+notification while the Device takes segments (#2646).
+
 `device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
 no object may have it, so it, or anything larger, raises ValueError at
 construction (#2171).
 
 For B/IP, `interface` accepts an IPv4 literal or the exact OS interface
-name (the adapter friendly name on Windows), resolved to one usable IPv4 address.
+name (the adapter friendly name on Windows), resolved once, at
+construction, to one usable IPv4 address; `broadcast_address` is not
+derived from it. See "Selecting an interface" in docs/python-api.md.
 
 Properties:
 
@@ -71,6 +87,7 @@ def __init__(
     apdu_retries: int = 3,
     registered_network_port: Optional[int] = None,
     *,
+    apdu_segment_timeout_ms: int = 5000,
     read_work_limit: int = 256,
     share_port_by_address: bool = False,
     share_wildcard_port: bool = False,
@@ -84,9 +101,10 @@ def __init__(
     mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
     cov_policy: CovPolicy | None = None,
     time_sync_policy: TimeSyncPolicy | None = None,
+    device_storage_path: Optional[str] = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
-    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
+    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str | RoutedTarget]]] = None,
 ) -> None
 ```
 
@@ -111,6 +129,15 @@ as on a standalone server, and records its own resets through that
 server's `report_device_reset_local()`. `ScEndpoint` and
 `MstpEndpoint` take all three too.
 
+`device_storage_path` (#2730): the file in which the endpoint's
+Device keeps what peers write to it, as `BACnetServer`'s keyword
+of the same name: with a `mutation_policy` that lets peers write,
+a written Description survives a restart. Without it, such a write
+lasts until `close()`. A relative path is resolved here; an empty
+one raises BacnetError; a file that can't be read or loaded raises
+BacnetError at `start()`, naming the path.
+`ScEndpoint` and `MstpEndpoint` take it too.
+
 `source_audit_reporter` / `audit_recipient` /
 `audit_device_bindings` (#2348): the Audit Reporter, added with
 `add_audit_reporter`, through which the session reports the
@@ -123,9 +150,17 @@ recipient) and a `mutation_policy` that decides writes, so that no
 peer redirects the audit trail unasked: none (read-only),
 `"deny_all"` or a callable, never `"permissive"` (ValueError).
 The bindings are `(Device identifier, "ipv4:port")`
-routes to recipient Devices, or `"network:0xMAC"` for one behind a
+routes to recipient Devices, or `"network:0xMAC[:one-station]"` for one behind a
 router on that network (#2371; network 1 to 65534, MAC 1 to 18
-octets). A Reporter identifier of another type and
+octets), or a `RoutedTarget` with no `router` for one there, the
+form that can mark the address `one_station=True`, as the text
+`"5:0xFF:one-station"` does (#2738; the
+session learns the router, so one with a `router` raises
+ValueError). A confirmed Reporter has no route to a Device bound at a
+broadcast or group form on its network (`b"\xff"`, two octets
+beginning `0x00` or `0xFF`, and the rest `RoutedTarget` lists)
+and reads a configuration error; marked one station, it reaches
+those `RoutedTarget` lifts. A Reporter identifier of another type and
 the other shapes construction can check raise ValueError; a Reporter
 that wasn't added raises BacnetError at start. `ScEndpoint` and
 `MstpEndpoint` take them too, each binding address in its link's
@@ -180,6 +215,13 @@ def add_analog_input(
 ) -> None
 ```
 
+Register an Analog Input before start.
+
+`present_value` (a finite number, default 0.0) sets Present\_Value
+directly; NaN or an infinity raises BacnetProtocolError
+VALUE\_OUT\_OF\_RANGE. Every point builder checks its registration as
+`BACnetServer.add_analog_input` says, with the same code (#2711).
+
 Profile keywords as on `BACnetServer.add_analog_input`: each
 provisions its optional row, served only when given. The parameter
 keywords set those parameters as there, with the same checks.
@@ -206,7 +248,11 @@ def add_analog_output(
 ) -> None
 ```
 
-Register an Analog Output before start. Its initial value sets Relinquish\_Default.
+Register an Analog Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### BipEndpoint.add_binary_output
 
@@ -226,7 +272,11 @@ def add_binary_output(
 ) -> None
 ```
 
-Register a Binary Output before start. Its initial value sets Relinquish\_Default.
+Register a Binary Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### BipEndpoint.add_multistate_input
 
@@ -247,7 +297,11 @@ def add_multistate_input(
 ) -> None
 ```
 
-Register a Multi-state Input before start, optionally setting its initial state.
+Register a Multi-state Input before start.
+
+`present_value` sets Present\_Value directly. `None` keeps the
+object type's default. The three multi-state builders take 1 to
+1024 states; another count raises BacnetError.
 
 ### BipEndpoint.add_multistate_output
 
@@ -267,7 +321,11 @@ def add_multistate_output(
 ) -> None
 ```
 
-Register a Multi-state Output before start. Its initial state sets Relinquish\_Default.
+Register a Multi-state Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### BipEndpoint.add_multistate_value
 
@@ -290,7 +348,14 @@ def add_multistate_value(
 ) -> None
 ```
 
-Register a Multi-state Value before start, optionally setting its initial state.
+Register a Multi-state Value before start.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
 
 ### BipEndpoint.add_analog_value
 
@@ -320,6 +385,14 @@ def add_analog_value(
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
@@ -342,6 +415,13 @@ def add_binary_input(
     time_delay_normal: int | None = None,
 ) -> None
 ```
+
+Register a Binary Input before start.
+
+`present_value` is the logical value (already after Polarity): it
+sets Present\_Value, and the object derives its physical input state
+from it. Left as `None`, the object keeps its unset physical-input
+state.
 
 Profile keywords as on `add_analog_input`, `polarity`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_input`.
@@ -370,6 +450,14 @@ def add_binary_value(
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source and profile keywords as on `add_analog_value`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 
@@ -573,7 +661,9 @@ Broadcast one I-Am consistent with the composed identity.
 SC endpoint: one hub connection that both initiates and executes.
 
 `sc_device_uuid` is the single durable lifetime identity for both the
-hub dial and DEVICE\_UUID. Lifecycle mirrors `BipEndpoint`.
+hub dial and DEVICE\_UUID. Lifecycle, `segmentation` (default
+`SEGMENTED_BOTH`) and `apdu_segment_timeout_ms` mirror
+`BipEndpoint`.
 `device_instance` takes 0 to 4194302, as there: 4194303 or more raises
 ValueError at construction (#2171).
 
@@ -603,6 +693,7 @@ def __init__(
     network_port_instance: int = 2,
     max_apdu: int = 1476,
     segmentation: Optional[Segmentation] = None,
+    apdu_segment_timeout_ms: int = 5000,
     queue_capacity: int = 256,
     read_work_limit: int = 256,
     min_request_interval_ms: int = 0,
@@ -612,9 +703,10 @@ def __init__(
     mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
     cov_policy: CovPolicy | None = None,
     time_sync_policy: TimeSyncPolicy | None = None,
+    device_storage_path: Optional[str] = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
-    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
+    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str | RoutedTarget]]] = None,
     reconnect: Optional[ScReconnect] = None,
     sc_failover_hub: str | None = None,
     sc_connect_timeout_ms: int | None = None,
@@ -623,14 +715,14 @@ def __init__(
 
 `read_work_limit`, `min_request_interval_ms`,
 `on_reinitialize`, `after_reinitialize`, `reinit_password`,
-`mutation_policy`, `cov_policy` and `time_sync_policy` are as
-for `BipEndpoint`.
+`mutation_policy`, `cov_policy`, `time_sync_policy` and
+`device_storage_path` are as for `BipEndpoint`.
 
 `source_audit_reporter` / `audit_recipient` /
 `audit_device_bindings`: as on `BipEndpoint` (#2357), each
 binding address a VMAC as `local_address()` gives it
 (`"xx:xx:xx:xx:xx:xx"`) or as twelve hex digits, or a routed
-`"network:0xMAC"`. An address
+`"network:0xMAC[:one-station]"` or `RoutedTarget`. An address
 `audit_recipient` takes another node's VMAC: never the broadcast
 or all-zero VMAC or this endpoint's own.
 
@@ -666,6 +758,13 @@ def add_analog_input(
 ) -> None
 ```
 
+Register an Analog Input before start.
+
+`present_value` (a finite number, default 0.0) sets Present\_Value
+directly; NaN or an infinity raises BacnetProtocolError
+VALUE\_OUT\_OF\_RANGE. Every point builder checks its registration as
+`BACnetServer.add_analog_input` says, with the same code (#2711).
+
 Profile keywords as on `BACnetServer.add_analog_input`: each
 provisions its optional row, served only when given. The parameter
 keywords set those parameters as there, with the same checks.
@@ -692,7 +791,11 @@ def add_analog_output(
 ) -> None
 ```
 
-Register an Analog Output before start. Its initial value sets Relinquish\_Default.
+Register an Analog Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### ScEndpoint.add_binary_output
 
@@ -712,7 +815,11 @@ def add_binary_output(
 ) -> None
 ```
 
-Register a Binary Output before start. Its initial value sets Relinquish\_Default.
+Register a Binary Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### ScEndpoint.add_multistate_input
 
@@ -733,7 +840,11 @@ def add_multistate_input(
 ) -> None
 ```
 
-Register a Multi-state Input before start, optionally setting its initial state.
+Register a Multi-state Input before start.
+
+`present_value` sets Present\_Value directly. `None` keeps the
+object type's default. The three multi-state builders take 1 to
+1024 states; another count raises BacnetError.
 
 ### ScEndpoint.add_multistate_output
 
@@ -753,7 +864,11 @@ def add_multistate_output(
 ) -> None
 ```
 
-Register a Multi-state Output before start. Its initial state sets Relinquish\_Default.
+Register a Multi-state Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### ScEndpoint.add_multistate_value
 
@@ -776,7 +891,14 @@ def add_multistate_value(
 ) -> None
 ```
 
-Register a Multi-state Value before start, optionally setting its initial state.
+Register a Multi-state Value before start.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
 
 ### ScEndpoint.add_analog_value
 
@@ -806,6 +928,14 @@ def add_analog_value(
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
@@ -828,6 +958,13 @@ def add_binary_input(
     time_delay_normal: int | None = None,
 ) -> None
 ```
+
+Register a Binary Input before start.
+
+`present_value` is the logical value (already after Polarity): it
+sets Present\_Value, and the object derives its physical input state
+from it. Left as `None`, the object keeps its unset physical-input
+state.
 
 Profile keywords as on `add_analog_input`, `polarity`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_input`.
@@ -856,6 +993,14 @@ def add_binary_value(
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source and profile keywords as on `add_analog_value`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 
@@ -1030,7 +1175,8 @@ or after close.
 MS/TP endpoint: one serial owner that both initiates and executes.
 
 Opens a real serial device via `TokioSerialPort` like the current
-wrappers. Lifecycle mirrors `BipEndpoint`.
+wrappers. Lifecycle, `segmentation` (default `SEGMENTED_BOTH`) and
+`apdu_segment_timeout_ms` mirror `BipEndpoint`.
 `device_instance` takes 0 to 4194302, as there: 4194303 or more raises
 ValueError at construction (#2171).
 
@@ -1059,6 +1205,7 @@ def __init__(
     apdu_timeout_ms: int = 6000,
     apdu_retries: int = 3,
     *,
+    apdu_segment_timeout_ms: int = 5000,
     read_work_limit: int = 256,
     min_request_interval_ms: int = 0,
     mstp_extended_frames: bool = False,
@@ -1073,16 +1220,17 @@ def __init__(
     mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
     cov_policy: CovPolicy | None = None,
     time_sync_policy: TimeSyncPolicy | None = None,
+    device_storage_path: Optional[str] = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
-    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
+    audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str | RoutedTarget]]] = None,
 ) -> None
 ```
 
 `read_work_limit`, `min_request_interval_ms`,
 `on_reinitialize`, `after_reinitialize`, `reinit_password`,
-`mutation_policy`, `cov_policy` and `time_sync_policy` are as
-for `BipEndpoint`. Here
+`mutation_policy`, `cov_policy`, `time_sync_policy` and
+`device_storage_path` are as for `BipEndpoint`. Here
 `after_reinitialize` runs once the SimpleACK is queued, before the
 token sends it: stopping the endpoint at once can drop the reply, so
 wait a short while first.
@@ -1106,7 +1254,8 @@ out of range raises ValueError here.
 `source_audit_reporter` / `audit_recipient` /
 `audit_device_bindings`: as on `BipEndpoint` (#2357), each
 binding address a station in decimal digits, as `local_address()`
-gives it (`"2"`), or a routed `"network:0xMAC"`. An address
+gives it (`"2"`), or a routed `"network:0xMAC[:one-station]"` or
+`RoutedTarget`. An address
 `audit_recipient` takes another station: never 255 or this
 endpoint's own.
 
@@ -1131,6 +1280,13 @@ def add_analog_input(
     time_delay_normal: int | None = None,
 ) -> None
 ```
+
+Register an Analog Input before start.
+
+`present_value` (a finite number, default 0.0) sets Present\_Value
+directly; NaN or an infinity raises BacnetProtocolError
+VALUE\_OUT\_OF\_RANGE. Every point builder checks its registration as
+`BACnetServer.add_analog_input` says, with the same code (#2711).
 
 Profile keywords as on `BACnetServer.add_analog_input`: each
 provisions its optional row, served only when given. The parameter
@@ -1158,7 +1314,11 @@ def add_analog_output(
 ) -> None
 ```
 
-Register an Analog Output before start. Its initial value sets Relinquish\_Default.
+Register an Analog Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### MstpEndpoint.add_binary_output
 
@@ -1178,7 +1338,11 @@ def add_binary_output(
 ) -> None
 ```
 
-Register a Binary Output before start. Its initial value sets Relinquish\_Default.
+Register a Binary Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### MstpEndpoint.add_multistate_input
 
@@ -1199,7 +1363,11 @@ def add_multistate_input(
 ) -> None
 ```
 
-Register a Multi-state Input before start, optionally setting its initial state.
+Register a Multi-state Input before start.
+
+`present_value` sets Present\_Value directly. `None` keeps the
+object type's default. The three multi-state builders take 1 to
+1024 states; another count raises BacnetError.
 
 ### MstpEndpoint.add_multistate_output
 
@@ -1219,7 +1387,11 @@ def add_multistate_output(
 ) -> None
 ```
 
-Register a Multi-state Output before start. Its initial state sets Relinquish\_Default.
+Register a Multi-state Output before start.
+
+`present_value` sets Relinquish\_Default. The priority array starts
+empty, so Present\_Value reads as that value until something is
+commanded. `None` keeps the object type's default.
 
 ### MstpEndpoint.add_multistate_value
 
@@ -1242,7 +1414,14 @@ def add_multistate_value(
 ) -> None
 ```
 
-Register a Multi-state Value before start, optionally setting its initial state.
+Register a Multi-state Value before start.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
 
 ### MstpEndpoint.add_analog_value
 
@@ -1272,6 +1451,14 @@ def add_analog_value(
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
@@ -1294,6 +1481,13 @@ def add_binary_input(
     time_delay_normal: int | None = None,
 ) -> None
 ```
+
+Register a Binary Input before start.
+
+`present_value` is the logical value (already after Polarity): it
+sets Present\_Value, and the object derives its physical input state
+from it. Left as `None`, the object keeps its unset physical-input
+state.
 
 Profile keywords as on `add_analog_input`, `polarity`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_input`.
@@ -1322,6 +1516,14 @@ def add_binary_value(
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+
+`present_value` is the initial value. With
+`present_value_access="commandable"` (the default) it sets
+Relinquish\_Default and the priority array starts empty, so
+Present\_Value reads as that value until something is commanded; with
+"writable" or "read\_only" it sets Present\_Value directly. `None`
+keeps the object type's default.
+
 Access, Value\_Source and profile keywords as on `add_analog_value`,
 `alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 

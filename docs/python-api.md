@@ -120,6 +120,9 @@ of the Rust `bacnet-ops` client that the `bacnet` tool is built on.
 | Read the priorities | `await ahu.priority_array("av:1")` |
 | List the objects | `await ahu.objects()` |
 | Describe the device | `await ahu.summary()` |
+| Inventory the points | `await ahu.inventory(types=None, values=False, settings=False, details=False)` (keywords only) |
+| Walk the points as they are read | `async for point in await ahu.points(): ...` |
+| Watch points | `async for update in await ahu.watch(["ai:1", "ao:2"]): ...` |
 
 Everything a device is asked goes through its handle. There is one way to
 spell each call, on the handle; the client itself has no `read(target, ...)`
@@ -167,7 +170,10 @@ far = await client.device("2:1234")            # instance 1234 on network 2
 
 - **A pinned handle** is made at once. Nothing is sent for a station on the
   client's own network; a routed station the client knows no router for
-  receives a station-directed Who-Is first. It never moves: `await
+  receives a Who-Is addressed to it first, then, with no answer, one Who-Is
+  to its network that only the station's own address answers (how an MS/TP
+  slave behind a slave proxy is found). A station found the second way is
+  asked on its network first from then on. It never moves: `await
   ahu.moved_to()` says where its instance is heard now, once its own
   address has gone quiet.
 - **A following handle** needs the device's address. One address claiming
@@ -218,17 +224,19 @@ A client on a link reaches a device behind a router by naming its network:
 `"2:1234"` or `"2:0x05"`, or a `discover(scope=2)` row. The typed calls by
 `address` reach stations on the client's own network only.
 
-A client on a router's application (`transport="router"`) has no network of
-its own, so every device is on a numbered network:
+A client on a router's application (`transport="router"`) is on each of the
+router's networks, so every device is on a numbered network, and the local
+scope is each of the router's networks (#2601): a local Who-Is or Who-Has goes
+to every one of them, isolated ports included, and the router passes it no
+further.
 
 | On `transport="router"` | Result |
 |-------------------------|--------|
-| `device("5:1234")`, `device("5:0x05")`, a `discover(scope=5)` or `scope="global"` row | Works |
-| `device(1234)` when the client has heard from 1234 | Works |
-| `device(1234)` otherwise | `BacnetLookupError`: there is no network to ask on. `BACnetClient(resolve_scope=5)` or `"global"` gives it one |
+| `device("5:1234")`, `device("5:0x05")`, a `discover()` row of any scope | Works |
+| `discover()` with no scope or `scope="local"` | The devices on each of the router's networks, as when each is named |
+| `device(1234)` | Asks where `resolve_scope` says, by default each of the router's networks |
 | `device("192.168.1.10")`, any local address | `ValueError` on await, nothing sent |
-| `discover()` with no scope, `scope="local"` or a station's address | `ValueError` |
-| `BACnetClient(resolve_scope="local")` | `ValueError` |
+| `discover(scope="192.168.1.10")`, a station's address | `ValueError`: pass a `RoutedTarget` or the network |
 
 ### Reading
 
@@ -283,10 +291,12 @@ Failures are data here, not exceptions:
   `BacnetTransportError` a single read would have raised.
 - A later request the client's own link fails (a route lost, a send
   refused) ends the read the same way, with that error in `stopped`.
-- A read raises only when nothing could be read: a bad item (`TypeError` or
-  `ValueError`, ALL, REQUIRED and OPTIONAL included, when the call is
-  made), a device that can't be placed (`BacnetLookupError`), and a link
-  that fails the first request (what a single read raises for it).
+- A read raises only when nothing could be read. When the call is made, a
+  bad argument raises `TypeError` or `ValueError`: `properties` given as one
+  str, bytes or bytearray rather than a list, or an item that is ALL,
+  REQUIRED or OPTIONAL. On await, a device that can't be placed raises
+  `BacnetLookupError`, and a link that fails the first request raises what
+  a single read would.
 
 A value's text names its object's units, and its state by the object's
 Active_Text and Inactive_Text or State_Text, when the same call reads them.
@@ -294,9 +304,10 @@ Active_Text and Inactive_Text or State_Text, when the same call reads them.
 #### `read_object(object, properties=None) -> Readings`
 
 One object's properties in one ReadPropertyMultiple: every property, or
-those listed. A property the device refused has its `error` set. A device
-that stops answering raises `BacnetTimeoutError` and keeps nothing, since an
-object's rows go together.
+those listed (`["pv", "units"]`; one str, bytes or bytearray raises
+`TypeError` when the call is made). A property the device refused has its
+`error` set. A device that stops answering raises `BacnetTimeoutError` and
+keeps nothing, since an object's rows go together.
 
 #### `objects() -> ObjectList` and `summary() -> DeviceSummary`
 
@@ -344,14 +355,317 @@ is the typed form.
 | `.get(object, property=None, *, index=None)` | `Reading \| None` | The first reading of that property |
 
 `Reading`, `Readings`, `ObjectList`, `DeviceSummary`, `Written`,
-`WritePreview`, `PriorityView` and `Discovered` are frozen results that
-refuse `copy` and `pickle`; the `Value`s inside them copy and pickle.
+`WritePreview`, `PriorityView`, `Discovered`, `Inventory`, `Point` and
+`PointIterator` are frozen results that refuse `copy` and `pickle`; the
+`Value`s inside them copy and pickle.
+
+### Inventory
+
+A device's points as records (#2561): each object's name, description,
+units or state texts and whether it takes commands, read in as few requests
+as the device allows. They are the records `bacnet inventory` prints and
+the MCP server's `bacnet_inventory` pages. There are two calls:
+`inventory()` reads the whole device into one result, and `points()` hands
+the records out as they are read, for a large device or a screen that fills
+as it goes.
+
+#### `inventory(*, types=None, values=False, settings=False, details=False) -> Inventory`
+
+Reads the device's summary, its Object_List, then the objects in batches of
+ReadPropertyMultiple, up to 16 objects or 32 properties a request. The read
+is one call: it holds the client throughout, so `stop()` waits for it, and
+nothing comes back until every object is read; for a large device,
+`points()` (below) hands the records out as they come.
+
+```python
+inventory = await ahu.inventory()
+for point in inventory:
+    print(point.object_id, point.name, point.units_text or "", point.commandable)
+if inventory.stopped is not None:
+    print("the device stopped answering:", inventory.stopped, len(inventory.unread), "not read")
+```
+
+| Keyword | Reads |
+|---------|-------|
+| `types` | Only objects of these types: `ObjectType`s or text (`["ai", "analog-output"]`). None, the default, reads every object, a vendor's included |
+| `values=True` | Each object's Present_Value, Status_Flags, Event_State, Reliability and priority in control: 4 more properties an object, 5 on an output |
+| `settings=True` | COV_Increment, Min_Pres_Value, Max_Pres_Value, Relinquish_Default and Polarity where the type has them: up to 4 more |
+| `details=True` | Device_Type and Profile_Name: 2 more |
+
+More properties an object means fewer objects a request: a typical
+controller of N objects takes about N/8 + 2 requests, N/4 + 2 with
+`values`. A device that refuses
+ReadPropertyMultiple costs that one refused request, remembered by the
+client, then a ReadProperty a property. An Object_List the device can't
+send whole is read element by element.
+
+Failures are data, as in `read_many`:
+
+- A property the device can't give is a problem on its record
+  (`Point.problems`), never raised. An optional property the object lacks
+  is no problem: the field is None.
+- A device that goes silent, or whose route is lost, while its objects are
+  read ends the read with the records read so far. `Inventory.stopped`
+  holds the `BacnetTimeoutError` or other error a single read would have
+  raised, and `Inventory.unread` the objects not read.
+- It raises only when nothing could be kept: a bad argument (`TypeError`
+  or `ValueError` when the call is made, `types` given as one str or empty
+  among them), a device that can't be placed (`BacnetLookupError`), and a
+  device that doesn't answer the summary or the Object_List, or refuses the
+  list (what a single read raises; a list read element by element that
+  fails at one element says which).
+
+| `Inventory` | Type | Description |
+|-------------|------|-------------|
+| `.points` | `tuple[Point, ...]` | In Object_List order; iterating, `len` and an index work on the `Inventory` itself |
+| `.point(object)` | `Point \| None` | The record of that object |
+| `.summary` | `DeviceSummary` | As `summary()` reads it; its `name` is cleaned for display, where the Device object's `Point.name` is exact |
+| `.address` | `str` | Where the device answers |
+| `.cov_support` | `str` | What is known of the device's COV support, as `Device.cov_support()` says it |
+| `.unread` | `tuple[ObjectIdentifier, ...]` | The objects not read because the device stopped answering |
+| `.stopped` | `BacnetError \| None` | Why, unraised |
+
+#### `points(objects=None, *, types=None, values=False, settings=False, details=False) -> PointIterator`
+
+The same records as `inventory()` reads, handed out as they are read, for a
+large device or a screen that fills as it goes; `inventory()` reads the
+whole device, with its summary, in one call. The await reads the
+Object_List and keeps the objects of `types`, each once; with `objects`
+(`ObjectIdentifier`s or text) it takes those of `types` instead, each once,
+in order, and reads nothing. Each step of the iteration reads the next batch of
+objects, one ReadPropertyMultiple, whenever the last batch's points are
+out:
+
+```python
+walk = await ahu.points(types=["ai", "ao"], values=True)
+print(len(walk), "points")
+async for point in walk:
+    print(point.name, point.present_value)
+```
+
+- A large device's first points come after two requests (the list, then one
+  batch), and an `async for` broken off reads nothing more.
+- A device that stops answering raises from the iteration (a
+  `BacnetTimeoutError`, say) once the points read before it are out.
+  Iterating the same `PointIterator` again tries the first object not read
+  again.
+- Cancelling a step (`asyncio.wait_for` timing out, a cancelled task)
+  stops its request. The next step reads that batch again, and a point
+  that was on its way when the cancel landed comes first, so no point is
+  lost or repeated.
+- Concurrent steps (`asyncio.gather(anext(walk), anext(walk))`) complete
+  one at a time, each with the next point.
+- Each batch holds the client for its read alone. After the client's
+  `stop()`, the points already read come out first, then a step raises
+  `RuntimeError`.
+- `.objects` is the tuple of objects it reads, and `len()` their count.
+- The await raises what `inventory()` raises for the Object_List. Part of
+  a list is not the device's objects: a list read element by element that
+  fails at one element raises that element's error (a
+  `BacnetTimeoutError` for a silent device), naming the element, where
+  `objects()` keeps what it got.
+
+#### `Point`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.object_id` | `ObjectIdentifier` | The object |
+| `.address`, `.device_instance` | `str`, `int` | The device |
+| `.name`, `.description` | `str \| None` | Object_Name and Description |
+| `.units` | `EngineeringUnits \| None` | Units, for the types that have them |
+| `.units_text` | `str \| None` | The same as the `bacnet` tool writes it: `"degrees-celsius"` |
+| `.active_text`, `.inactive_text` | `str \| None` | A binary object's state texts |
+| `.state_texts` | `tuple[str, ...]` | A multi-state object's State_Text, state 1 first |
+| `.number_of_states` | `int \| None` | A multi-state object's Number_Of_States |
+| `.commandable` | `bool` | Whether Present_Value takes command priorities: always on an output, and on a value object that has a Priority_Array |
+| `.present_value`, `.status_flags`, `.event_state`, `.reliability`, `.command_priority` | `Value \| None` | Read with `values`; `.present_value.text` names the units or the state (`"72.5 °F"`) |
+| `.relinquish_default`, `.cov_increment`, `.min_present_value`, `.max_present_value`, `.polarity` | `Value \| None` | Read with `settings` |
+| `.device_type`, `.profile_name` | `str \| None` | Read with `details` |
+| `.problems` | `tuple[tuple[PropertyIdentifier, BacnetError], ...]` | The properties that gave no usable value, each with the exception a typed read of it would raise, unraised |
+| `.problem(property)` | `BacnetError \| None` | The problem with that property |
+
+**Device text.** `name`, `description`, `device_type`, `profile_name` and
+the state texts are exactly as the device sent them: clean them before
+showing them, since a device can put control characters in its names.
+
+### Watching
+
+#### `watch(points, *, lifetime=None, poll_interval=None, subscribe=None) -> Watch`
+
+Watches points of the device and hands out their changes as an async
+iterator of `WatchUpdate`s. Each item of `points` is what `read_many`
+takes (`"ai:1"`, `"ao:2 priority-array[8]"`, an `ObjectIdentifier`, an
+`(object, property)` or `(object, property, index)` tuple), each point
+once. A Present_Value is watched by SubscribeCOV on its object; any other
+property, or an element, by SubscribeCOVProperty.
+
+```python
+async with await ahu.watch(["ai:1", "ao:2", "bv:3"]) as watch:
+    async for update in watch:
+        if update.moved is not None:
+            print("followed to", update.moved.to, "from", update.moved.from_)
+        if update.state == "gone":
+            print(update.object_id, "given up:", update.why)
+        elif update.value is not None:
+            print(update.object_id, update.value.text, "via", update.via)
+```
+
+- Each point is read once (its value, Status_Flags, units, name and state
+  texts), then subscribed for `lifetime` seconds at a time (1 to 28800,
+  eight hours, the longest every device must take) and renewed before each
+  lifetime ends. A point the device won't subscribe, or every point with
+  `subscribe=False`, is polled, with the device's other polled points,
+  every `poll_interval` seconds (1 to 3600). A device that refuses COV
+  altogether is remembered, and its later points are polled without
+  asking.
+- A keyword left None takes the client's: `BACnetClient(watch_lifetime=300,
+  watch_poll_interval=10.0, watch_subscribe=True)` are the defaults, and
+  `client.watch_lifetime`, `.watch_poll_interval` and `.watch_subscribe`
+  read them back. Watches with equal settings share the client's hub for
+  them, so a point two of them hold is one subscription on the device
+  (#2603).
+- An update comes with each value read or notified and each change of a
+  point's state. A consumer that falls behind gets one update a point with
+  its latest value and state, never a queue of old ones: `.folded` counts
+  the changes folded away.
+- `await watch.add(points)` watches more points of the watch's device,
+  at its address or following it as the watch does (resolving to how many
+  were new: a point held already is left as it is), and
+  `await watch.remove(points)` stops watching some (resolving to
+  how many it held), both while another task iterates. Once `remove` has
+  run, no step begun after hands out a removed point, an update already
+  waiting included; a step already waiting may still get one it had
+  taken. A removed point no other watch holds is cancelled on the wire
+  afterwards, best effort; one added again is read afresh. Both take
+  `points` as `watch` does and raise `BacnetStateError` (`state` is
+  `"closed"`, also a `RuntimeError`) once the watch has ended (#2819);
+  `add` raises `RuntimeError` when the points would take the watch's hub
+  past 4096.
+- The watch never ends on its own, not even with every point removed. It
+  ends on `close()` (or leaving `async with`), when the object goes away,
+  or on the client's `stop()`, whichever comes first: a step then raises
+  `StopAsyncIteration` and every step after it, saying why, and the
+  subscriptions no other watch holds are cancelled, the device's answers
+  waited for up to 5 s. Any not answered by then lapse with their
+  lifetime, which is never indefinite.
+- The watch holds the client only through its hub, which a stop shuts
+  before it stops the client. A stop with live watches waits for their
+  cancels, all at once: up to 5 s for a device that doesn't answer, and up
+  to 2 s more for the hubs to let go of the client. A client started again
+  doesn't revive a watch: watch again. A `Device` made from an instance
+  makes its handle again after a restart, so `await ahu.watch(...)` works
+  as before.
+- Each hub has a range of subscriber process identifiers of its own, so
+  watches of different settings never share a subscription. A client runs
+  at most 256 hubs at once, one for each set of settings in use (one still
+  cancelling counts): a watch of a 257th raises `RuntimeError` until one
+  ends.
+- Each renewal goes early enough to leave room for two requests with
+  every retry on the client's own timers: its `apdu_timeout_ms` with three
+  retries, or for a client from `endpoint.client()` the endpoint's
+  `apdu_timeout_ms` and `apdu_retries` (#2603). At the default 6 s that is
+  48 s before a five-minute lifetime ends.
+- A handle made from an instance (`ahu.follows`) makes a watch that
+  follows its device (`watch.follows`, #2795). Once the watch's own reads
+  find the device at another address (the device there names itself so)
+  and its old address no longer answers as it, the points move there:
+  each update says so (`.moved`, a `WatchMove` with `.from_`, `.to`,
+  `.timestamp` and `.count`) and where the point is watched (`.address`); the move's
+  own update is `"starting"`, then values come from the new address. An
+  I-Am, or a handle that moved, only has the watch check; two addresses
+  answering as the device move nothing. While another device answers at
+  its address the points are `"unreachable"` (`why.kind == "replaced"`),
+  never taken for it, as the watch looks for its device.
+- A handle made from an address watches that address. A device that moves
+  away is reported (`"gone"`, `why.kind == "moved"`, `why.to`): watch it
+  there, or from a handle made from its instance. Another device answering
+  at the address is reported (`"gone"`, `"replaced"`, with `why.watched`
+  and `why.found`), and nothing from it is ever taken for the point; the
+  point comes back if its device answers there again.
+- Cancelling a step loses no update: one on its way when the cancel
+  landed comes first next time. Concurrent steps complete one at a time,
+  each with the next update.
+- Raised when the call is made: `TypeError` or `ValueError` for one str,
+  no points, more than 4096, `ALL`, `REQUIRED` or `OPTIONAL`, a lifetime
+  outside 1 to 28800, a `poll_interval` outside 1 to 3600, a bool for
+  either, or a `subscribe` that isn't a bool. On await: what any call
+  raises on a stopped client, `BacnetLookupError` for a following handle
+  whose device can't be placed, and `RuntimeError` past 256 settings.
+  Nothing is sent until the watch starts.
+- `.address` (where the device answered when the watch was made),
+  `.follows`, `.points` (`(object, property, array_index)` tuples, added
+  ones last), `.lifetime`, `.poll_interval`, `.subscribe`, `.folded`,
+  `.closed`, `len()`.
+
+
+#### `WatchUpdate`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.address` | `str` | Where the point is watched now, as `device()` reads back: for a following watch, where its device answers now |
+| `.instance` | `int \| None` | The device's instance, when known |
+| `.moved` | `WatchMove \| None` | A following watch's latest move (`.from_`, `.to`, `.timestamp`, `.count`); None before any, and for a watch of one address |
+| `.object_id`, `.property_id`, `.array_index` | `ObjectIdentifier`, `PropertyIdentifier`, `int \| None` | The point: Present_Value for one named by its object alone |
+| `.state` | `str` | `"starting"`, `"subscribed"`, `"polled"`, `"unreachable"` or `"gone"` (a watch of one address only) |
+| `.why` | `WatchReason \| None` | Why the point isn't subscribed; None while it is, or while starting |
+| `.value` | `Value \| None` | The value as last read or notified; its text names the units or the state |
+| `.error` | `BacnetError \| None` | Why the latest read gave no value, unraised; with `.value` set too, that value is an earlier one |
+| `.status_flags` | `Value \| None` | Status_Flags as last read or notified, as `Point.status_flags` has them |
+| `.via` | `str \| None` | `"read"` (the first read), `"cov"` or `"poll"` |
+| `.timestamp` | `float \| None` | When the value came, POSIX seconds, as `time.time()` |
+| `.cov_support` | `str` | `"unknown"`, `"not-offered"`, `"offered"`, `"accepted"` or `"refused"` |
+
+#### `WatchReason`
+
+`.kind` names the reason and `str(why)` says it in a line:
+
+| `.kind` | Fields | Meaning |
+|---------|--------|---------|
+| `"refused"` | `.error` | The device refused the subscription; polled, not asked again |
+| `"poll-only"` | | The watch polls every point (`subscribe=False`) |
+| `"no-answer"` | `.error` | The first read or the subscription went unanswered; asked again after a backoff |
+| `"full"` | `.error` | The device's subscription table was full; asked again after a backoff |
+| `"lapsed"` | `.error` (or None) | A renewal failed; asked again after a backoff |
+| `"missing"` | | No router to the device's remote network is known |
+| `"foreign-sender"` | `.sender` | Its notifications name device `sender`, which can't be told from another device at the address; polled |
+| `"moved"` | `.to` | The device answers at `to` now: a watch of one address gives the point up |
+| `"replaced"` | `.watched`, `.found` | Device `found` answers at the address now, not `watched`: a watch of one address gives the point up; a following watch is `"unreachable"` while it looks for its device |
+| `"unconfirmed"` | | A following watch's device refuses the read that names it at its address, so nothing it answers is taken: watch it by its address |
+
+#### `WatchMove`
+
+Where a following watch's device moved, as the watch took it: `.from_`
+(where it answered before; `from` is a keyword), `.to` (where it answers
+now), `.timestamp` (POSIX seconds) and `.count` (the moves the watch has
+taken for the point, this one included: compare it to tell a new move).
+Addresses read as `device()` reads them back.
 
 ### Writing
 
 #### `write(object, property, value, *, priority=None, index=None) -> Written`
 
 One WriteProperty, acknowledged.
+
+**The rule for writes through a handle made from an instance (#2795):** a
+write (or `relinquish`) goes only to the address the handle already
+holds, while the device there is taken for the instance, as it is when its discovery-table row
+is absent or names the instance (neither is the device's own answer, and
+neither has an age limit), or the device's last own answer there named
+it; else one identity read is sent within the call, and an answer as
+the instance, an unclear one (a Reject, an Abort, another error) or the
+client's own failure keeps the write there. Otherwise nothing is sent and it raises
+`BacnetLookupError`, its message naming both addresses, with `instance`,
+`at` (the address held) and `candidate` (the one other address the table
+has the instance at, an unconfirmed hint, or None) as `(network, mac)`. A
+write never moves the handle: a read through it looks for the device,
+asking its old address first and moving only when that isn't the device
+and the new address names it, and a write after it goes to the new place.
+What this leaves: a read moves a following handle once its old address
+misses one identity question (about 24 s at the default timers; about 3
+to 6 s for a routed address with no row) while another address names the
+instance, and later writes go to the new place. A routed device's path
+through its router is #2823, and a new handle's first resolution of an
+instance is #2824.
 
 ```python
 await ahu.write("av:1", "pv", "72.5@8")            # priority 8, in the text
@@ -564,15 +878,17 @@ ask only the instances between them: give both or neither.
 | Raised | When |
 |--------|------|
 | `TypeError`, `ValueError` | An argument that names nothing: when the call is made for a wrong type or bad text, on await for what needs the started client's link. Nothing was sent |
-| `BacnetLookupError` (also `LookupError`) | No device could be placed for the name. `target` is the name, and `instance` the instance it holds (None for an address) |
+| `BacnetLookupError` (also `LookupError`) | No device could be placed for the name, or a write through a following handle wasn't sent because the device isn't taken for the instance where the handle holds it. `target` is the name, and `instance` the instance it holds (None for an address); for that write, `at` is the address held and `candidate` an unconfirmed hint, as `(network, mac)` |
 | `BacnetAmbiguousDeviceError` | A `BacnetLookupError`: two or more addresses claim the instance. `candidates` are targets |
 | `BacnetWriteDeniedError` | The write policy refuses the priority. Nothing was sent |
 | `BacnetProtocolError`, `BacnetRejectError`, `BacnetAbortError` | The device's own Error, Reject or Abort |
-| `BacnetTimeoutError` | No answer. A write may or may not have been applied |
+| `BacnetTimeoutError` | No answer. A write may or may not have been applied. `busy_router` and `busy_network` name a router that said it was busy for the network first, else `None` (#2724) |
+| `BacnetNetworkRejectError` | A router on the way refused the request (#2724); `reached_device` is `False` when it never reached the device, `None` when an earlier attempt may have |
+| `BacnetError` | Among others, an acknowledgement of the wrong kind for the service: a write may or may not have been applied (#2721). For a device in the field that acknowledges writes with a Complex-ACK, `BACnetClient(..., accept_complex_ack_for_simple_services=True)` takes that as success |
 | `BacnetTransportError` | The link failed |
+| `BacnetStateError` (also `RuntimeError`) | The client or its link refused the request for its state before it went: the client not started yet, stopping or stopped, the link stopped, or a router-application client's router closed. `state` says which (`"not_running"` for a client not started, #2819). Nothing was sent, and the device wasn't asked. A request that went out before its link stopped raises `BacnetError` whose message says the device may have carried it out |
 | `BacnetReadBackError`, `BacnetNoPriorityArrayError` | A relinquish the device acknowledged whose read back failed, or found no Priority_Array |
 | `BacnetPagingError` | A device broke a paged read's rules. No call pages yet |
-| `RuntimeError` | The client isn't started |
 
 In a `read_many`, a property's failure is its `Reading.error`, and a device
 going silent or a link failing after the first rows is `Readings.stopped`:
@@ -651,11 +967,11 @@ available.
 
 `BACnetRouter` owns forwarding across configured B/IP networks (Clause 6).
 This source-build API provides B/IP ports, router discovery, copied route
-inspection, and a client and server on the router's own application entity
+inspection and counters, three router options, and a client and server on the
+router's own application entity
 ([below](#a-client-and-a-server-on-the-router)). Other link types, route
-administration, and the full native `RouterOptions` surface are outside this
-binding. Native router defaults apply, including the permissive
-wire-control policy; this API does not add an authorization policy.
+administration, a wire-control authorizer, and the native router's congestion
+and duplicate-suppression options are outside this binding.
 
 ```python
 from rusty_bacnet import BACnetRouter, BipRouterPort
@@ -675,7 +991,7 @@ async with router:
 ```
 
 Each immutable `BipRouterPort` has a unique network number from 1 through 65534,
-IPv4 interface, UDP port, and broadcast address. A router accepts one through
+IPv4 interface, UDP port, broadcast address and `isolated` flag. A router accepts one through
 255 ports. Port zero requests an ephemeral port: `ports()` reports its actual
 post-start address and six-byte MAC in configured order. Constructor validation
 opens no socket. Invalid addresses, reserved or duplicate networks and invalid
@@ -688,6 +1004,42 @@ They are mutually exclusive. `Bbmd()` continues to refuse foreign registrations
 by default; opt in with `Bbmd(accept_foreign_devices=True)` when intended. The
 router does not implicitly enable that option. B/IP deployment still needs the
 correct interface, port, broadcast and BBMD topology for each attached network.
+
+### Isolated ports
+
+`BipRouterPort(..., isolated=True)` keeps a port apart from the router's other
+isolated ports (#2716); the default is `False`, and `port.isolated` reads it
+back. The router carries nothing between two isolated ports and hides each from
+the other: neither learns the other's networks from what the router
+announces (I-Am-Router-To-Network) or from a routing-table query. Both still
+reach every ordinary port, and one isolated port alone changes nothing.
+
+```python
+router = BACnetRouter([
+    BipRouterPort(1, interface="192.0.2.10", broadcast_address="192.0.2.255"),
+    BipRouterPort(5, interface="198.51.100.10",
+                  broadcast_address="198.51.100.255", isolated=True),
+    BipRouterPort(7, interface="203.0.113.10",
+                  broadcast_address="203.0.113.255", isolated=True),
+])
+```
+
+Here networks 5 and 7 each exchange traffic with network 1 and never with each
+other. A request from network 5 for one device on network 7 draws the router's
+Reject-Message-To-Network, reason 1, naming network 7 (Clause 6.6.3.5): the
+same answer a router with no route gives. A client sees it as a
+`reject_message_to_network` report from `network_reports()`, and its request
+fails at once with `BacnetNetworkRejectError` (#2724): `reason` 1, `network`
+7 and `router`, the router's address. A broadcast is dropped without an
+answer.
+
+Isolation limits transit between isolated ports, by design. It is no trust
+level for a port and no access control: a Reject-Message-To-Network or a
+routing-table update from a node on an isolated port can still mark, remove or
+redirect a route through an ordinary port. The native controls for those
+(`RouterOptions::next_hop_rejects()`, and the control policy and authorizer)
+are the router options below; what isolation stopped is counted in
+`counters()` (`isolated_drops`, `isolated_refusals`).
 
 `routes()` returns frozen `RouterRoute` objects with destination network, egress
 index, direct/learned identity, next-hop MAC (`None` for a direct route), and
@@ -717,6 +1069,51 @@ Context exit waits for cleanup and preserves an exception from the body as the
 primary exception; a secondary cleanup error remains observable through a later
 `close()`. Destruction requests best-effort cleanup on the shared runtime. Use
 an awaited close or context exit when resource release must be established.
+
+### Router options and counters
+
+Three keyword-only options, Rust's `RouterOptions`, apply at each start
+(#2725), and read back as properties of the same names:
+
+- `remote_table_updates=False`: the router drops an Initialize-Routing-Table
+  update that arrives from another network, one that carries an SNET, and
+  counts it in `denied` (#2717). Clause 6.6.3.8 sets no limit on who may send
+  one; this default is the router's own. `True` takes such updates as it takes
+  one from its own networks: turn it on only for a site that manages router
+  tables from a station on another network.
+- `next_hop_rejects=False`: a received Reject-Message-To-Network changes the
+  learned route it names whoever relayed it (Clause 6.6.3.5). `True` applies
+  one only when it comes from that route's next router; one from another router
+  is still passed on toward its destination, leaves the route alone, and is
+  counted in `not_next_hop`.
+- `control_policy="permissive"`: the wire controls that change routes are
+  admitted. `"hardened"` denies every protected one, route announcements and
+  routing-table updates and answers among them, since this binding installs no
+  authorizer; the router then keeps its direct routes and learns none from the
+  wire, so only its directly attached networks are reachable. Each decision is
+  counted under `counters()["control"]`.
+
+Another policy raises `ValueError`, and a flag that isn't a `bool` `TypeError`.
+So does `"hardened"` beside `remote_table_updates=True` or
+`next_hop_rejects=True`: with no authorizer it denies every routing-table
+update and every reject, so neither option could ever apply.
+
+```python
+router = BACnetRouter(ports, next_hop_rejects=True)
+async with router:
+    counts = await router.counters()
+    print(counts["isolated_drops"], counts["denied"],
+          counts["control"]["i_am"]["policy_deny_total"])
+```
+
+`counters()` copies the router's counts since this start, zero at each start:
+every Rust router `Counters` field under its own name (a `RouterCounters`
+typed dict), each a total that saturates at 2**64-1 and names no peer, and
+under `"control"` each protected control class (`i_am`, `init_ack`,
+`init_mgmt`, `busy`, `available`, `reject`, `i_could_be`, `init_query`) with
+its `allow_total`, `deny_total` and `policy_deny_total`. The fields are sampled
+one by one. It raises `RuntimeError` before start and once close begins, as
+the snapshot methods do.
 
 ### A client and a server on the router
 
@@ -752,11 +1149,10 @@ async with router:
     hosted.add_analog_input(0, "Supply temperature", 62, 18.5)
     await hosted.start()
     async with BACnetClient(transport="router", router=router) as client:
-        # The router's application has no network of its own, so its
-        # Who-Is names one: here each of the router's two networks.
-        for network in (1, 5):
-            for device in await client.discover(scope=network):
-                print(device.instance, device.network)
+        # The router's application is on each of the router's networks,
+        # so its local Who-Is asks networks 1 and 5, and no further.
+        for device in await client.discover():
+            print(device.instance, device.network)
         value = await client.read_property_from_device(
             1005, ObjectIdentifier(ObjectType.ANALOG_INPUT, 0),
             PropertyIdentifier.PRESENT_VALUE)
@@ -767,12 +1163,23 @@ The client sends every request through the router's table, so it names each
 device by its network, as a routed device, even on a directly attached
 network. Every reply and I-Am reaches it with the sender's network and MAC
 as its source, so discover devices first and use the `_from_device` and
-`_to_device` methods. Who-Is goes out as a global broadcast on every port. A
-send to an `ip:port` names no network: it raises `BacnetError`. A request to a
+`_to_device` methods. A local Who-Is goes to each of the router's networks,
+and a global one out of every port as a global broadcast. A send to an
+`ip:port` names no one of the router's networks: it raises `BacnetError`. A
+request to a
 network the router doesn't know yet raises `BacnetTransportError` with errno
 `ENETUNREACH`, and the router starts looking for it; once the route is
 learned, a retry goes. The server answers at the router's address on each
 network.
+
+Every local broadcast either stack sends goes to each of the router's networks,
+isolated ports included, once each (#2601): the server's I-Am, an unconfirmed
+event notification to a local-broadcast recipient and the Who-Is that looks
+for a Device recipient, as well as the client's Who-Is, Who-Has, Who-Am-I and
+Write-Group. A recipient or scope that names one network's number reaches that
+network alone. A port that can't carry its copy fails the send with its error,
+yet the other networks' copies still go: an error doesn't mean nothing was
+sent.
 
 A stack whose role the router doesn't share raises `ValueError` at
 construction: a server needs `application="client_and_server"`. `router=`
@@ -783,8 +1190,8 @@ a split entity, the client's `apdu_timeout_ms` and the server's
 request 60 seconds after its last segment, retry or answer. Starting a stack
 before the router, or a second stack of the same role on one router start,
 raises `RuntimeError`. Closing the router ends both shares: each request
-then fails at once with `BacnetTransportError` (errno `ENOTCONN`); stop the
-stacks as usual. A restarted router makes new shares for stacks started
+then fails at once with `BacnetStateError` (`state` `"closed"`, also a
+`RuntimeError`), with nothing sent; stop the stacks as usual. A restarted router makes new shares for stacks started
 after it. The router's network-control messages stay internal.
 
 ## Enums
@@ -1208,16 +1615,12 @@ Code that handled `application_data` reads should expect:
   tag) anywhere in it, or more than 10,000 elements. Accept `"tagged"` and
   `"application_data"`, and read the octets from `.octets`, which both
   give. Broken framing still raises as for any read.
-- A whole Network Port property 414 (BBMD_Broadcast_Distribution_Table)
-  has tag `bdt`. Its `value` is a list in wire order. Each row has an
-  `address_kind` of `"ip"`, `"name"` or `"none"`, an `address` containing
-  the IP text, host name or `None`, a UDP `port`, and a `broadcast_mask` as
-  dotted IPv4 text or `None`. Property 415 (BBMD_Foreign_Device_Table) has
-  tag `fdt`. Its rows have an IP `address`, UDP `port`, `ttl` and
-  `seconds_remaining`. Empty tables keep their tag and return `[]`.
-  Accessing `value` gives fresh dictionaries. Passing the `PropertyValue`
-  to a write retains its original wire bytes. Well-framed values that
-  fail table decoding retain their bytes as `tagged` or `application_data`.
+- **Network Port tables.** A whole read of a Network Port's
+  BBMD_Broadcast_Distribution_Table (414) or BBMD_Foreign_Device_Table
+  (415) is tagged `bdt` or `fdt` (#2690), not `tagged`, and its
+  FD_BBMD_Address (418) and BACnet_IP_Global_Address (407) read as
+  `host_n_port`, the address text (#2710): see
+  [Typed constructed values](#typed-constructed-values).
 - **Failed typed reads.** A typed constructed property whose octets don't
   decode as its elements (a malformed Recipient_List, say) falls back to
   `tagged` too.
@@ -1229,61 +1632,79 @@ Code that handled `application_data` reads should expect:
 
 #### Interpreting vendor property values
 
-A successful `read_property` or `read_property_multiple` value carries a frozen
-`read_context` with the ACK's `object_id`, numeric `property_id`, optional
-`array_index` and exact property-value bytes in `raw`. Copying or pickling the
-value retains this context. Its equality, hash and write encoding remain those
-of the ordinary `PropertyValue`. For example, an Unsigned 2 received as
-`22 00 02` has those three context bytes and writes back as `21 02` via
-`.octets`. Constructed values created locally, local server reads, COV values
-and the children of a Group's embedded read results have no read context.
+A value returned by a network `read_property` or `read_property_multiple`
+carries a `read_context`: the `object_id`, numeric `property_id` and
+`array_index` the ACK named, which can differ from the request (a wildcard
+Device instance names the device's own). Copies and pickles keep it; it
+takes no part in the value's equality, hashing or `repr`. The context
+itself is hashable and compares by its three selectors. Its `raw` field
+retains the original ACK value bytes, including non-minimal integers and
+character set markers. A primitive’s `.octets` is its canonical write encoding. Local server reads, COV
+values, a Group's member results and values you build have none.
 
-Select the vendor from the responding station's I-Am or its Device
-Vendor_Identifier. The same property number can describe different datatypes
-across vendors and object types. This example uses a separately installed
-`ace-bacnet-devices` catalogue and a value read from a TAC MicroNet Device.
-Load the definition once for that station.
+The stack doesn't know a proprietary property's datatype. Choose a
+declaration by the station's vendor identifier (from its I-Am, or a read of
+the Device object's Vendor_Identifier), the object type and the property
+number: the same proprietary property number can mean different datatypes
+at different vendors, and on different object types at one vendor (Clause
+23.3). Keep those declarations in your own table or a third-party registry,
+and decode the ACK bytes with `decode_property_as`:
 
 ```python
-from ace_bacnet_devices import vendors
 from rusty_bacnet import ObjectType, decode_property_as
 
-definition = vendors.load("tac-micronet")
+# (vendor identifier, object type, property number) -> (datatype, shape)
+DECLS = {
+    (555, ObjectType.DEVICE, 1330): ("unsigned", "scalar"),
+    (555, ObjectType.DEVICE, 1331): ("unsigned", "array"),
+    (777, ObjectType.DEVICE, 1331): ("unsigned", "scalar"),
+}
+
 ctx = value.read_context
-if definition.vendor_id == station_vendor_id and ctx.object_id.object_type == ObjectType.DEVICE:
-    prop = next((p for ext in definition.object_extensions if ext.object_type == "device"
-                 for p in ext.properties if p.identifier == ctx.property_id), None)
-    if prop is not None:
-        spec = prop.datatype
-        names = {v.value: v.name for v in spec.values} if spec.semantics == "enumeration" else None
-        result = decode_property_as(ctx.raw, spec.primitive.value, shape=spec.shape.value,
-                                    array_index=ctx.array_index, array_length=spec.array_length,
-                                    value_names=names)
+decl = DECLS.get((vendor_id, ctx.object_id.object_type, ctx.property_id))
+if decl is not None:
+    datatype, shape = decl
+    index = {"array_index": ctx.array_index} if shape == "array" else {}
+    result = decode_property_as(ctx.raw, datatype, shape, **index)
+    if result.status == "decoded":
+        print(result.value.value)
 ```
 
-For a proprietary object type, select the matching numeric `identifier` in
-`definition.object_types` and search its `properties`. Without a declaration,
-keep the ordinary value and its context. TAC vendor 11, Device property 1330
-declares Unsigned with name `foreignDevice` for 2. Carrier vendor 16 declares
-Device property 4151 as an array of Unsigned, while OEMCtrl vendor 446 declares
-it as a scalar. Honeywell vendor 17 declares property 760 differently on
-Analog Input, Binary Input and Multi-state Input. These examples use catalogue
-metadata. The test octets are synthetic.
+The datatype is the `tag` name of the primitive value it decodes to:
+`null`, `boolean`, `unsigned`, `signed`, `real`, `double`, `octet_string`,
+`character_string`, `bit_string`, `enumerated`, `date`, `time` or
+`object_identifier`. The shape is `scalar`, `array` or `list`. A whole
+array or list is a list at every length, zero and one included. With
+`array_index`, a positive index gives one element and index zero the
+array's count as `unsigned`; `array_length` declares a fixed-length array.
+`value_names`, a mapping from integers to names, gives the result's
+`value_names`: a tuple aligned with the decoded elements, `None` where a
+number has no name, and empty for a count. The value keeps its numbers.
 
-`decode_property_as` accepts Null, Boolean, Unsigned, Integer (signed), Real,
-Double, OctetString, CharacterString, BitString, Enumerated, Date, Time and
-ObjectIdentifier. A whole array or list always gives a list, including zero or
-one item. A positive array index gives one element and index zero gives an
-Unsigned count. Supply `array_length` for fixed arrays. Optional integer names
-are a tuple aligned with the decoded elements, with `None` for missing names
-and an empty tuple for a count. Names leave numeric values intact.
+The result's `status` is one of:
 
-A result has `status="decoded"` and a value on success. A wrong tag or count
-gives `type_mismatch`; an unknown or context encoding gives
-`unsupported_encoding`; invalid framing or primitive payload gives
-`malformed`; exceeding the tag reader's depth or node budget gives
-`limit_exceeded`. All four keep `raw` and supply a diagnostic with no decoded
-value. Invalid declarations raise `ValueError`.
+- `decoded`: `value` holds the decoded value.
+- `type_mismatch`: the octets' tag or shape differs from the declaration,
+  context-tagged or constructed content under a primitive included.
+- `unsupported_encoding`: an encoding the value model can't hold, such as
+  a character set the binding doesn't convert or an integer wider than it
+  keeps (an Unsigned past 8 octets, a Signed or Enumerated past 4), whether
+  or not that encoding is minimal. A non-minimal integer that fits decodes.
+- `malformed`: any other broken encoding, reserved application tags 13 to
+  15 included.
+- `limit_exceeded`: past the tag reader's depth or node bound.
+
+Every result keeps its input as `raw` and, unless decoded, a `diagnostic`.
+An invalid declaration raises `ValueError`.
+
+What `.octets` holds depends on the value. A `tagged` or `application_data`
+value and a typed constructed element hold the octets exactly as received;
+a vendor value the binding can't decode as a primitive (a Signed past 4
+octets, a JIS string, any context-tagged content) reads as one of those.
+A primitive, or a list of primitives, is re-encoded from its decoded value
+in the shortest form: it decodes to the same value, but can differ from what
+the device sent (an Unsigned with leading zero octets, a string sent in
+UCS-2 or ISO 8859-1, which comes back as UTF-8).
 
 #### Typed constructed values
 
@@ -1299,13 +1720,17 @@ and a read of a single value (Accompaniment, Audit_Notification_Recipient,
 Effective_Period, Last_Command_Time, Value_Source, Scale, Prescale, the shed
 levels, Event_Parameters and the others marked "one value") the element
 itself. An
-empty collection is `PropertyValue.list([])`. Each element keeps the octets it
+empty collection is `PropertyValue.list([])`, except a Network Port's
+tables: a whole BBMD_Broadcast_Distribution_Table or
+BBMD_Foreign_Device_Table read is tagged `"bdt"` or `"fdt"` (#2690), its
+`.value` a list of the entry mappings, `[]` when empty. Each element keeps the octets it
 was read from, so writing the value back (`write_property`,
 `write_property_local`) sends them unchanged. `PropertyValue.list` of
 elements of one collection, from indexed reads, equals the whole read. Two
 values are equal when they carry the same octets and the same element
 production, so a typed read doesn't equal `PropertyValue.application_data` of
-its octets. `.octets` gives those octets as `bytes` (a whole
+its octets, and two encodings of the same entry (a TTL in one octet or
+two) are unequal though their `.value` is the same. `.octets` gives those octets as `bytes` (a whole
 collection's elements back to back), for comparing with a capture or for
 `PropertyValue.application_data`.
 
@@ -1329,6 +1754,9 @@ collection's elements back to back), for comparing with a capture or for
 | Trend Log; Averaging, Event Enrollment | Log_DeviceObjectProperty; Object_Property_Reference (one value) | `"device_object_property_reference"` | a `DeviceObjectPropertyReference` mapping with every key | existing property writes where writable |
 | any object with intrinsic reporting | Event_Algorithm_Inhibit_Ref (one value) | `"object_property_reference"` | `{"object_identifier", "property_identifier", "property_array_index"}`: a `DeviceObjectPropertyReference` mapping without `device_identifier`; instance 4194303 while unset | existing property writes where writable |
 | Access Point; Lift, Escalator | Access_Event_Credential; Energy_Meter_Ref (one value) | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` | none |
+| Network Port | BBMD_Broadcast_Distribution_Table | `"bdt_entry"` | a `BdtEntry`: `{"address", "broadcast_mask"}`, `address` the BBMD (`"ip:port"` as `read_bdt()` gives IPv4, `"[v6]:port"` or `"name:port"`; `None` for an entry that names no host), `broadcast_mask` dotted text or `None` | `PropertyValue.bdt(rows)` (#2710) |
+| Network Port | BBMD_Foreign_Device_Table | `"fdt_entry"` | an `FdtEntry`, as `read_fdt()` gives it: `{"address", "ttl", "seconds_remaining"}`, `address` `"ip:port"` or `"[v6]:port"` | none: the property is read-only, filled by registrations |
+| Network Port | FD_BBMD_Address, BACnet_IP_Global_Address (one value) | `"host_n_port"` | the address text a `BdtEntry` gives: `"ip:port"`, `"[v6]:port"` or `"name:port"`; `None` for no host, the port then in `.octets` only | existing property writes of the read value |
 | Global Group | Present_Value | `"property_access_result"` | the member's `DeviceObjectPropertyReference` keys, then `"value"` (shaped as a read of the member) and `"error"` (`(ErrorClass, ErrorCode)`), one of them `None` | none |
 | Device | Audit_Notification_Recipient (one value) | `"recipient"` | an `AuditRecipientInput` mapping | `configure_audit_recipient(...)` |
 | Device | Active_COV_Subscriptions | `"cov_subscription"` | `{"recipient", "process_identifier", "object_identifier", "property_identifier", "property_array_index", "issue_confirmed_notifications", "time_remaining", "cov_increment"}`; `recipient` an `AuditRecipientInput` mapping, `cov_increment` a `float` or `None` | none |
@@ -1346,6 +1774,90 @@ collection's elements back to back), for comparing with a capture or for
 | Accumulator | Scale (one value) | `"scale"` | a `float` for a float scale, an `int` for a power-of-ten scale | `add_accumulator(scale=...)` |
 | Accumulator | Prescale (one value) | `"prescale"` | `(multiplier, modulo_divide)` | `add_accumulator(prescale=...)` |
 | any object serving Tags | Tags | `"name_value"` | `{"name": str, "value": None or PropertyValue}` | the `tags=` keyword of the object builders (see [Object profiles and Value_Source](#object-profiles-and-value_source)); read values can also be written back |
+
+A Network Port's BDT and FDT read this way through ReadProperty,
+ReadPropertyMultiple, COV values and the local `BACnetServer.read_property`
+(#2690). A BDT row's address is the `"ip:port"` text `read_bdt()` gives
+for IPv4, with `"[v6]:port"` and `"name:port"` for the other host kinds,
+so a script can compare a Network Port read with the BVLC reads of the same
+BBMD; the value's `.octets` are the exact form. Writing back a value as read
+sends its octets unchanged. Octets that aren't the entries, to the last
+octet, or more than 10,000 entries, read as `tagged` or `application_data`
+holding the octets as served; application-tagged values that aren't
+entries don't become a plain list, as they would for other typed lists.
+
+FD_BBMD_Address and BACnet_IP_Global_Address hold the same host and port
+as a BDT entry's BBMD, and read as one `host_n_port` value whose `.value`
+is that address text (#2710); `None` stands for the no-host choice, which
+a global address uses with port 0 while it isn't known (Clause 12.56.33).
+`.octets` keep the value exactly as served. A value that isn't exactly one
+host and port reads as `tagged`, its octets as served.
+
+##### Writing a BDT from rows
+
+`PropertyValue.bdt(rows)` builds a BBMD_Broadcast_Distribution_Table value
+from rows in the form a read gives (#2710). Each row is a `BdtEntry`
+mapping: `address` as `"ip:port"`, `"[v6]:port"` or `"name:port"`, and
+`broadcast_mask` as dotted text, `None` or left out. The rows are encoded
+with the stack's own BDT entry codec, so a table read from a device that
+encodes as the stack does builds back to the same octets:
+`PropertyValue.bdt(read.value) == read`.
+
+```python
+BDT = rb.PropertyIdentifier.BBMD_BROADCAST_DISTRIBUTION_TABLE
+read = await client.read_property(address, port, BDT)
+rows = read.value + [{"address": "192.0.2.40:47808", "broadcast_mask": "255.255.255.255"}]
+await client.write_property(address, port, BDT, rb.PropertyValue.bdt(rows))
+await client.reinitialize_device(address, rb.ReinitializedState.ACTIVATE_CHANGES)
+```
+
+Masks: the entry form gives a B/IP BBMD's rows a mask and a B/IPv6 BBMD's
+none (Clause 21). The builder encodes each row's mask as the row gives it,
+whatever the address, and leaves the rule to the device the table is
+written to. This stack's own B/IP BBMD refuses the write
+(`BacnetProtocolError` VALUE_OUT_OF_RANGE) when a row names its BBMD by
+host name or IPv6 address, or has no mask.
+
+Each row is checked as it is read, and an error names it by index
+(`rows[3]: ...`). `ValueError` covers:
+
+- an `address` that is `None` or missing (Clause 12.56.34 keeps entries
+  without a host out of the list, so a row read from such an entry doesn't
+  build);
+- a port that isn't plain decimal from 0 to 65535: ASCII digits only, no
+  sign, no leading zero;
+- an IPv6 address without brackets or with a zone;
+- a host that is neither an IPv4 address nor a host name. A host name
+  follows the rule `ForeignDevice` targets do: RFC 1123 labels of letters,
+  digits and hyphens, at most 253 octets, and not digits and dots alone, so
+  a mistyped address (`192.168.1.300`, `01.2.3.4`) is refused instead of
+  taken as a name;
+- a mask that isn't four dotted octets, and a key other than the two.
+
+A row of the wrong type raises `TypeError`. A device's table can hold a
+name that rule refuses (one with a colon, or one past ASCII), and so can
+show a row that doesn't build; to send such a table, or any table exactly
+as read, write the read value itself, whose `.octets` are what the device
+served. A port encoded in more octets than it needs, or a host name in
+another character set, reads as the same row but builds in the stack's
+shortest form.
+
+The written table is pending until the device activates it: a
+ReinitializeDevice with ACTIVATE_CHANGES (or WARMSTART) puts it in effect
+(Clause 12.56.13). This is the 2020 way to change a BBMD's table. Three
+related paths stay as they are:
+
+- `Bbmd(bdt=...)` configures this process's own BBMD at start, from
+  `"ip:port"` strings or `("ip:port", "mask")` pairs; it doesn't take these
+  rows. A table written to our own BBMD's registered Network Port this way
+  is activated with the rest of its pending values and saved in
+  `bdt_persist_path`.
+- `BACnetClient.write_bdt(address, entries)` sends the BVLC
+  Write-Broadcast-Distribution-Table an older BBMD takes; a 2020 BBMD
+  refuses it with 0x0010 (see [BBMD management](#bbmd-management)).
+- The Foreign Device Table has no builder: Clause 12.56.36 makes
+  BBMD_Foreign_Device_Table read-only, since the BBMD fills it from
+  registrations.
 
 Single reference reads use these forms through local reads, client and endpoint
 RP/RPM, and device-aware singular and batch reads. A property-reference mapping
@@ -1608,6 +2120,9 @@ client = BACnetClient(
     router=None,                 # Keyword-only; a BACnetRouter, with transport="router"
     write_policy=None,           # Keyword-only; a WritePolicy for Device.write and relinquish: see "The write policy"
     resolve_scope=None,          # Keyword-only; "local" (None), "global" or a network: where device(1234) asks, see "Devices and targets"
+    watch_lifetime=300,          # Keyword-only; Device.watch's default COV lifetime, 1 to 28800 s, see "Watching"
+    watch_poll_interval=10.0,    # Keyword-only; Device.watch's default poll interval, 1 to 3600 s
+    watch_subscribe=True,        # Keyword-only; False polls every point of a watch that doesn't say
     # MS/TP options (serial_port, mstp_*): see "MS/TP serial ports"
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
@@ -1690,6 +2205,46 @@ that a normal stack and a foreign device on one port, which used to both
 start in either order, now need the keyword on whichever starts later. See
 [Claiming the port (B/IPv6)](rust-api.md#claiming-the-port-bipv6). On any
 other transport the keyword raises `ValueError`.
+
+### Loopback interfaces and broadcasts
+
+`interface="127.0.0.1"` sets the device's own address, but the socket is
+still bound to `0.0.0.0` unless `share_port_by_address=True` binds the
+address itself. A datagram to `255.255.255.255` then leaves through
+whichever interface the host's routes pick, usually the LAN, and the
+device can hear its own I-Am from its LAN address. So with a loopback
+`interface` and the default `broadcast_address="255.255.255.255"`, each
+local broadcast (a `who_is(scope="local")`, a local Who-Has, a bare
+instance resolved locally) raises `BacnetTransportError` before anything is
+sent, and the message names `broadcast_address` (#2691). `start()` logs a
+warning for that configuration once; nothing is wrong while the device
+only sends unicast. A BBMD on such an interface still forwards its own
+broadcasts, and those it receives, to its BDT peers and foreign devices;
+only the local rebroadcast is refused, and a foreign device's
+Distribute-Broadcast-To-Network then draws a NAK. Two effects follow. On a
+BBMD the error comes back after those forwards are queued, so retrying the
+broadcast sends them again. And a foreign device that gets the NAK may
+register again sooner: this stack's own foreign device takes a NAK as a
+hint to re-register, at most once per response timeout.
+
+For discovery on loopback, pass the loopback subnet's broadcast address,
+`broadcast_address="127.255.255.255"` (with the usual 127.0.0.0/8):
+
+- **Linux:** a broadcast to it reaches the other B/IP sockets on loopback
+  at that port. The Python suite runs this way on Linux CI.
+- **macOS:** `lo0` is not broadcast-capable. A probe on one macOS host
+  found the datagram delivered to no socket, so local discovery finds
+  nothing, though nothing leaves the host either. The repository's tests
+  on macOS pass `broadcast_address="127.0.0.1"` instead, which reaches one
+  socket bound to that port.
+- **Windows:** not verified.
+
+An explicit interface that is not loopback has a related exposure: with
+`255.255.255.255` the host still routes the broadcast by its default
+route, so if `interface` is not the default-route address the broadcast
+can leave through another interface, and its echo comes back from an
+address that is not the device's own. Pass that interface's subnet
+broadcast address; #2691 tracks deriving it.
 
 ### Sharing a port by address
 
@@ -1776,8 +2331,8 @@ A host name in `ForeignDevice` serves B/IPv6 too (#2365), with the IPv6 addresse
 stands for. An owner on `ipv6_interface="::"` picks its source address from the route
 to the BBMD, so its start looks the name up first and fails if it has no usable IPv6
 address. On an explicit interface the owner starts and waits: nothing is registered,
-broadcasts raise `OSError` (the transport error), and the name is tried again 30
-seconds after each failure. On a B/IPv6 owner `foreign_registration()` returns a
+broadcasts raise `BacnetStateError` (`state` `"not_connected"`, as on B/IP before its
+BBMD is known; #1833), and the name is tried again 30 seconds after each failure. On a B/IPv6 owner `foreign_registration()` returns a
 `Bip6ForeignRegistrationStatus`: `bbmd` (the address in use, or None while waiting),
 `bbmd_name` (the host name it is known by, `"host:port"`, or None for an address),
 `waiting_for_bbmd`, `bbmd_lookups`, `bbmd_lookup_failures`, `last_bbmd_lookup_failure`
@@ -1920,8 +2475,10 @@ three seconds for the answer:
 
 - `read_bdt(address)` returns the Broadcast Distribution Table as
   `("ip:port", "mask")` rows, the shape `Bbmd(bdt=)` takes.
-- `write_bdt(address, entries)` asks the BBMD to take `entries` as its BDT. A
-  BBMD that follows the 2020 standard refuses (result code 0x0010).
+- `write_bdt(address, entries)` asks the BBMD to take `entries` as its BDT,
+  for an older BBMD. A BBMD that follows the 2020 standard refuses (result
+  code 0x0010): write its Network Port's BBMD_Broadcast_Distribution_Table
+  instead (see [Writing a BDT from rows](#writing-a-bdt-from-rows)).
 - `read_fdt(address)` returns the Foreign Device Table, a dict per entry with
   `address`, `ttl` and `seconds_remaining` (the grace period included).
 - `delete_fdt_entry(address, entry)` asks it to delete the foreign device at
@@ -1936,7 +2493,11 @@ raises `BacnetBvlcNakError` with the code in `result_code`; no answer raises
 `BacnetBvlcUnexpectedResponseError` with the `expected` and `got` BVLC
 function codes. A second request to the same peer while one is in flight is
 refused locally with `BacnetError`, as is any request on a non-B/IP client.
-A bad address raises `ValueError` before anything is sent.
+A bad address raises `ValueError` before anything is sent. A request made
+while the client's link is stopped raises `BacnetStateError`, with nothing
+sent; one the client's stop cuts off after it went out raises `BacnetError`
+whose message says the device may have carried it out, so after a cut-off
+`write_bdt` or `delete_fdt_entry` read the table again (#1833).
 
 ```python
 from rusty_bacnet import BacnetBvlcNakError, BacnetTimeoutError
@@ -1983,7 +2544,13 @@ polled station, and `mstp_reply_timeout_ms` (255 to 300, default 300) how
 long it waits for an answer to a request; the defaults leave room for a USB
 adapter's receive latency. A value outside those ranges raises `ValueError`
 at start, before the port opens (`MstpEndpoint` raises it when it is built);
-a negative one raises `OverflowError` when the object is built.
+a negative one raises `OverflowError` when the object is built. A port that
+doesn't open raises `BacnetTransportError` at start: an `OSError` whose
+`errno` is the failure's kind and whose `strerror` names the port and gives
+the operating system's reason, such as `Serial open failed for /dev/ttyUSB0:
+No such file or directory`. `errno.ENOENT` means the port isn't there, or
+that another program holds it (on Windows also that access was denied): the
+serial library reports all of these as no device, so `strerror` tells which.
 
 The port is taken not to hear its own frames (transceiver receiver off while
 transmitting). `mstp_echo=True` declares an adapter that returns every octet
@@ -2083,16 +2650,20 @@ client = BACnetClient(
 All `ScReconnect` arguments are keyword-only. The example uses the default finite policy.
 The initial delay is the minimum reconnect sleep; exponential backoff and jitter
 stay within the configured minimum and maximum. Delays must be positive,
-`initial_delay_ms <= max_delay_ms`, and the maximum must not exceed 86,400,000 ms.
+`initial_delay_ms <= max_delay_ms`, and the maximum must not exceed 600,000 ms
+(ten minutes, the most Annex AB.6.1 lets the reconnect wait grow to).
 Invalid settings raise `ValueError`; negative or overflowing unsigned integers
 raise `OverflowError`. These checks do not qualify deployment timing.
 
-With `retry_forever=True`, each backoff round tries the primary followed by
-an available failover. The rounds continue while a hub can still be retried,
-regardless of `max_retries`. Stopping the owner cancels recovery.
-
-With the default `retry_forever=False`, `max_retries=0` permits the initial connection and disables active-hub
-retries after loss. Passing a `ScReconnect` object to a non-SC client raises `ValueError`.
+Recovery after a lost connection runs in rounds: each waits its backoff once,
+then tries the primary hub and, when that fails, the failover hub
+(`sc_failover_hub`), so the failover hub gets its turn in the first round.
+`max_retries` bounds the rounds. `max_retries=None` keeps going while a hub
+can still be dialled, and needs `initial_delay_ms` of at least 1,000
+(`ValueError` otherwise). `max_retries=0` turns recovery off: the first loss
+ends the connection, while the initial connection and primary restoration
+still run. A hub that forbids further retries ends recovery, and stopping the
+owner cancels it. Passing a `ScReconnect` object to a non-SC client raises `ValueError`.
 Retries reuse the loaded TLS trust and operational identity, VMAC, UUID and
 heartbeat settings; credential files are loaded at entry, not reread on each
 retry. A new connection must complete TLS and SC admission before service
@@ -2135,12 +2706,13 @@ already behind it. `kind` is `connected`, `disconnected`, `connect_failed`,
 `reconnect_attempt`, `failover_engaged`, `primary_restored`,
 `primary_restore_failed` or `reconnect_gave_up`; `hub` (`primary` or
 `failover`), `hub_vmac`, `cause`, `attempt` and `backoff` (seconds) are set
-where they apply and None elsewhere. In finite recovery, losing the primary reads
-`disconnected`, a `reconnect_attempt` and `connect_failed` per failed primary
-attempt, then `failover_engaged` and `connected` on the failover hub.
-Unlimited recovery reports attempts on the primary and available failover in
-that order. Both carry the same round number and backoff. Round numbers start
-at one and saturate at 2**32 − 1. While on
+where they apply and None elsewhere. Losing the primary reads
+`disconnected`, then per round a `reconnect_attempt` and `connect_failed` for
+the primary, followed by a `reconnect_attempt`, `failover_engaged` and
+`connected` (or `connect_failed`) for the failover hub. Both attempts of a
+round carry its number and backoff; round numbers start at one and saturate
+at 2**32 − 1. `failover_engaged` comes once the failover dial succeeds,
+before its handshake, and can repeat once per round. While on
 the failover hub, each restore probe of the primary that fails reads one
 `primary_restore_failed` (`hub` is `primary`), at most one per restore
 interval (#1828).
@@ -2493,7 +3065,9 @@ Present_Value member dictionaries keep their existing fields.
 
 #### `write_property_multiple(address, specs)`
 
-Write multiple properties to multiple objects in one request. Both direct and
+Write multiple properties to multiple objects in one request. Pass a local address string
+or a `RoutedTarget`. An explicit router sets the next hop, and a target without one
+uses the client's route lookup. Both direct and
 device-directed WPM validate the entire input synchronously before creating an
 operation or starting discovery. Empty request/property lists, ALL/REQUIRED/OPTIONAL
 targets, and priorities 0 or 17–255 raise `ValueError`; integers outside the native
@@ -2701,12 +3275,9 @@ client by default acknowledges a confirmed notification of either kind whether o
 knows the subscription, so match one by its `subscriber_process_identifier`
 and source. An unsubscribed sender's broadcast can bring a
 `CovNotificationMultiple` too, so check `kind` (or `isinstance`) before
-reading a `CovNotification`'s fields. A standalone client with segmented
-receive enabled reassembles both confirmed COV forms. An endpoint client
-uses the Device's declared receive capability and segment timeout for incoming
-notifications. It applies the same COV admission policy after reassembly.
-A repeated nonzero final segment after completion draws an Abort. A sender
-that starts the whole request again may cause a second publication.
+reading a `CovNotification`'s fields. A confirmed notification that comes in
+segments is reassembled, then acknowledged and yielded once (#2646), and a
+confirmed notification sent again, its answer lost, is published again.
 
 ```python
 notifications = await client.cov_notifications()
@@ -2735,9 +3306,11 @@ text is one station's address, in the forms `device()` takes
 text that names a device instance or a routed target, raises `ValueError`,
 and another type `TypeError`, before anything is sent; a station the
 client's link can't reach raises `ValueError` on await. A client on a
-router's application (`transport="router"`) has no network of its own, so
-its Who-Is names a network, or every one: a local or directed one raises
-`ValueError` saying so. A `RoutedTarget` in `who_is` or `discover` selects one station by its
+router's application (`transport="router"`) is on each of the router's
+networks, so its local Who-Is goes to every one of them, once each, and the
+router passes it no further; the devices answer as routed devices on their
+networks, as when each network is named (#2601). A station's address names
+no one of those networks and raises `ValueError` there. A `RoutedTarget` in `who_is` or `discover` selects one station by its
 network and MAC. The explicit or learned next hop receives a unicast.
 With no learned next hop the client broadcasts on the local link while
 keeping the remote station's DNET and DADR. Discovery collects answers from
@@ -2770,8 +3343,9 @@ Find a device hosting a specific object by identifier. The Who-Has goes where
 local broadcast which no router passes on; `scope="global"` every network,
 where every device that hears it searches its objects; a network number from
 1 to 65534 that remote network. The same values raise the same errors as
-`who_is()`'s, before anything is sent, and on `transport="router"` a local
-Who-Has raises `ValueError` naming the scopes to use. Answers come through
+`who_is()`'s, before anything is sent. On `transport="router"` a local
+Who-Has asks each of the router's networks (#2601), and a station's address,
+which names no one of them, raises `ValueError`. Answers come through
 `i_have_events()`.
 
 ```python
@@ -2816,7 +3390,7 @@ replies = await client.who_has_replies("Zone Temperature", scope="global")
 Follow every I-Have the client receives from now on, an answer to its own
 Who-Has or not, as an async iterator of `IHave`.
 
-#### `discover_routers(network=None, *, destination=None, wait=3.0) -> list[DiscoveredRouter]`
+#### `discover_routers(network=None, *, router=None, wait=3.0) -> list[DiscoveredRouter]`
 
 Pass a local router address such as `destination="192.0.2.1:47808"` or a
 router's MAC bytes to collect only that router's own answers. The router can
@@ -2831,13 +3405,30 @@ collect the routers that answer for `wait` seconds: one frozen
 it are kept. No answer is an empty list; `network` 0 or 65535 raises
 `BacnetError`.
 
+With `router`, the question goes to that one router and only its own
+answers count: its address on the local link, as text such as
+`router="192.0.2.1:47808"` or as MAC bytes (a `DiscoveredRouter`'s `mac`).
+A router asked about a network it does not know may ask further before it
+answers. An IPv6 socket address may need VMAC resolution before the
+collection window. The router must be one station: an empty, broadcast or
+group address raises `ValueError` with nothing sent, as `routing_table`
+does, and on B/IP
+the host's own subnet masks catch a subnet broadcast at any UDP port.
+
+The asked router answers with a local broadcast, not to the asker alone.
+A B/IP router on another IP subnet therefore takes the question, but its
+answer reaches the client only when a BBMD forwards it here, as a peer or
+by foreign-device registration (`foreign_device=` on the client or
+endpoint); with no BBMD, an empty list is the expected result.
+
 #### `routing_table(router, *, wait=3.0, quiet=0.5, total=10.0, max_entries=4096) -> RoutingTable`
 
 Read the routing table of a local or routed station (#2612). The call sends one
 Initialize-Routing-Table with a port count of zero, which only asks; no
 argument can turn it into an update. For a local router, pass its MAC as
-`bytes` or use one of the binding's address strings. For a remote router,
-pass a `RoutedTarget`. An empty or broadcast address raises
+`bytes` (a `DiscoveredRouter`'s `mac`) or use one of the binding's address
+strings. For a remote router, pass a `RoutedTarget`. An empty, broadcast or
+group address raises
 `ValueError`.
 
 The result is a frozen `RoutingTable`: `entries` (frozen `RoutingTableEntry`
@@ -2868,6 +3459,11 @@ number can appear twice.
   `reason` octet and `network`. Rejects with reasons 1, 2 and 4 concern a
   DNET and are ignored for a local query.
 - A client stopped mid-call raises `RuntimeError`.
+- A link that can't send the query for its own state or kind, such as a
+  BACnet/SC link not connected to its hub, or a router-application client's
+  link, which carries APDUs only, raises what that send's error raises
+  (`BacnetStateError` with `state` `"not_connected"` for the first,
+  `BacnetError` for the second), not `ValueError` (#1833).
 
 Each bound is 0 to 3600 seconds, and `wait` may not exceed `total`
 (`ValueError` otherwise). An acknowledgement from the router's own address
@@ -2880,9 +3476,16 @@ that advertises the network. Zero or multiple candidates, or lost discovery
 reports, raise `BacnetError`. Supply an explicit next hop to skip discovery.
 The destination router does not need to advertise a Device object. Acks must
 arrive through the selected hop with the destination router's source network
-and address. Equipment that responds only on its own link may time out.
-A reject from the selected hop for the requested DNET before the first ack
-ends the query. A concurrent routed request to that DNET through the same
+and address. A router that refuses table queries from other networks drops a
+routed query silently, so the call raises `BacnetTimeoutError` there too: a
+hosted router on the hardened control policy with no authorizer does, as does
+one built on `bacnet-router-core` whose host refuses the query class (#2715).
+An older router that answers a table query only on its own link never
+answers this client: the call raises `BacnetTimeoutError`, whose text for a
+routed query says so (query the next hop, or ask from a node on that network).
+A reject for the requested DNET that comes through the selected hop before
+the first ack ends the query, whether the hop sent it or relayed it from a
+router further on (reason 4, message too long, is ignored: the query is too short to draw it). A concurrent routed request to that DNET through the same
 hop can produce an indistinguishable reject because there is no invoke ID.
 
 One query runs at a time per client (network messages carry no invoke ID), so a second call waits for
@@ -2934,13 +3537,20 @@ until its path's limit is set by hand:
   clear by themselves), the second because the request sent nothing above 228
   octets. A rise in the second, with timeouts to a network, is the sign of a
   router that needs its path's limit set.
+- `off_path_answer_drops()` counts, since start, the answers for a
+  device's open request that the client dropped because they came by
+  another path than the request took (#2831): from another station than a
+  routed request's router, or relayed with this network's own number as
+  SNET for a request sent straight to the device. A rise means a station is
+  answering for other devices.
 
-None of the five sends anything through the path (a B/IPv6 router given as a
+None of the six sends anything through the path (a B/IPv6 router given as a
 socket address is first asked its VMAC), and each raises `RuntimeError`
-before the client starts and after `stop()`. The first two wait for a request
-active on the path, or one queued for it, but not out the hold a request with
-no answer leaves (the APDU timeout times the attempts): the change applies at
-once, and the next request still waits the hold out, sized to the new limit.
+before the client starts and after `stop()`. The first two apply at once
+(#2683): they wait neither for a request on the path nor out the hold a
+request with no answer leaves (the APDU timeout times the attempts). A request
+waiting out the hold still waits it out, then goes sized to the new limit; one
+already sent keeps its size, and a reject for it teaches nothing.
 They work on the client from `endpoint.client()` too.
 
 ```python
@@ -3079,6 +3689,8 @@ await client.who_is(scope="192.168.1.100:47808")
 Manually add a device to the discovery table. The table holds one device
 per address: adding an instance at an address that holds another replaces
 it, so `get_device()` no longer finds the instance that was there (#2560).
+An address longer than 18 octets, which the hex form can spell, raises
+`BacnetError` and adds nothing: no link's MAC is longer (#2606).
 
 ```python
 await client.add_device(1234, "192.168.1.100:47808")
@@ -4162,10 +4774,33 @@ Async BACnet server that hosts objects and responds to remote requests.
 
 `device_instance` takes 0 to 4194302. Instance 4194303 is reserved, since no
 object may have it (Clause 12.1.1), so the constructor raises `ValueError` for
-it or anything larger (#2171). At `start()`, an added object the database
-won't take raises `ValueError`: "duplicate object name" for a name already
-held, "object refused" for any other reason, such as an object at instance
-4194303.
+it or anything larger (#2171). Every `add_*` builder checks its object at
+the call (see [Builder checks](#builder-checks)): an identifier
+or name the Device or an earlier registration already has raises
+`ValueError`, and instance 4194303 raises `BacnetError`. A repeated
+identifier is refused, not replaced (#2748): register each object once.
+A refused start keeps the registrations, the Audit recipient, the
+forwarders' save counters and the forwarding configuration, so the
+application can correct the fault and start again. `start()` checks first
+what the pending objects and the constructor's settings already show: a
+`registered_network_port` that names no Network Port, one of the wrong
+family, or one whose address or UDP port differs from the transport's raises
+`ValueError`. After that, an SC hub that refuses the dial and a router or
+Device that cannot be prepared are refused with the registrations kept
+(#2748). A refusal inside the Rust server's own startup keeps them too: its
+builder hands the database back (#2752). That covers a transport that will
+not bind, such as a port another program holds (`BacnetTransportError`), and
+the startup checks of the settings, the Device and the registered port. Such
+a refusal spends a router's application port, so start the router again
+before the next start. Only a cancel loses registrations: one that lands
+once they are in the Rust server's builder drops them with it. An SC dial
+and a router lookup wait before that hand-off; a B/IP, B/IPv6 or MS/TP start
+hands them over at once, so cancelling it once it runs drops them. A running
+server raises `RuntimeError` from `start()`. `add_*`, the `set_file_*`
+calls, Audit selection and a second `start()` raise `RuntimeError` while a
+start is in progress; what a cancelled start gives back returns when the
+cancelled future is dropped on a runtime thread, so a retry straight after a
+cancel can meet that error once. Retry after a moment.
 
 ### Constructor
 
@@ -4186,7 +4821,7 @@ server = BACnetServer(
     registered_network_port=None, # keyword-only; see "Registered B/IP Network Port"
     # MS/TP options same as BACnetClient (see "MS/TP serial ports");
     # request admission limits: see "Request admission limits"
-    segmentation_supported=Segmentation.NO_SEGMENTATION, # keyword-only; full-server capabilities
+    segmentation_supported=Segmentation.SEGMENTED_BOTH, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
     mutation_policy="permissive", # keyword-only; "deny_all", or a callable deciding each mutation
@@ -4202,11 +4837,30 @@ server = BACnetServer(
     time_sync_policy=None,       # keyword-only dict of clock limits; see Time synchronization policy below
     utc_offset_minutes=0,        # keyword-only; the Device's UTC_Offset at start, minutes west of UTC
     daylight_savings=False,      # keyword-only; its Daylight_Savings_Status at start; see set_clock_zone
+    clock_zone_writable=False,   # keyword-only; let peers write UTC_Offset and Daylight_Savings_Status
+    device_storage_path=None,    # keyword-only; the file that keeps what peers write to the Device
 )
 ```
 
+`device_storage_path` (a `str`) is the file in which the Device keeps what a
+peer writes to it (#2730): a written Description and, with
+`clock_zone_writable`, a written UTC_Offset and Daylight_Savings_Status. Each
+such write is saved before it is answered, and the next server started on
+the same path serves it again. Without it the writes are answered and served
+until `stop()`, then lost. A relative path is resolved against the current
+directory at construction. A file `start()` can't read or load raises
+`BacnetError` before the registrations are taken, naming the path (another
+Device's file names both Devices: remove or move it, or give each instance
+its own path), and a write whose save fails is refused with DEVICE /
+OPERATIONAL_PROBLEM. An empty path raises `BacnetError` at construction, as
+an object's `storage_path` does. `BipEndpoint`, `ScEndpoint` and
+`MstpEndpoint` take the same keyword. [The Device's
+storage](rust-api.md#the-devices-storage-2730) has the full rules.
+
 `segmentation_supported` accepts `Segmentation.NO_SEGMENTATION`, `SEGMENTED_TRANSMIT`, `SEGMENTED_RECEIVE` or
-`SEGMENTED_BOTH`. When active, `apdu_segment_timeout_ms` must be positive and appears as
+`SEGMENTED_BOTH`, the default, as for the Rust server and the endpoints (#2617);
+`NO_SEGMENTATION` keeps every request and answer to one APDU. When active,
+`apdu_segment_timeout_ms` must be positive and appears as
 the Device's `APDU_Segment_Timeout`. Incoming inactivity uses `4 * Tseg`;
 outgoing SegmentACK waits use Tseg. The independent 16-second no-progress cap
 ends an incoming transfer with a local `OTHER` Abort. See [server timing](server-segmentation.md)
@@ -4253,6 +4907,44 @@ server.add_multistate_output(instance=1, name="Speed", number_of_states=3)
 server.add_multistate_value(instance=1, name="Season", number_of_states=4)
 ```
 
+#### Builder checks
+
+Every `BACnetServer.add_*` builder, and each endpoint's nine point
+builders, checks its object with the same code at the call (#2711, #2748),
+before anything is kept. The nine analog, binary and multi-state builders
+read their arguments into one registration first and check it in this order,
+so a call with two faults raises the same error on every surface; every
+other builder makes steps 1 and 2, and the pure checks of its list keywords
+(a timer's state-change set, a forwarder's recipients), before it opens or
+clears a `storage_path` file, then builds as it did. On a free-threaded
+interpreter two calls for one identifier can both pass those checks before
+either keeps its object: the second is still refused when kept, but its
+storage may have been opened or cleared first:
+
+1. An instance of 4194303 or more raises `BacnetError`: no object may have
+   4194303 (#2171).
+2. An object identifier or a name the Device or an earlier registration
+   already has raises `ValueError` ("duplicate object identifier" or
+   "duplicate object name"). On an endpoint its declared Network Ports
+   count too.
+3. A profile keyword the object would refuse (`tags`,
+   `profile_location`, `profile_name`) raises `BacnetProtocolError`.
+4. A value the object refuses raises from the builder as the object refuses
+   it: a NaN or infinite Analog Input `present_value` is
+   `BacnetProtocolError` VALUE_OUT_OF_RANGE, as are the parameter keywords'
+   refusals below. A multi-state builder takes 1 to 1024 states, the same
+   cap a peer's CreateObject or State_Text write meets; another count
+   raises `BacnetError`.
+
+A refused registration keeps nothing and leaves the earlier ones for
+start. On `BACnetServer` it also leaves any `storage_path` file alone,
+`clear_written_reporting=True` included: every check comes before storage
+attaches. Until #2711 these builders took a repeated identifier as a silent
+replacement of the earlier registration and found a duplicate name only at
+`start()`; the other `BACnetServer` builders did until #2748. There is no
+call that removes or replaces a registration before start: register the
+final form of each object once, or build the server again.
+
 #### Keeping written reporting settings
 
 The analog, binary and multi-state builders, `add_access_door`,
@@ -4284,12 +4976,12 @@ holding another fails its build the same way.
 
 These builders, `add_timer`, `add_channel`, the three log builders,
 `add_notification_class`, `add_notification_forwarder`, `add_access_rights`,
-`add_color` and `add_color_temperature` keep a written Description in their
-`storage_path` file, with these rules: every builder that takes
-`storage_path` does, except `add_audit_log`. An Audit Log's files keep its
-records, Enable and Buffer_Size, and a Description a peer writes to it
-lasts until the server restarts. So does one written to an object built
-without `storage_path`, or to a type whose builder has none: the Device and
+`add_color`, `add_color_temperature` and `add_audit_log` keep a written
+Description in their `storage_path` file, with these rules: every builder
+that takes `storage_path` does. An Audit Log keeps it in the files that hold
+its records, Enable and Buffer_Size (#2407). A Description written to an
+object built without `storage_path`, or to a type whose builder has none,
+lasts until the server restarts: the Device and
 the two lighting outputs among them, which keep one only through the Rust
 API's `with_tags_persistence`, and the Network Port, whose transport keeps
 only its own tables in `bdt_persist_path`.
@@ -4640,7 +5332,15 @@ tuples raise `ValueError`, an integer outside its field's type
 `OverflowError`, other wrong types `TypeError`), and the object's own
 `add_destination` decides what the list holds, as it does for a client's
 write: more than 32 destinations, or an address MAC longer than 18 octets,
-raises `BacnetProtocolError`. `port_filter` serves Port_Filter as
+raises `BacnetProtocolError`. A destination on another network whose MAC is a
+broadcast or group form there (`0xFF`, two octets starting `0x00` or `0xFF`,
+`0xFFFFFF`, six octets starting `FF:FF:FF:FF`) is taken, but gets unconfirmed
+notifications only: a confirmed one is skipped and counted in
+`confirmed_broadcast_recipient` (#2732). The form is read from the MAC alone,
+and a destination's address can't be marked one station (#2738), so an ARCNET
+station 255, or a gateway's virtual network that numbers stations with two
+octets starting `0x00` or `0xFF`, can't take confirmed ones here.
+`port_filter` serves Port_Filter as
 `(port_id, enabled)` pairs, one per network port; the server receives through
 Port_ID 0, and without `port_filter` the property is absent. Clients can still
 change both lists over the network, within the limits Port_Filter's writes
@@ -4950,14 +5650,14 @@ remain in use.
 
 Malformed policy or instance (including booleans, non-integers and values outside
 `0..=4194303`) raises `ValueError`, except an instance outside unsigned32, which
-raises `OverflowError`. Missing/wrong-type registrations and duplicate
-registrations of the selected Audit Log instance also raise `ValueError`. An object
-of another type with the same instance number is not an Audit Log. Selection is
-revalidated at `start()` before transport preparation or registration transfer, so
-a duplicate registered after selection cannot silently replace the sink. These
-validation failures preserve pending registrations and the previous configuration.
-Configuration while running raises `RuntimeError`. This does not add general
-rollback for unrelated later startup failures.
+raises `OverflowError`. Missing/wrong-type registrations also raise `ValueError`. An object
+of another type with the same instance number is not an Audit Log. A repeated Audit
+Log instance is refused at `add_audit_log` (#2748), so nothing registered after
+selection can replace the sink; `start()` revalidates the selection before
+transport preparation or registration transfer. These validation failures preserve
+pending registrations and the previous configuration. Configuration while running
+or while a start is in progress raises `RuntimeError`. A refusal inside the Rust
+server's own startup keeps them too (#2752; see `BACnetServer`).
 
 **Migration:** existing constructors and `add_audit_log()` calls need no change and
 continue to deny inbound notifications. To opt in, register the log, call the new
@@ -5074,12 +5774,12 @@ finally:
   `TypeError`. Instance and address syntax validation precede the frozen-state
   check. For parsed bindings, frozen-state rejection precedes the new transport
   and six-byte shape checks. Configuration calls with otherwise valid inputs after
-  `start()` consumes registrations raise `RuntimeError`, including while startup
+  `start()` takes the registrations raise `RuntimeError`, including while startup
   is in flight and after stop.
-  Validation/TLS/serial preparation failures before transfer do not freeze these
-  settings. Later startup failures retain the existing lack of general rollback.
-  Recreate the server, register the same storage paths and reapply settings on
-  reopen: parent references and bindings are not durable snapshot data.
+  A refused start, the Rust server's own startup included (#2752), does not freeze
+  these settings and keeps the registrations. After a stop, recreate the server,
+  register the same storage paths and reapply settings on reopen: parent
+  references and bindings are not durable snapshot data.
 
 Only the **selected inbound sink** forwards accepted batches that change retained
 record content. Parent configuration alone does not enable receipt or Reporter
@@ -5203,9 +5903,9 @@ child.add_device_binding(9, await parent.local_address())
 - Startup revalidates every selected pending identity before draining registrations.
   Configuration freezes at ownership transfer: valid calls during startup, while
   running or after stop raise `RuntimeError`. Input validation precedes that check.
-  Validation and TLS/serial preparation failures before transfer leave it retryable;
-  later failures retain the existing lack of general rollback. Recreate and reapply
-  static settings/bindings on a new server; they are not persisted.
+  A refused start leaves it retryable, a refusal inside the Rust server's own
+  startup included (#2752). After a stop, recreate and reapply static
+  settings/bindings on a new server; they are not persisted.
 
 By default `Monitored_Objects` remains absent (catch-all) and `Audit_Priority_Filter`
 selects all priorities; `Audit_Source_Reporter` remains false. The Rust producer covers inbound WP/WPM elements, AddListElement/RemoveListElement,
@@ -5402,8 +6102,10 @@ It answers `(progress, expected, actual)`: `"waiting"`, `"shedding"` or
 `"compliant"`, then the expected and actual levels as
 `{"kind": ..., "value": ...}` mappings in the requested choice. The optional
 `stop` is called with no arguments once a request `shed` was asked about
-ends, a DeleteObject of the Load Control and a start that fails or is
-cancelled included; it needs `shed`. Make it idempotent: it may come with no
+ends, a DeleteObject of the Load Control included, and when a start that
+asked fails or is cancelled. A start that fails keeps the request for the
+next start (#2752); a cancelled one drops the objects, so only the file a
+`storage_path` names keeps it. `stop` needs `shed`. Make it idempotent: it may come with no
 loads shed, and twice with no `shed` between. Without
 `shed` nothing is shed, and a request runs SHED_NON_COMPLIANT from Start_Time
 to its end. Both callables run with the server's object database locked, as
@@ -6347,7 +7049,7 @@ Routed controls, malformed payloads and unicast Network-Number-Is are ignored. A
 
 Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. Rust MS/TP LoopbackSerial tests also cover the standalone client in both execution modes; see the MS/TP paragraph below.
 
-Once `BACnetClient` has learned its network's number, a device its table holds as routed through a network with that number is on the client's own network (#1358). `read_property_from_device`, `write_property_to_device` and the other `_from_device` and `_to_device` methods send to it as a local request: a unicast to the device's own address with no DNET, not through the router it was heard through. An answer from that address completes the request, and so does one a router relays back with that number as its SNET and that address as its SADR (#1465): network numbers are unique, so both name the same device. While the number is unknown, these requests go through the router as before.
+Once `BACnetClient` has learned its network's number, a device its table holds as routed through a network with that number is on the client's own network (#1358). `read_property_from_device`, `write_property_to_device` and the other `_from_device` and `_to_device` methods send to it as a local request: a unicast to the device's own address with no DNET, not through the router it was heard through. Only an answer from that address completes the request. One a router relays back with that number as its SNET and that address as its SADR completes nothing, since any station on the link could send it (#2831); it is counted in `off_path_answer_drops()`. While the number is unknown, these requests go through the router as before.
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization is a native router policy (`ControlAuthContext::sending_peer_principal`, #518) with no Python binding. A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
@@ -6657,10 +7359,12 @@ await server.set_reliability_local(sensor, Reliability.NO_FAULT_DETECTED)
 `add_binary_input` and `add_binary_output` take a keyword-only `polarity`,
 a `Polarity` or its number: `Polarity.NORMAL` (0, the default) or
 `Polarity.REVERSE` (1) (#2580). Any other int raises `BacnetProtocolError`
-VALUE_OUT_OF_RANGE. The endpoints' `add_binary_input` takes it too. Clients
-read Polarity but can't write it; `set_polarity_local(object_id, polarity)`
-changes it on a running server. The physical side has its own routes, so a
-raw hardware state is never mistaken for a logical one:
+VALUE_OUT_OF_RANGE. The endpoints' `add_binary_input` and
+`add_binary_output` take it too, and the calls below are on
+`await endpoint.server()` (#2594). Clients read Polarity but can't write
+it; `set_polarity_local(object_id, polarity)` changes it on a running
+server. The physical side has its own routes, so a raw hardware state is
+never mistaken for a logical one:
 
 - `set_physical_input_local(object_id, on)` reports what a Binary Input's
   hardware reads, `True` for ON. In service Present_Value becomes that state
@@ -6738,7 +7442,17 @@ await server.set_clock_zone(300, True)
   timestamps follow at their next look at the clock. Timestamps already
   recorded stay as they were.
 - A request sees the old pair or the new, never one of each. Both properties
-  stay read-only to a peer.
+  stay read-only to a peer unless the constructor's keyword-only
+  `clock_zone_writable` is True (#2395). A WriteProperty or
+  WritePropertyMultiple of either then moves the clock the same way, and an
+  Audit Reporter monitoring the Device reports it. UTC_Offset takes a
+  multiple of 15 within -1440 to 1440, else VALUE_OUT_OF_RANGE, and
+  Daylight_Savings_Status a BOOLEAN. Without `device_storage_path` a
+  written zone lasts until this method, which is newer, changes it, or
+  until `stop()`; the next `start()` begins in the constructor's zone. With
+  it, the written half is kept and wins over the constructor's zone at the
+  next start, until this method, newer, drops it from the file (a save that
+  fails raises and changes nothing).
 
 An offset outside that range or off the 15-minute grid raises `ValueError`
 when the method is called, and an int that doesn't fit 16 bits
@@ -6781,7 +7495,7 @@ sample is not an atomic aggregate. Like `comm_state()`, it raises
 counters = await server.cov_counters()
 counters["subscriptions_active"]          # subscriptions held now
 counters["subscriptions_rejected_quota"]  # refused by the per-peer quota
-counters["notifications_throttled_peer"]  # skipped at the confirmed in-flight limit
+counters["notifications_throttled_peer"]  # held back by the confirmed in-flight limit
 counters["timed_changes_dropped"]         # timestamped COV-multiple changes lost
 ```
 
@@ -6799,7 +7513,7 @@ counters["timed_changes_dropped"]         # timestamped COV-multiple changes los
 | `notifications_unconfirmed` | Unconfirmed notifications sent |
 | `notification_bytes_sent` | APDU bytes of the notifications in `notifications_sent` |
 | `notifications_throttled_fanout` | Notifications not sent because the per-event count or byte budget ran out |
-| `notifications_throttled_peer` | Confirmed notifications not sent because the peer was at its in-flight limit |
+| `notifications_throttled_peer` | Each confirmed notification held back because the peer had its limit in flight (a subscription held back at several changes counts each time but waits once); it goes, with the value then current, once the peer has room, which may take more than one of its reports ending |
 | `timed_changes_dropped` | Timestamped COV-multiple changes discarded for good, in whole or in part, the running signal for a subscriber whose maximum APDU can't hold one timestamped value |
 | `untimed_references_oversized` | Each COV-multiple report that left out an untimestamped reference too large for one notification |
 
@@ -6920,10 +7634,10 @@ counters["confirmed_unanswered"]        # confirmed notifications never acknowle
 | `recipient_list_unavailable` | Transitions sent nowhere because reading the class's Recipient_List failed |
 | `recipient_list_invalid` | Transitions sent nowhere because the Recipient_List did not decode as a whole (no decodable prefix is used) |
 | `recipient_list_too_long` | Transitions sent nowhere because a custom class served more than 32 destinations |
-| `device_recipient_unbound` | Matched Device recipients skipped because no binding was configured or observed, or the observed one expired, and a targeted Who-Is drew no I-Am within the APDU timeout, each notification that waited for it counted once (or none could go out, within a minute of one that drew nothing); also a confirmed notification ended at an attempt because the observed binding had expired by then |
+| `device_recipient_unbound` | Matched Device recipients skipped because no binding was configured or observed, or the observed one expired, and a targeted Who-Is drew no I-Am within the APDU timeout, each notification that waited for it counted once (or none could go out, within a minute of one that drew nothing); also a confirmed notification ended at a retry because the observed binding had expired by then (one that waited for its invoke ID reads the binding again first, and is looked for if it lapsed, #2569) |
 | `recipient_unroutable` | Matched recipients skipped because they can't be routed as written: a Device identifier that isn't a Device (or a binding unusable on this link), or a MAC on network 65535 |
-| `confirmed_broadcast_recipient` | Matched recipients skipped because they ask for confirmed notifications at a broadcast address, or another group address such as a multicast one, which only unconfirmed requests may use (Clause 6.3) |
-| `confirmed_waited_for_invoke_id` | Confirmed notifications that found every invoke ID in use and waited for one, once each; none is dropped for want of an ID, and only its destination's lane waits (#2537) |
+| `confirmed_broadcast_recipient` | Matched recipients skipped because they ask for confirmed notifications at a broadcast address, or another group address such as a multicast one, which only unconfirmed requests may use (Clause 6.3); also an address or Device binding on another network at a broadcast or group form there, such as `5:0xFF` or six octets starting `FF:FF:FF:FF` (#2732) |
+| `confirmed_waited_for_invoke_id` | Confirmed notifications that found every invoke ID in use and waited for one, or found others already waiting and queued behind them even with an ID free, once each; none is dropped for want of an ID, only its destination's lane waits (#2537), and the waiters get IDs in the order they began to wait (#2563) |
 | `confirmed_rejected` | Confirmed notifications the recipient answered with an Error, Reject or Abort |
 | `confirmed_unanswered` | Confirmed notifications with no acknowledgment after the last retry |
 | `unconfirmed_send_failed` | Unconfirmed notifications the transport refused to send, once per destination; the other destinations are still served |
@@ -7072,8 +7786,7 @@ All BACnet errors are raised as Python exceptions:
 
 | Exception | Meaning |
 |-----------|---------|
-| `BacnetError` | Base exception for all BACnet errors |
-| `BacnetDecodingError` | A native decoder reported a structured fault. `kind` identifies it and `offset` is the byte position within that decoder’s input. |
+| `BacnetError` | Base exception for all BACnet errors. Raised as itself for, among others, an acknowledgement of the other kind than the service takes (a Complex-ACK to a write, a Simple-ACK to a read, #2721): the request failed at once, no retry went, and whether the device carried it out is unknown. Also for the stack's own configuration, argument, platform and limit refusals (#1833) and for persisted state that can't be loaded or saved, whose message is the refusal's own text |
 | `BacnetProtocolError` | A remote or local BACnet protocol check returned an error (class + code) |
 | `BacnetTimeoutError` | Request timed out (APDU retries exhausted) |
 | `BacnetRejectError` | Remote device rejected the request |
@@ -7082,7 +7795,7 @@ All BACnet errors are raised as Python exceptions:
 | `BacnetLogNotAdvancingError` | A paged log read can't advance: the device answered from before the record asked for, or with none its counts say it holds. `requested` and `returned` (`None` when it sent none) name the sequence numbers |
 | `BacnetBvlcNakError` | A BBMD refused a management request (`read_bdt` and its siblings) with a BVLC-Result NAK; `result_code` holds its code |
 | `BacnetBvlcUnexpectedResponseError` | A management request was answered by a BVLC message it doesn't take; `expected` and `got` hold the function codes |
-| `BacnetNetworkRejectError` | A router answered `routing_table()` with a Reject-Message-To-Network; `reason` holds its reason octet and `network` the network it named. Silence is `BacnetTimeoutError` |
+| `BacnetNetworkRejectError` | A router sent back a Reject-Message-To-Network refusing a routed request (#2724), for reason 1 (no route to the network), 6 (an address length it found invalid), 0 (other), 5 or one the standard doesn't define, or a `routing_table()` query. `reason` holds the reason octet, `network` the network it named, `router` the router's address in the link's form (`"10.0.0.1:47808"`, `"mstp:5"`; `None` for `routing_table()`) and `reached_device` `False` when the request sent one frame, so the device never got it, `None` once a retry or a segment went first, when a write may have taken effect. A busy router (reason 2) leaves a request to its retries; if they run out, the timeout's `busy_router` and `busy_network` name it. Silence is `BacnetTimeoutError` |
 | `BacnetLookupError` | No device could be placed for the name a call gave: no address claims the instance and none answered a Who-Is for it, or no router is known for a routed address's network. Also a `LookupError`. `target` is the name as given, `instance` the instance it holds (None for an address) and `candidates` empty. The typed `_from_device` calls raise it for an instance the table doesn't hold |
 | `BacnetPagingError` | A device broke a rule of a paged read (it named an object twice, or said more remain with no new object); `service` and `object_id` say where. No call pages yet |
 | `BacnetAmbiguousDeviceError` | A `BacnetLookupError`. A call named a device by instance and two or more addresses claim it; nothing was sent. `instance` is the instance and `candidates` lists each claimant as `(network, mac)`, network 0 the local one |
@@ -7090,6 +7803,7 @@ All BACnet errors are raised as Python exceptions:
 | `BacnetReadBackError` | The device acknowledged a `relinquish`, which took effect, but the read after it failed; `written` is the relinquish and `__cause__` the read's error. Not a `BacnetTimeoutError` |
 | `BacnetNoPriorityArrayError` | A `BacnetProtocolError` (PROPERTY / UNKNOWN_PROPERTY): the device says the object has no Priority_Array. `object_id` is the object, and `written` the NULL a `relinquish` sent first (None from `priority_array`) |
 | `BacnetTransportError` | A socket or I/O failure: a bind or listen that fails (B/IP, B/IPv6, `ScHub.start`), a failed SC dial. Also an `OSError` |
+| `BacnetStateError` | A call refused for the state its component was in (#1833): a client, server, endpoint, router or hub called before its start, while or after it stops, or started twice (#2819); a send on a transport that isn't started or has stopped, a router-application client's router closed, a channel closed under the call, a BACnet/SC node whose hub isn't connected. Nothing was done, and the link didn't fail. Also a `RuntimeError`. `state` is `"not_running"` (not started, or stopped and able to start again), `"closed"` (stopped for good), `"stopping"` (a stop under way, a stop that failed and awaits another `stop()`, or an abort waiting for it), `"already_started"` (a second start, or a change only a component not started yet takes, such as adding objects) or `"not_connected"`. A request that went out before the client or its link stopped under it raises `BacnetError` instead, whose message says the device may have carried it out (a `write_bdt` or `delete_fdt_entry` may have changed the table) |
 | `BacnetRouterCloseError` | A `BACnetRouter`'s cleanup failed; `failures` holds a tuple of `RouterCleanupFailure` records (see [B/IP router](#bip-router)) |
 
 ```python
@@ -7168,6 +7882,29 @@ except OSError as e:
 ```
 
 `errno` is the operating system's own code, so platforms differ: Windows can refuse a bind to a UDP port another socket holds with `errno.WSAEACCES` rather than `errno.EADDRINUSE`, so check both there. It is not narrowed to the `OSError` subclasses (`ConnectionRefusedError` and the like), so compare `errno` rather than the class. `list_serial_ports()` raises an `OSError` (or the subclass for the failure's kind) instead, not a `BacnetTransportError`.
+
+`BacnetStateError` derives from both `BacnetError` and `RuntimeError`, so `except RuntimeError` and `except BacnetError` around a call both catch it. The bindings' own lifecycle checks raise it as the Rust stack's do (#2819), with the messages they always gave (`"client not started — use 'async with'"`, `"server not started"`, `"router not started or already closing"` and the rest). They raised a plain `RuntimeError` before, so `except RuntimeError` is unaffected, but `except BacnetError` now catches them too: a loop that retries on `BacnetError` should let `BacnetStateError` through (or retry only its `"not_connected"`, a link waiting for its hub), or it retries a client that isn't running forever.
+
+- `"not_running"`: a client, server, endpoint, router or hub called before its start, or after its stop (each starts again from there);
+- `"already_started"`: a second start, or what only a component not started yet takes: adding objects or configuring a server or endpoint once its start has begun. A server's `add_device_binding`, `configure_audit_reporters`, `configure_audit_recipient` and `configure_audit_log_parent` stay refused after its stop too, since its first start consumed that configuration: a stopped server answers `"not_running"` to `local_address()` but `"already_started"` to those;
+- `"stopping"`: a stop under way, or a stop that failed and awaits another `stop()`: a client called while its `stop()` runs or after one that failed (until a `stop()` succeeds), an endpoint asked for a client while its last one stops or failed to, a router a `close()` was asked of;
+- `"closed"`: an endpoint's client or server once the endpoint closed (a restarted endpoint hands out new ones), a `routing_table()` query whose client stopped under it, a router whose cleanup failed, or whose `BACnetRouter` is gone, for a stack still on it.
+
+A cancelled start (`"endpoint startup cancelled by close"`, `"router startup cancelled by close or disposal"`) is not a state and stays a plain `RuntimeError`, as do calls on the wrong event loop or from inside a server callback, a closed event loop and an exiting interpreter. A `BacnetStateError`'s `state` tells a call made too early or too late from a failure on the network, without reading the message:
+
+```python
+from rusty_bacnet import BacnetStateError, BacnetTimeoutError
+
+try:
+    value = await client.read_property(addr, oid, pid)
+except BacnetStateError as e:
+    if e.state == "not_running":
+        print("start the client (async with) first")
+    else:  # "closed", "stopping", ...
+        print(f"the client or its link is {e.state}: nothing was sent")
+except BacnetTimeoutError:
+    print("Device not responding")
+```
 
 ---
 
@@ -7372,11 +8109,21 @@ Each node has a display `label`, a half-open `span` into the input, a
 tuple of `children`, and a `device_text` flag for labels that quote text
 from the device. A malformed frame carries the fields and diagnostics the
 decoder could recover. Decoded fields within a COBS-encoded MS/TP NPDU
-point to its encoded span.
+point to its encoded span. Nodes compare and hash by value, children
+included, print as a short `<FieldNode 'label' start..end, n children>`,
+and copy and pickle. Input longer than the link's largest frame raises
+`ValueError`: 65,535 octets on `bip`, `ipv6` and `sc` (the 16-bit length
+limit), 2,053 on `mstp`.
 
-The decoder hides the password parameter in DeviceCommunicationControl
-and ReinitializeDevice requests and reports MS/TP data CRC validity.
-Input bytes and source spans remain available to the caller.
+Redaction covers the labels only. The password parameter of a
+DeviceCommunicationControl or ReinitializeDevice request shows as
+`Password: (hidden)`, and a request the decoder refuses shows no
+parameters at all. The hidden node's `span` still points at the password's
+octets in the input and in `Frame.octets`, so mask those octets before
+you log or share a frame. The password's length is visible through that
+span and through the frame's length fields. An MS/TP frame's data CRC
+field reads `valid` or `mismatch` with its span, never the CRC's value; a
+frame whose CRC fails keeps its `Data` field, with nothing decoded from it.
 
 `decode_frame(octets, link)` decodes link, NPDU and APDU headers through
 the stack's Rust decoder. It sends no traffic and returns a frozen
@@ -7590,9 +8337,12 @@ and omitting it keeps the native default. Use a finite number for Analog,
 Multi-state. For Output and commandable Value objects the initial value
 sets Relinquish_Default and leaves every priority slot empty. Inputs and
 noncommandable Values take the initial value as a local application update.
+A Binary Input given no value keeps its unset physical-input state.
 An object name and its type/instance pair must each be unique across the
 Device, its Network Ports and the pending objects. An invalid addition raises
-at the builder call and preserves earlier registrations.
+at the builder call and preserves earlier registrations. `BACnetServer`'s
+builders make the same checks with the same code; see
+[Builder checks](#builder-checks).
 
 The endpoint's server serves those objects as a standalone server serves
 its own, and a peer writes them as far as the endpoint's `mutation_policy`
@@ -7699,7 +8449,9 @@ async with BipEndpoint(1001, interface="192.168.1.10", broadcast_address="192.16
 - **Answers.** Beside the server role, the client answers only the COV
   notifications of its own subscriptions; the server role answers the
   rest. A ConfirmedEventNotification is the server's to acknowledge, and
-  the client publishes a copy to `event_notifications()`.
+  the client publishes a copy to `event_notifications()`; of one that came
+  in segments, the whole notification, once the server has reassembled it
+  (#2743).
 - **SC.** The client starts after the hub link is up, so its
   `connection_events()` begins at that call, after the first `connected`:
   read the link at once with its `connection_status()`, or use the
@@ -7753,10 +8505,19 @@ async with endpoint:
   and Who-Has among them, so the endpoint is discoverable, and the Device's
   Protocol_Services_Supported lists them, with the client's I-Am, I-Have and
   COV notifications beside them. A ConfirmedEventNotification is the
-  server's to acknowledge. The Device defaults to `NO_SEGMENTATION`.
-  Set `segmentation` to `Segmentation.SEGMENTED_RECEIVE` or
-  `Segmentation.SEGMENTED_BOTH` to receive segmented confirmed COV.
-  The client's requests can still accept segmented read responses under the default.
+  server's to acknowledge.
+- **Segmentation.** `segmentation` (default `Segmentation.SEGMENTED_BOTH`,
+  #2617) is the Device's Segmentation_Supported, and both roles do what it
+  says: the server reassembles segmented requests and sends long answers in
+  segments, and `client()` takes segmented answers and sends a long request
+  in segments, each only where the value allows. A request that would need
+  segments the endpoint doesn't send fails before anything goes out.
+  `NO_SEGMENTATION` keeps everything to one APDU, for a constrained link or
+  a peer that can't segment. `BACnetServer()` has the same default. The
+  keyword-only `apdu_segment_timeout_ms` (default
+  5000, positive when segmenting) is the Device's APDU_Segment_Timeout,
+  which both roles use while they segment. `client()` reassembles a
+  segmented COV notification while the Device takes segments (#2646).
 - **Who may write.** The keyword-only `mutation_policy` takes what
   `BACnetServer`'s does: `"permissive"` (any peer), `"deny_all"` (no peer,
   COV subscriptions included) or a callable that gets a `MutationContext`
@@ -7785,6 +8546,10 @@ async with endpoint:
 - **The other server keywords.** `cov_policy` is read as `BACnetServer`'s;
   `on_reinitialize`, `after_reinitialize` and `reinit_password` are its
   keywords of the same names (see [ReinitializeDevice](#reinitializedevice));
+  `device_storage_path` keeps what peers write to the endpoint's Device, a
+  written Description, across a restart, as `BACnetServer`'s keyword of the
+  same name does (#2730; a peer writes only under a `mutation_policy` that
+  lets it);
   `read_work_limit` is its `rpm_max_result_elements` (see
   [Endpoint Groups and the read work limit](#endpoint-groups-and-the-read-work-limit)).
   Confirmed notifications time out and retry as the endpoint's
@@ -7802,13 +8567,16 @@ async with endpoint:
   reaches the new server: `await endpoint.server()` again. `configure_*`
   raises `RuntimeError` too. The endpoint's `client()` doesn't wait for a
   server call in flight.
-- **Invoke IDs.** The server and the client share the endpoint's 256: the
-  server holds at most 64 at once for its confirmed COV, event and Audit
-  notifications. Past them a confirmed COV notification waits for one to
-  come back and then goes, if its value still differs from what the
-  subscriber last acknowledged (#2661). A first report refused by the
-  subscriber's in-flight limit or the pool of 255 still waits for its next
-  fanout.
+- **Invoke IDs.** The server and the client share the endpoint's 256, and
+  each keeps a reserve the other can't take: 128 for the client's requests,
+  64 for the server's confirmed COV, event and Audit notifications. Beyond
+  it either borrows from the quarter neither keeps, so the client holds at
+  most 192 at once and the server 128 (#2617). A client call past its share
+  raises at once. Past the server's, a confirmed COV notification waits for
+  an ID to come back and then goes, if its value still differs from what the
+  subscriber last acknowledged (#2661). A report held back by the
+  subscriber's in-flight limit or the server's pool of 255 waits the same
+  way, until its reports, or any reports, end and leave it room (#2671).
 - **Callables.** A `mutation_policy` callable runs on Tokio's blocking pool
   while its request waits, so a slow one delays only its own request, as
   on a standalone server. The callables run with no lock held
@@ -7923,14 +8691,22 @@ endpoint.add_audit_reporter(1, "Source", audit_level="audit_all",
     endpoint's own.
   - `MstpEndpoint`: a station in decimal digits, `"0"` to `"254"`; never 255
     or the endpoint's own `mstp_mac`.
-  - Any endpoint (#2371): a Device behind a router, `"network:0xMAC"`, as the
+  - Any endpoint (#2371): a Device behind a router, `"network:0xMAC[:one-station]"`, as the
     CLI writes a routed target (`"2:0x05"` is station 5 on network 2). The
     network is 1 to 65534 and the MAC 1 to 18 octets, in the remote link's
     format. Records go through the router to that network, which the session
     learns from traffic back from there or from the router's
     I-Am-Router-To-Network; until then they go with the link's broadcast
     address. A failed delivery sets the Reporter's Reliability to
-    COMMUNICATION_FAILURE as a direct one does.
+    COMMUNICATION_FAILURE as a direct one does. A `RoutedTarget` with no
+    `router` names the same binding and can mark the address
+    `one_station=True`, as the text can with a `":one-station"` suffix
+    (`"5:0xFF:one-station"`, taken only at the MACs the mark lifts) (#2738): a Reporter sending confirmed
+    records has no route to a Device bound at `b"\xff"` or two octets
+    starting `0x00` or `0xFF` (the forms `RoutedTarget` lists) and reads
+    CONFIGURATION_ERROR, and marked one station it reaches those the mark
+    lifts. A `RoutedTarget` with a `router` raises ValueError: the session
+    learns the router.
 
   An address `audit_recipient` follows the same rule on each link, so an SC
   or MS/TP endpoint takes one too, unlike `BACnetServer`, whose address
@@ -8028,23 +8804,24 @@ endpoint.add_group(1, "Zone", [(ai, [(PropertyIdentifier.PRESENT_VALUE, None),
 
 ### Routed targets
 
-Twelve calls of `BACnetClient` take, where they take `address`, either
+Thirteen calls of `BACnetClient` take, where they take `address`, either
 a `str`, which always names a station on the client's own link and is never
 read as `net:mac`, or a `RoutedTarget` naming one behind a router (#2612,
 #2617, #2613, #2588), on a standalone client and an endpoint's alike. The
-twelve are `read_property`, `read_property_multiple`, `read_range`,
-`read_log_page`, `write_property`, `atomic_read_file`,
+thirteen are `read_property`, `read_property_multiple`, `read_range`,
+`read_log_page`, `write_property`, `write_property_multiple`, `atomic_read_file`,
 `atomic_write_file`, `subscribe_cov`, `unsubscribe_cov`,
 `subscribe_cov_property`, `unsubscribe_cov_property` and
 `subscribe_cov_property_multiple`; the other typed calls take a local
 address only.
 
-**To scan stations that don't announce themselves (MS/TP slaves), pass
-`router` from `discover_routers()`.** Without it each such station costs one
-Who-Is and its 3-second wait before the call fails; the remembered miss
-below only spares repeat calls.
-`RoutedTarget(network, address, router=None)` takes its arguments in that
-order, positionally or by keyword:
+**To scan stations that don't announce themselves (MS/TP slaves with no
+slave proxy), pass `router` from `discover_routers()`.** Without it each such
+station costs two Who-Is and their 3-second waits before the call fails; the
+remembered miss below only spares repeat calls.
+`RoutedTarget(network, address, router=None, *, one_station=False)` takes
+its first three arguments in that order, positionally or by keyword, and
+`one_station` by keyword only:
 
 - `network`: the station's network number, an `int` from 1 to 65534.
 - `address`: the station's MAC on that network, 1 to 18 octets, as `bytes`
@@ -8054,11 +8831,31 @@ order, positionally or by keyword:
   a B/IPv6 VMAC, two or more hex octets `"aa:bb:..."`, or one octet in
   decimal as `"N"` or `"mstp:N"` (0 to 254): `RoutedTarget(5, "10")` equals
   `RoutedTarget(5, b"\x0a")`. The string forms refuse 255 (MS/TP's
-  broadcast), while `b"\xff"` is taken: a station on an ARCNET network,
-  whose broadcast is 0.
+  broadcast).
 - `router`: the next hop's address on the local link, in the same forms or
   as `bytes` (a routed `DiscoveredDevice`'s `mac_address`, or the `mac` of a
   router `BACnetClient.discover_routers()` found), or `None`.
+- `one_station`: `True` marks the address one station on its network
+  (#2738), for the addresses below that are a station on some networks.
+
+A call refuses an `address` that is a broadcast or a group on its network
+with `BacnetError`, before anything is sent or looked up (#2709). The
+client can't see the far network's link, so it goes by length: `b"\xff"`
+(MS/TP's broadcast), two octets beginning `0x00` or `0xFF` (a LonTalk
+broadcast or group), three octets of `0xFF` (no device's VMAC), and six
+beginning with four of `0xFF` (the B/IP limited broadcast at any port, an
+Ethernet group MAC, BACnet/SC's broadcast). Two of these are a station on
+some networks: ARCNET's station 255 is `b"\xff"`, and a gateway's virtual
+network may number its stations in two octets starting `0x00` or `0xFF`. For
+such a station pass `one_station=True`: a call then goes to `b"\xff"` and to
+two octets beginning `0x00` or `0xFF`, but not `b"\x00\x00"` or
+`b"\xff\xff"`; three and six octets are checked as unmarked. The mark only
+lifts, never refuses: `b"\x00"` goes marked or not, so an ARCNET network's
+broadcast there is not caught. The error for an unmarked address the mark would let through says
+so. Without a `router`, a marked station at one of those forms is reached
+through its discovery-table row alone, so name its router when the client
+has heard no I-Am from it. Unconfirmed calls (`who_is` and `discover` with a
+`RoutedTarget` scope) are left alone.
 
 ```python
 from rusty_bacnet import RoutedTarget
@@ -8074,16 +8871,20 @@ async with endpoint:
 With a `router`, each request goes to that router with the station's
 network and MAC as its destination. Without one, the client uses the route
 it knows, as `device()` does: the router its discovery table names for the
-station, after one Who-Is addressed to the station when it has no row.
-Calls made together for one station share that Who-Is and its answer. A
-station that doesn't answer raises `BacnetLookupError`, and for 30 seconds
+station, after one Who-Is addressed to the station when it has no row, and
+with no answer one Who-Is to its network that only the station's own address
+answers. A slave proxy answers that second form for its MS/TP slaves, so such
+a slave is found, and asked on its network first from then on. Calls made
+together for one station share that lookup and its answer. A station that
+answers neither raises `BacnetLookupError`, and for 30 seconds
 a call to it with no router raises at once, without asking again, unless an
-I-Am from it gives the client a row first. **A station that never announces
-itself, such as an MS/TP slave, needs `router`**: `discover_routers()` finds
+I-Am from it gives the client a row first. **A station no I-Am comes for,
+such as an MS/TP slave with no proxy, needs `router`**: `discover_routers()` finds
 the routers on the link. A `router` that is a broadcast or group
 address on the link (the configured broadcast address, 255.255.255.255, a
 multicast group, MS/TP station 255) raises `BacnetError` before anything is
-sent: a routed request goes to its router by unicast. A network that turns
+sent: a routed request goes to its router by unicast. The client makes this
+check, for Rust and Python alike (#2722). A network that turns
 out to be the client's own goes to the station direct, its router unused.
 
 The answer the router relays from the station completes the call. A
@@ -8095,8 +8896,8 @@ the same target. To reach a routed device with a service that takes no
 and `_to_device` forms, by its instance (#2588 brings a routed form to
 every service).
 
-`RoutedTarget` is frozen, compares and hashes by its network and octets
-however they were written, and copies and pickles. A bad value raises
+`RoutedTarget` is frozen, compares and hashes by its network, octets and
+one-station mark however they were written, and copies and pickles. A bad value raises
 `ValueError`, a network outside 0 to 65535 `OverflowError`, a `bool` network
 or a type other than `str` or `bytes` `TypeError`, as does a call in another
 order, since `network` takes an `int`.
@@ -8127,7 +8928,7 @@ on the endpoint's link. Its calls keep their names and result shapes:
 
 | `EndpointClient` | `BACnetClient` from `endpoint.client()` |
 |---|---|
-| `read_property(address, ...)`, a `str` or a `RoutedTarget` | the same call; a `RoutedTarget` with no `router` now takes the route the client learns, not a broadcast per request. To scan stations that don't announce themselves (MS/TP slaves), pass `router` from `discover_routers()`: without it each costs a 3-second Who-Is wait |
+| `read_property(address, ...)`, a `str` or a `RoutedTarget` | the same call; a `RoutedTarget` with no `router` now takes the route the client learns, not a broadcast per request. To scan stations that don't announce themselves (MS/TP slaves with no proxy), pass `router` from `discover_routers()`: without it each costs two 3-second Who-Is waits |
 | `read_property_multiple` checked its arguments at the call (`ValueError`) | a bad address raises `ValueError`, and an empty list `BacnetError`, when awaited |
 | `read_property_multiple(address, specs)` | the same call, with the standalone profile: selectors and wildcard instances are taken, an empty list raises `BacnetError` when awaited, and the answer comes back as the device gave it, each result naming its object, property and index, for you to compare with what you asked |
 | `read_range(address, ..., validation=...)` | the same call |
@@ -8135,7 +8936,7 @@ on the endpoint's link. Its calls keep their names and result shapes:
 | `write_property(address, ..., *, commandability=...)` | `write_property(address, ...)` without `commandability=`; it takes a `RoutedTarget` too, and sends a raw value as given |
 | `service_scope()` | gone: the client initiates every service it has a call for |
 | a request no one answered: `BacnetTimeoutError` | `BacnetAbortError` for the transaction's timeout, as a typed call raises it |
-| a call after the endpoint closed: `BacnetError` | `RuntimeError` naming the endpoint; a request the close cut off raises `BacnetError` saying the client stopped while it waited |
+| a call after the endpoint closed: `BacnetError` | `RuntimeError` naming the endpoint; a request the close cut off raises `BacnetError` saying whether it went out and may have been carried out |
 | an endpoint with `source_audit_reporter`: audited reads and `write_property(..., commandability=...)` | the same reads, audited, plus the other reads and writes listed under [The endpoint's client](#the-endpoints-client); a write's `priority` makes it a command at that priority |
 
 Not yet routed on the full client: the COV subscriptions and the other
@@ -8550,15 +9351,45 @@ asyncio.run(main())
 ### Selecting an interface
 
 For B/IP, pass an IPv4 literal to `interface`, or the OS interface name
-such as `en0` or `eth0`. On Windows use the adapter's exact friendly name.
-The constructor resolves a name to one assigned unicast IPv4 address on an
-interface that is up. If it has multiple addresses, the exception lists
-them so you can pass the intended literal. `"0.0.0.0"` retains wildcard
-selection. Supply a broadcast IPv4 address separately in `broadcast_address`.
+such as `en0` or `eth0`. On Windows use the adapter's friendly name
+(`Ethernet 2`), matched exactly and case-sensitively. The constructor
+resolves a name to one assigned unicast IPv4 address on an interface that
+is up:
 
-The selected address feeds the existing socket bind policy. For B/IPv6,
-`ipv6_interface` accepts an IPv6 address. `None` and `"::"` use automatic
-selection as described under [BACnet/IPv6](#bacnetipv6). Port sharing is
+- A link-local address (169.254.0.0/16) beside a routable one is skipped,
+  so an autoconfigured alias doesn't make the name ambiguous; an interface
+  with only one link-local address uses it.
+- With several usable addresses the `ValueError` lists them, so you can
+  pass the intended literal.
+- An unknown name, or an interface that is down or has no IPv4 address yet,
+  raises `ValueError` at construction. So does text that looks like a
+  mistyped address (`"10.0.0.300"`, `"127.0.0.1/8"`, `"::1"`).
+- The name is resolved once, at construction. The client, server or
+  endpoint keeps the address, so a later change (a new DHCP lease, say) is
+  not followed: construct it again.
+- Point-to-point interfaces (VPN tunnels, PPP) are not excluded.
+
+`"0.0.0.0"` keeps wildcard selection. The name selects an address, not the
+socket's device: the bind policy stays as below. `broadcast_address` is not
+derived from the named interface's netmask; it stays `255.255.255.255`
+unless you give it. Pass the interface's subnet broadcast for discovery,
+and with `lo` or `lo0` the loopback subnet's (see
+[Loopback interfaces and broadcasts](#loopback-interfaces-and-broadcasts),
+#2691).
+
+What each interface option across the stack takes today:
+
+| Option | Takes |
+|--------|-------|
+| Python `interface` (`BACnetClient`, `BACnetServer`, `BipEndpoint`, `BipRouterPort`) | An IPv4 literal or an OS interface name |
+| Python `ipv6_interface` | An IPv6 address only |
+| CLI, TUI and MCP `-i`/`--interface`, and a TUI profile's `interface` | An IPv4 literal only |
+| CLI `capture --device`, TUI `--capture-device` (pcap) | An OS device name |
+| Rust `BipTransport::new` | An `Ipv4Addr`; resolve a name with `bacnet_transport::bip::resolve_interface_ipv4` |
+| Rust `EthernetTransport::new` (Linux) | An OS interface name |
+
+For B/IPv6, `None` and `"::"` use automatic selection as described under
+[BACnet/IPv6](#bacnetipv6). Port sharing is
 set by `share_port_by_address` and `share_wildcard_port` (see
 [Claiming the port](#claiming-the-port) and
 [Sharing a port by address](#sharing-a-port-by-address)); observing frames
@@ -8767,9 +9598,8 @@ larger than 1048576 bytes`), as is a stream that never ends. Unreadable, empty, 
 credentials and cert/key mismatch raise `RuntimeError` with `TLS config error:`.
 Server **local TLS configuration** failures leave pending object registrations
 intact; repair files at the same paths and retry `start()`. The client also reloads
-files on retry. This is not general startup rollback: later failures, including
-TLS peer rejection after dialing, retain existing lifecycle behavior and may
-consume server registrations. Preflight checks rustls configuration validity,
+files on retry. A refused dial, TLS peer rejection included, keeps them too (#2748), as
+does a refusal inside the Rust server's own startup after the dial (#2752). Preflight checks rustls configuration validity,
 not the local certificate's date or issuer against the site store; the remote
 peer validates that certificate during the real handshake.
 

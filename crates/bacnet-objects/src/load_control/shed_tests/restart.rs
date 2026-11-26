@@ -9,6 +9,7 @@ use crate::traits::{BACnetObject, Retirement};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 mod levels;
+mod release;
 mod retry;
 mod setting;
 mod staging;
@@ -37,7 +38,9 @@ impl LoadControlPersistence for Store {
         }
         self.attempts.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("the disk is full".into()));
+            return Err(Error::from(crate::snapshot::backend_failed(
+                "the disk is full",
+            )));
         }
         self.saves.fetch_add(1, Ordering::SeqCst);
         *self.saved.lock().unwrap() = Some(snapshot.clone());

@@ -108,9 +108,10 @@ async fn a_network_broadcast_to_no_one_network_is_refused() {
             c.who_am_i(scope, &request).await,
         ];
         for result in results {
-            let Err(Error::Encoding(text)) = &result else {
+            let Err(Error::InvalidArgument(text)) = &result else {
                 panic!("network {network}: {result:?}");
             };
+            let text = text.to_string();
             assert!(
                 text.contains(&format!("not {network}"))
                     && text.contains("Broadcast::Local")
@@ -166,7 +167,7 @@ async fn a_restricted_node_or_closed_seat_refuses_every_scope() {
         for result in results {
             if sealed {
                 assert!(
-                    matches!(&result, Err(Error::Encoding(text)) if text.contains("seat has closed")),
+                    matches!(&result, Err(Error::State(Lifecycle::Closed, text)) if text.to_string().contains("seat has closed")),
                     "{result:?}"
                 );
             } else {
@@ -285,4 +286,36 @@ async fn forms_without_a_range_or_to_the_own_network() {
         c.network.local_network_number().publish(own());
         c.who_am_i(Broadcast::Network(OWN), &request).await
     });
+}
+
+/// Which answers each scope takes, by the SNET they carried and the
+/// networks the client's local broadcast reaches
+/// ([`BACnetClient::local_networks`]): none yet, its own once learned, or a
+/// router application's networks (#2601), where every answer has an SNET.
+/// On the router's application a network named takes only its own
+/// answers, not those of the router's other networks.
+#[test]
+fn answers_come_from_the_scope_by_the_networks_local_reaches() {
+    const ROUTER_APP: &[u16] = &[1000, 2000];
+    for (scope, from, local, answered) in [
+        (Broadcast::Local, None, &[][..], true),
+        (Broadcast::Local, Some(OWN), &[], false),
+        (Broadcast::Local, Some(OWN), &[OWN], true),
+        (Broadcast::Local, Some(DNET), &[OWN], false),
+        (Broadcast::Local, Some(2000), ROUTER_APP, true),
+        (Broadcast::Local, Some(3000), ROUTER_APP, false),
+        (Broadcast::Network(OWN), None, &[OWN], true),
+        (Broadcast::Network(OWN), None, &[], false),
+        (Broadcast::Network(OWN), Some(OWN), &[OWN], true),
+        (Broadcast::Network(DNET), Some(OWN), &[OWN], false),
+        (Broadcast::Network(1000), Some(1000), ROUTER_APP, true),
+        (Broadcast::Network(1000), Some(2000), ROUTER_APP, false),
+        (Broadcast::Global, Some(3000), ROUTER_APP, true),
+    ] {
+        assert_eq!(
+            scope.answered_from(from, local),
+            answered,
+            "{scope:?} from {from:?}, local {local:?}"
+        );
+    }
 }

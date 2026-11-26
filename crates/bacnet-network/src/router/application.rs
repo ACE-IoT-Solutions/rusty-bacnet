@@ -14,10 +14,11 @@
 //!   one network or to all of them. The port reads the destination, the
 //!   APDU, the priority and the expecting-reply bit back out of it, and the
 //!   router's table picks the route and the next hop. The link MAC the
-//!   stack sends to plays no part, so `router_mac` arguments are ignored. An
-//!   NPDU with no DNET, which would be a local send on a link the
-//!   application lacks, and network messages, which are the router's own
-//!   business, are refused.
+//!   stack sends to plays no part, so `router_mac` arguments are ignored. A
+//!   local broadcast, with no DNET, goes to each of the router's directly
+//!   attached networks, since the application is on all of them (#2601).
+//!   A unicast with no DNET names a MAC on no one network and is refused,
+//!   and so are network messages, which are the router's own business.
 //! - **Answers** to the confirmed requests the stack received go back
 //!   through each request's saved reply plan instead
 //!   ([`application_replies`](super::application_replies)): from the
@@ -45,7 +46,8 @@ use bacnet_npdu::{MAX_NPDU, Npdu, NpduLimits};
 use bacnet_router_core::router::{OriginateError, Request, SourceSelection};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle, Refusal};
+use bacnet_types::sync::MutexExt;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -53,7 +55,7 @@ use super::application_feed::{Feed, outbound, slot};
 use super::application_replies::Plan;
 use super::application_transactions::Side;
 use super::dispatch::{Outputs, Shared};
-use super::originate::{OriginateFailure, originate};
+use super::originate::{OriginateFailure, originate, originate_attached};
 use super::{BACnetRouter, LocalApduReceiver, StartedRouter};
 
 /// Room for the network header in front of an APDU: what B/IP leaves
@@ -72,9 +74,20 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// A remote device is addressed by its network and MAC, as a routed device
 /// (with any MAC as the router's; the table picks the next hop), whether its
 /// network is directly attached or not. A device's reply carries its network
-/// and MAC as its source either way. The port has no local network, so a
-/// send with no DNET, such as a local broadcast, is refused with
-/// [`Error::Encoding`], and so is a network message.
+/// and MAC as its source either way.
+///
+/// The port has no one network of its own: it is on each of the router's
+/// networks ([`TransportPort::attached_networks`]). So a local broadcast,
+/// an NPDU with no DNET sent with [`TransportPort::send_broadcast`], goes
+/// to every one of them (#2601): once to each port's network, which the
+/// router sends there as that link's broadcast and passes no further, as
+/// a local broadcast on a one-link node reaches its own network alone.
+/// Isolated ports ([`RouterPort::isolated`](super::RouterPort::isolated))
+/// are included. A port that refuses its copy fails the send, but the
+/// other copies still go, as for a global broadcast. A unicast with no
+/// DNET, whose MAC names a station on no one network, is refused with
+/// [`Error::InvalidArgument`], and so is an NPDU that doesn't decode; a
+/// network message is refused with [`Error::Unsupported`].
 ///
 /// The stack's answers to confirmed requests it receives, such as the
 /// acknowledgement of a confirmed COV notification, go back through the
@@ -83,8 +96,10 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 /// refuses there fails with the transport error the plan reports.
 ///
 /// A refusal from [`BACnetRouter::originate`] fails the send:
-/// [`OriginateError::TooLong`] as [`Error::SendTooLong`], every other one
-/// as [`Error::Transport`] carrying the [`OriginateFailure`], which
+/// [`OriginateError::TooLong`] as [`Error::SendTooLong`],
+/// [`OriginateFailure::Stopped`] as an [`Error::State`] of
+/// [`Lifecycle::Closed`] (#1833), and every other one as
+/// [`Error::Transport`] carrying the [`OriginateFailure`], which
 /// [`OriginateFailure::from_error`] gets back. A network the table lacks
 /// fails with [`OriginateError::NoRoute`] and starts a search for it, as
 /// `originate` does; once the router has learned the route, a retry goes.
@@ -110,7 +125,9 @@ const NPCI_ROOM: u16 = (MAX_NPDU - 1476) as u16;
 ///
 /// [`TransportPort::stop`] closes the port's queue. Stopping the router
 /// closes its local receiver, which closes the port's queue too, and every
-/// later send fails with [`OriginateFailure::Stopped`].
+/// later send fails with [`OriginateFailure::Stopped`]'s closed state. A
+/// stopped port or router is this side's own state, not a failure of a
+/// link: a client counts such a send as not attempted.
 ///
 /// ```no_run
 /// # use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort};
@@ -310,27 +327,31 @@ impl RouterApplicationPort {
         self
     }
 
-    /// Send the NPDU a stack above wrote: an answer through its request's
-    /// saved plan, anything else originated.
-    async fn send(&self, npdu: &[u8]) -> Result<(), Error> {
+    /// Send the NPDU a stack above wrote, as a `broadcast` or not: an answer
+    /// through its request's saved plan, a local broadcast to each attached
+    /// network, anything else originated.
+    async fn send(&self, npdu: &[u8], broadcast: bool) -> Result<(), Error> {
         if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(bacnet_transport::port::stopped());
+            return Err(bacnet_transport::port::stopped_for_good());
         }
-        let npdu = Npdu::decode(npdu)
-            .map_err(|error| Error::Encoding(format!("router application send: {error}")))?;
+        let npdu = Npdu::decode(npdu).map_err(|error| {
+            Error::InvalidArgument(Refusal::text(format!("router application send: {error}")))
+        })?;
         if npdu.message_type.is_some() {
-            return Err(Error::Encoding(
+            return Err(Error::unsupported(
                 "the router's application port carries APDUs only; network messages are \
-                 the router's own"
-                    .into(),
+                 the router's own",
             ));
         }
         let Some(destination) = npdu.destination else {
-            return Err(Error::Encoding(
-                "the router's application has no network of its own: address a device by \
-                 its network, or broadcast to one network or to all"
-                    .into(),
-            ));
+            if !broadcast {
+                return Err(Error::invalid_argument(
+                    "the router's application is on each of the router's networks, so a \
+                     link MAC alone names no one station: address the device by its network",
+                ));
+            }
+            return originate_attached(&self.outputs, &self.shared, &npdu, self.source)
+                .map_err(failure_error);
         };
         let replies = &self.feed.replies[slot(self.side)];
         match replies.plan_for(destination, npdu.payload) {
@@ -361,11 +382,7 @@ impl RouterApplicationPort {
     /// and a drop all do.
     fn end_tasks(&self) {
         self.feed.detach(slot(self.side));
-        let follow = self
-            .follow
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let follow = self.follow.locked().take();
         if let Some(task) = follow {
             task.abort();
         }
@@ -399,8 +416,9 @@ impl std::fmt::Debug for RouterApplicationPort {
 impl TransportPort for RouterApplicationPort {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         if std::mem::replace(&mut self.started, true) {
-            return Err(Error::Encoding(
-                "router application port already started".to_string(),
+            return Err(Error::state(
+                Lifecycle::AlreadyStarted,
+                "router application port already started",
             ));
         }
         // Publish each change of the router's limits, capped. Nothing is
@@ -408,10 +426,7 @@ impl TransportPort for RouterApplicationPort {
         let mut limits = self.limits.clone();
         let published = self.published.clone();
         let cap = self.cap;
-        *self
-            .follow
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tokio::spawn(async move {
+        *self.follow.get_mut_locked() = Some(tokio::spawn(async move {
             loop {
                 let now = capped(cap, *limits.borrow_and_update());
                 published.send_if_modified(|current| std::mem::replace(current, now) != now);
@@ -424,9 +439,9 @@ impl TransportPort for RouterApplicationPort {
     }
 
     /// Stop through a shared reference (#2617): every later send fails with
-    /// [`bacnet_transport::port::stopped`]'s error, and the port leaves the
-    /// router's feed. The router itself runs on. The port does not start
-    /// again.
+    /// [`bacnet_transport::port::stopped_for_good`]'s error, and the port
+    /// leaves the router's feed. The router itself runs on. The port does
+    /// not start again.
     async fn stop(&self) -> Result<(), Error> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
@@ -434,16 +449,26 @@ impl TransportPort for RouterApplicationPort {
         Ok(())
     }
 
-    fn abort(&mut self) {
+    /// Abort through `&self` (#2617): what a stop does, at once.
+    fn abort(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
         self.end_tasks();
     }
 
     async fn send_unicast(&self, npdu: &[u8], _mac: &[u8]) -> Result<(), Error> {
-        self.send(npdu).await
+        self.send(npdu, false).await
     }
 
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.send(npdu).await
+        self.send(npdu, true).await
+    }
+
+    /// The router's networks, one per port in port order, isolated ports
+    /// included: where a local broadcast goes, and where a local answer
+    /// comes from (#2601).
+    fn attached_networks(&self) -> &[u16] {
+        &self.shared.networks
     }
 
     fn local_mac(&self) -> &[u8] {
@@ -502,16 +527,27 @@ fn failure_error(failure: OriginateFailure) -> Error {
         OriginateFailure::Refused(OriginateError::Busy) | OriginateFailure::QueueFull => {
             io::ErrorKind::WouldBlock
         }
-        OriginateFailure::Stopped => io::ErrorKind::NotConnected,
+        // This side's state, not a failure of a link (#1833).
+        OriginateFailure::Stopped => return router_stopped(),
         _ => io::ErrorKind::InvalidInput,
     };
     Error::Transport(io::Error::new(kind, failure))
 }
 
+/// A send through the application port after the router stopped: it
+/// doesn't start again, so [`Lifecycle::Closed`].
+#[cold]
+#[inline(never)]
+fn router_stopped() -> Error {
+    Error::state(Lifecycle::Closed, "the router has stopped")
+}
+
 impl OriginateFailure {
     /// The refusal behind `error`, when it is a send of a
     /// [`RouterApplicationPort`] that [`BACnetRouter::originate`] refused,
-    /// other than for length ([`Error::SendTooLong`]).
+    /// other than for length ([`Error::SendTooLong`]) or because the router
+    /// stopped ([`OriginateFailure::Stopped`], an [`Error::State`] of
+    /// [`Lifecycle::Closed`]).
     #[must_use]
     pub fn from_error(error: &Error) -> Option<Self> {
         match error {
@@ -528,3 +564,7 @@ mod tests;
 #[cfg(test)]
 #[path = "application_reassembly_tests.rs"]
 mod reassembly_tests;
+
+#[cfg(test)]
+#[path = "application_local_tests.rs"]
+mod local_tests;

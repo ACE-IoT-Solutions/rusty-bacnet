@@ -116,6 +116,64 @@ async fn audit_forwarding_to_a_parent_bound_at_a_group_address_never_sends() {
     }
 }
 
+/// #2732: a parent bound through its router at a broadcast or group form on
+/// its network names no one device for the confirmed copy, which that
+/// router would hand to every station there. Forwarding finds no route, so
+/// no copy goes out and the log reports a configuration error.
+#[tokio::test(start_paused = true)]
+async fn audit_forwarding_to_a_parent_bound_at_a_remote_broadcast_form_never_sends() {
+    for form in crate::server::event_recipient_route::broadcast_station_tests::FORMS {
+        let mut f = fixture(
+            Some(parent()),
+            Some(DeviceBinding::routed(oid(ObjectType::DEVICE, 20), 200, form, [2]).unwrap()),
+        )
+        .await;
+        f.unconfirmed(payload(false)).await;
+        settle().await;
+        assert!(f.requests().is_empty(), "{form:02X?}");
+        assert!(f.wire.sent.lock().unwrap().is_empty(), "{form:02X?}");
+        assert_eq!(
+            f.reliability().await,
+            PropertyValue::Enumerated(Reliability::CONFIGURATION_ERROR.to_raw()),
+            "{form:02X?}"
+        );
+        f.server.stop().await.unwrap();
+    }
+}
+
+/// #2738: the same parent bound marked one station gets the confirmed copy
+/// through its router at each form the mark lifts, its DNET and DADR naming
+/// the station; at a form the mark doesn't lift nothing goes, as unmarked.
+#[tokio::test(start_paused = true)]
+async fn audit_forwarding_to_a_parent_bound_marked_one_station() {
+    use crate::server::event_recipient_route::broadcast_station_tests::{
+        MARKED_FORMS, MARKED_STATIONS,
+    };
+    let lifted = MARKED_STATIONS.into_iter().map(|mac| (mac, true));
+    for (mac, sent) in lifted.chain(MARKED_FORMS.into_iter().map(|mac| (mac, false))) {
+        let binding = DeviceBinding::routed(oid(ObjectType::DEVICE, 20), 200, mac, [2])
+            .unwrap()
+            .one_station();
+        let mut f = fixture(Some(parent()), Some(binding)).await;
+        f.unconfirmed(payload(false)).await;
+        settle().await;
+        if sent {
+            assert_eq!(f.requests().len(), 1, "{mac:02X?}");
+            let wire = f.wire.sent.lock().unwrap()[0].clone();
+            let to = decode_npdu(wire).unwrap().destination.unwrap();
+            assert_eq!((to.network, to.mac_address.as_slice()), (200, mac));
+        } else {
+            assert!(f.requests().is_empty(), "{mac:02X?}");
+            assert_eq!(
+                f.reliability().await,
+                PropertyValue::Enumerated(Reliability::CONFIGURATION_ERROR.to_raw()),
+                "{mac:02X?}"
+            );
+        }
+        f.server.stop().await.unwrap();
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn audit_forwarding_observed_binding_and_local_alias_do_not_send() {
     let mut f = fixture(Some(parent()), None).await;

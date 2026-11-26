@@ -19,7 +19,6 @@ use bacnet_endpoint_core::seat::{
 };
 use bacnet_network::layer::{ApduReceiver, ReceivedApdu, ReceivedNetworkControl};
 use bacnet_network::network_number::NumberControl;
-use bacnet_types::enums::Segmentation;
 
 use super::dispatch_turn::{Turn, TurnOrder};
 use super::lifecycle::Controls;
@@ -269,9 +268,13 @@ impl<T: TransportPort + 'static> Inbound<T> for Seated<T> {
 }
 
 /// What a seated client's request or send fails with once its seat has
-/// closed, by its node's stop or the client's own.
+/// closed, by its node's stop or the client's own: closed for good, as a
+/// seat never opens again (#1833).
 pub(super) fn seat_closed() -> Error {
-    Error::Encoding("the client's seat has closed: its node or the client stopped".into())
+    Error::state(
+        Lifecycle::Closed,
+        "the client's seat has closed: its node or the client stopped",
+    )
 }
 
 impl<T: TransportPort> BACnetClient<T> {
@@ -469,16 +472,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         )?;
         config.validate_window()?;
         options.validate()?;
-        let cov_timeout = match seat.device_segmentation {
-            Some((segmentation, timeout)) => matches!(
-                segmentation,
-                Segmentation::SEGMENTED_BOTH | Segmentation::SEGMENTED_RECEIVE
-            )
-            .then_some(timeout),
-            None => config
-                .segmented_response_accepted
-                .then(|| Duration::from_millis(config.apdu_timeout_ms)),
-        };
         let ClientSeat {
             network,
             coordinator,
@@ -490,9 +483,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             dcc,
             ..
         } = seat;
-        let hold = holds
-            .hold()
-            .ok_or_else(|| Error::Encoding("the seat's node is stopping".into()))?;
+        let hold = holds.hold().ok_or(Error::state(
+            Lifecycle::Stopping,
+            "the seat's node is stopping",
+        ))?;
         let inbound = Seated {
             held: HeldNetwork {
                 network,
@@ -507,12 +501,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             dcc: (dcc, options.node_dcc_override),
             _follows: None,
         };
-        Ok(Self::assemble(
-            config,
-            options,
-            inbound,
-            coordinator,
-            cov_timeout,
-        ))
+        // The node's queues count their own control drops, which a seat
+        // can't read: its path checks take every router query's answers as
+        // possibly lost, so they never strike (#2823).
+        Ok(Self::assemble(config, options, inbound, coordinator, None))
     }
 }

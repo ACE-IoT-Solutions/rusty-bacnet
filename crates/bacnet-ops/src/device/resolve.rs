@@ -13,7 +13,7 @@ use bacnet_types::error::Error;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{Device, DeviceAddress, DeviceRef, Discovered, Duplicate, Pin};
-use crate::client::{Client, Discover, ResolveScope, Scope};
+use crate::client::{Client, Discover, ResolveScope, Scope, lock};
 use crate::error::OpsError;
 use crate::target::{Target, VmacLookup, bip6_vmac, check_local_mac, parse_target_on};
 
@@ -50,9 +50,26 @@ impl<T: TransportPort + 'static> Client<T> {
                 let parse = |reason| OpsError::parse("target", text, reason);
                 match parse_target_on(transport, text).map_err(parse)? {
                     Target::Mac(mac) => self.at(local(&mac).map_err(parse)?).await,
-                    Target::RoutedMac { dnet, mac } => {
-                        self.at(DeviceAddress::new(dnet, &mac).map_err(parse)?)
-                            .await
+                    Target::RoutedMac {
+                        dnet,
+                        mac,
+                        one_station,
+                    } => {
+                        let address = if one_station {
+                            DeviceAddress::marked(dnet, &mac)
+                        } else {
+                            // On this client's own network the MAC is a
+                            // local one: say why the link refuses it, and
+                            // suggest no mark, which lifts nothing there.
+                            let own = self.low_level().network_number();
+                            DeviceAddress::new(dnet, &mac).map_err(|why| match own {
+                                Some(own) if own == dnet => {
+                                    DeviceAddress::new(0, &mac).err().unwrap_or(why)
+                                }
+                                _ => why,
+                            })
+                        };
+                        self.at(address.map_err(parse)?).await
                     }
                     Target::Bip6(peer) => {
                         let vmac = bip6_vmac(transport, peer).await.map_err(|why| match why {
@@ -93,9 +110,26 @@ impl<T: TransportPort + 'static> Client<T> {
     /// A handle pinned to `address`, with the instance the discovery table
     /// holds for it. An address on this client's own network is the local
     /// station at its MAC, which the link must be able to reach. A remote
-    /// address without a row gets a station-directed Who-Is first.
+    /// address without a row is looked for first ([`Self::find_station`]).
     async fn at(&self, address: DeviceAddress) -> Result<Device<T>, OpsError> {
         let address = self.localized(address);
+        // A marked address lifts nothing on this client's own network,
+        // where the station is on this link and the link judges its MAC
+        // (#2738).
+        if address.is_one_station() && Some(address.network()) == self.low_level().network_number()
+        {
+            let shown = address.to_string();
+            return Err(OpsError::parse(
+                "address",
+                &shown,
+                format!(
+                    "network {} is this client's own network, so the station is on this link \
+                     and ':{}' lifts nothing there; its MAC is judged by the link",
+                    address.network(),
+                    crate::target::ONE_STATION_SUFFIX
+                ),
+            ));
+        }
         if address.is_local() {
             let shown = address.styled(self.address_style());
             check_local_mac(self.low_level().transport(), address.mac(), &shown)
@@ -110,6 +144,18 @@ impl<T: TransportPort + 'static> Client<T> {
             instance: row.map(|row| row.object_identifier.instance_number()),
             pin: Pin::At(address),
         })
+    }
+
+    /// Whether a lookup by `address` (a handle made from it, or a routed
+    /// request with no router named) found no answer from the station to
+    /// either Who-Is within the last [`MISS_MEMORY`](super::MISS_MEMORY).
+    /// For a caller that fails at once instead of asking again; a handle
+    /// made from the address asks again whatever this says.
+    pub fn unanswered_recently(&self, address: &DeviceAddress) -> bool {
+        let address = self.localized(address.clone());
+        lock(&self.shared.station_misses)
+            .get(&address, tokio::time::Instant::now())
+            .silent
     }
 
     /// `address` as the discovery table and the gates key it: one on this
@@ -234,24 +280,65 @@ impl<T: TransportPort + 'static> Client<T> {
         })
     }
 
-    /// The row of the station at the remote `address`, once it answers a
-    /// Who-Is to that station, optionally limited to `range`.
-    async fn find_station(
+    /// The row of the station at the remote `address`, once it answers,
+    /// optionally limited to `range`. The first Who-Is is addressed to the
+    /// station (#2599). With no answer in the resolve wait, one Who-Is goes
+    /// to its network, and only an I-Am from the station's own address is
+    /// taken: an MS/TP slave behind a slave proxy is answered for only that
+    /// way (Clause 16.10.2). A station found so is remembered
+    /// ([`StationMisses`](super::StationMisses)), and its next lookup asks
+    /// its network at once. Nothing goes further, and never globally.
+    pub(super) async fn find_station(
         &self,
         address: &DeviceAddress,
         range: Option<DeviceInstanceRange>,
     ) -> Result<DiscoveredDevice, OpsError> {
-        let asked = Scope::Directed(address.clone().into());
-        let found = self
-            .wait_for(&asked, range, Duration::ZERO, |row| {
-                DeviceAddress::of(row)
-                    .is_some_and(|at| asked.covers(&at, self.low_level().network_number()))
-            })
-            .await?;
-        found.ok_or_else(|| OpsError::UnknownDevice {
+        let unknown = |asked| OpsError::UnknownDevice {
             target: address.to_string(),
-            asked: self.resolve_wait().map(|_| asked),
-        })
+            asked,
+        };
+        if self.resolve_wait().is_none() {
+            return Err(unknown(None));
+        }
+        let station = Scope::Directed(address.clone().into());
+        let is_station = |row: &DiscoveredDevice| {
+            let low = self.low_level();
+            match DeviceAddress::of(row) {
+                Some(at) => station.covers(&at, low.network_number(), &low.local_networks()),
+                // A row at a MAC the one-station mark lifts has no
+                // `DeviceAddress` (an I-Am can't mark itself), but the
+                // station an operator marked is that row (#2738).
+                None => row.address().is_some_and(|at| {
+                    address.is_one_station()
+                        && at.network_number == address.network()
+                        && at.mac_address.as_slice() == address.mac()
+                }),
+            }
+        };
+        let misses = &self.shared.station_misses;
+        let known = lock(misses).get(address, tokio::time::Instant::now());
+        if !known.network_form
+            && let Some(row) = self
+                .wait_for(&station, range, Duration::ZERO, is_station)
+                .await?
+        {
+            lock(misses).forget(address);
+            return Ok(row);
+        }
+        let network = Scope::Network(address.network());
+        let found = self
+            .wait_for(&network, range, Duration::ZERO, is_station)
+            .await?;
+        let now = tokio::time::Instant::now();
+        if found.is_some() {
+            lock(misses).answered_network_form(address.clone(), now);
+        } else {
+            // Which form the station answers stays known: one lost I-Am
+            // from a proxied slave must not send it back to the
+            // station-addressed form.
+            lock(misses).went_silent(address.clone(), now);
+        }
+        found.ok_or_else(|| unknown(Some(network)))
     }
 
     /// Send one Who-Is to `asked` for `range`, and wait
@@ -338,10 +425,12 @@ impl<T: TransportPort + 'static> Client<T> {
         self.who_is(request.scope(), range).await?;
         let answered = |row: &DiscoveredDevice| {
             let instance = row.object_identifier.instance_number();
-            let address = DeviceAddress::of(row)?;
-            let own = self.low_level().network_number();
-            (range.is_none_or(|r| r.contains(instance)) && request.scope().covers(&address, own))
-                .then_some((address, instance))
+            let address = DeviceAddress::of(row).or_else(|| marked_answer(request.scope(), row))?;
+            let low = self.low_level();
+            let (own, local) = (low.network_number(), low.local_networks());
+            (range.is_none_or(|r| r.contains(instance))
+                && request.scope().covers(&address, own, &local))
+            .then_some((address, instance))
         };
         let mut heard = BTreeSet::new();
         let deadline = tokio::time::Instant::now() + request.wait;
@@ -360,7 +449,7 @@ impl<T: TransportPort + 'static> Client<T> {
             }
         }
         let (own, table) = self.low_level().localized_device_snapshot();
-        Ok(discovery_results(table, heard, own))
+        Ok(discovery_results(request.scope(), table, heard, own))
     }
 
     /// Every instance two or more addresses claim in the discovery table,
@@ -389,6 +478,7 @@ impl<T: TransportPort + 'static> Client<T> {
 
 /// Join this call's answers to the final table with one local-number snapshot.
 pub(super) fn discovery_results(
+    scope: &Scope,
     table: Vec<DiscoveredDevice>,
     heard: BTreeSet<(DeviceAddress, u32)>,
     own: Option<u16>,
@@ -401,7 +491,7 @@ pub(super) fn discovery_results(
     let stations: Vec<_> = table
         .into_iter()
         .filter_map(|entry| {
-            let address = DeviceAddress::of(&entry)?;
+            let address = DeviceAddress::of(&entry).or_else(|| marked_answer(scope, &entry))?;
             let instance = entry.object_identifier.instance_number();
             *claims.entry(instance).or_insert(0usize) += 1;
             Some((address, instance, entry))
@@ -444,4 +534,19 @@ pub(super) fn unknown(instance: u32, network: Option<u16>) -> Error {
             _ => instance.to_string(),
         },
     }
+}
+
+/// The marked address of `row`, an answer from a MAC the one-station mark
+/// lifts, when `scope` is a directed Who-Is to exactly that station and the
+/// caller marked it one station (#2738): the mark is the caller's word, not
+/// the I-Am's, so any other answer from such a MAC stays unlisted.
+fn marked_answer(scope: &Scope, row: &DiscoveredDevice) -> Option<DeviceAddress> {
+    let Scope::Directed(station) = scope else {
+        return None;
+    };
+    let (network, mac) = station.address();
+    let at = row.address()?;
+    (station.is_one_station() && at.network_number == network && at.mac_address.as_slice() == mac)
+        .then(|| DeviceAddress::marked(network, mac).ok())
+        .flatten()
 }

@@ -13,14 +13,8 @@ async fn started() -> (StartedRouter, Vec<LoopbackTransport>) {
     let (two, far_two) = LoopbackTransport::pair(vec![0x12, 0x02], vec![0x22]);
     let started = BACnetRouter::start(
         vec![
-            RouterPort {
-                transport: bacnet_transport::any::AnyTransport::Loopback(one),
-                network_number: 1,
-            },
-            RouterPort {
-                transport: bacnet_transport::any::AnyTransport::Loopback(two),
-                network_number: 2,
-            },
+            RouterPort::new(bacnet_transport::any::AnyTransport::Loopback(one), 1),
+            RouterPort::new(bacnet_transport::any::AnyTransport::Loopback(two), 2),
         ],
         RouterOptions::new(),
     )
@@ -83,27 +77,29 @@ async fn the_wrapped_port_is_the_router_port_and_has_no_link() {
     let (mut router, slots) = Slots::split(Application::Client, started);
     let mut transport = AppTransport::Router(slots.take(Role::Client).unwrap());
     assert!(transport.link().is_none());
-    assert!(matches!(transport.as_bip(), Err(Error::Encoding(_))));
+    assert!(matches!(transport.as_bip(), Err(Error::Unsupported(_))));
     assert!(transport.bip_transport().is_none());
     assert!(transport.bip6_transport().is_none());
     // The longest of the router's MACs is the port's own.
     assert_eq!(transport.local_mac(), [0x12, 0x02]);
     assert!(transport.max_npdu_changes().is_some());
     let _receiver = transport.start().await.unwrap();
-    // An NPDU with no DNET is a local send, and the entity has no link.
+    // The entity is on both networks, so a local broadcast goes to each
+    // (#2601), and a unicast with no DNET names no one station.
+    assert_eq!(transport.attached_networks(), [1, 2]);
     let local = [0x01, 0x00, 0x10, 0x08];
+    transport.send_broadcast(&local).await.unwrap();
     assert!(matches!(
-        transport.send_broadcast(&local).await,
-        Err(Error::Encoding(message)) if message.contains("no network of its own")
+        transport.send_unicast(&local, &[0x21]).await,
+        Err(Error::InvalidArgument(message)) if message.to_string().contains("names no one station")
     ));
     router.stop().await.unwrap();
-    // Every send after the router stops fails as not connected.
+    // Every send after the router stops fails as this side's closed state
+    // (#1833), not as a link's failure.
     let global_who_is = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
     match transport.send_broadcast(&global_who_is).await {
-        Err(Error::Transport(error)) => {
-            assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
-        }
-        other => panic!("expected a transport error, got {other:?}"),
+        Err(Error::State(bacnet_types::error::Lifecycle::Closed, _)) => {}
+        other => panic!("expected the closed state, got {other:?}"),
     }
     transport.stop().await.unwrap();
 }

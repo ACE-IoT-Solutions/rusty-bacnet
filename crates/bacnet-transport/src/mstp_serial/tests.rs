@@ -45,14 +45,14 @@ impl DirectionControl for MockDirection {
         self.tx.store(true, Ordering::SeqCst);
         self.record(Event::Tx);
         if self.fail_tx.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("set TX failed".into()));
+            return Err(Error::Transport(std::io::Error::other("set TX failed")));
         }
         Ok(())
     }
 
     fn set_rx_mode(&self) -> Result<(), Error> {
         if self.fail_rx.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("set RX failed".into()));
+            return Err(Error::Transport(std::io::Error::other("set RX failed")));
         }
         self.tx.store(false, Ordering::SeqCst);
         self.record(Event::Rx);
@@ -83,7 +83,9 @@ impl SerialPort for MockSerial {
         assert!(self.direction.tx.load(Ordering::SeqCst));
         self.direction.record(Event::WriteAccepted);
         if self.fail_write {
-            Err(Error::Encoding("partial write failed".into()))
+            Err(Error::Transport(std::io::Error::other(
+                "partial write failed",
+            )))
         } else {
             Ok(())
         }
@@ -93,7 +95,7 @@ impl SerialPort for MockSerial {
         assert!(self.direction.tx.load(Ordering::SeqCst));
         self.direction.record(Event::DrainStarted);
         if self.fail_drain.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("drain failed".into()));
+            return Err(Error::Transport(std::io::Error::other("drain failed")));
         }
         self.complete.acquire().await.unwrap().forget();
         self.direction.record(Event::TxComplete);
@@ -159,7 +161,7 @@ async fn gpio_partial_write_error_drains_before_restoring_rx() {
     assert!(serial.direction.tx.load(Ordering::SeqCst));
     serial.complete.add_permits(1);
     assert!(
-        matches!(poll_once(write.as_mut()), Poll::Ready(Err(Error::Encoding(e))) if e == "partial write failed")
+        matches!(poll_once(write.as_mut()), Poll::Ready(Err(Error::Transport(e))) if e.to_string() == "partial write failed")
     );
     serial.direction.assert_events(&[
         Event::Tx,
@@ -176,7 +178,7 @@ async fn gpio_failed_drain_retains_de_and_read_recovers_only_after_completion() 
     let direction = SoftwareDirection::new(0);
     serial.fail_drain.store(true, Ordering::SeqCst);
     assert!(
-        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Encoding(e)) if e == "drain failed")
+        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Transport(e)) if e.to_string() == "drain failed")
     );
     assert!(serial.direction.tx.load(Ordering::SeqCst));
     let mut buf = [0];
@@ -261,7 +263,7 @@ async fn gpio_direction_errors_are_reported_and_recoverable() {
     let direction = SoftwareDirection::new(0);
     serial.direction.fail_tx.store(true, Ordering::SeqCst);
     assert!(
-        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Encoding(e)) if e == "set TX failed")
+        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Transport(e)) if e.to_string() == "set TX failed")
     );
     serial.direction.assert_events(&[Event::Tx, Event::Rx]);
 
@@ -269,7 +271,7 @@ async fn gpio_direction_errors_are_reported_and_recoverable() {
     serial.direction.fail_rx.store(true, Ordering::SeqCst);
     serial.complete.add_permits(1);
     assert!(
-        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Encoding(e)) if e == "set RX failed")
+        matches!(direction.write(&serial, &*serial.direction, &[1]).await, Err(Error::Transport(e)) if e.to_string() == "set RX failed")
     );
     assert!(serial.direction.tx.load(Ordering::SeqCst));
     serial.direction.fail_rx.store(false, Ordering::SeqCst);
@@ -589,5 +591,53 @@ fn available_ports_lists_device_names() {
             );
             assert!(error.to_string().contains("/sys/class/tty"), "{error}");
         }
+    }
+}
+
+/// A port that can't be opened is a transport error of the failure's kind,
+/// whose text names the port and then gives the operating system's reason
+/// (#1833).
+#[tokio::test]
+async fn a_port_that_does_not_open_is_a_transport_error_naming_it() {
+    let path = std::env::temp_dir()
+        .join("rusty-bacnet-missing-serial")
+        .join("serial");
+    let port_name = path.to_string_lossy().into_owned();
+    let config = SerialConfig {
+        port_name: port_name.clone(),
+        baud_rate: 38_400,
+    };
+    let Err(error) = TokioSerialPort::open(&config) else {
+        panic!("{port_name} opened");
+    };
+    let Error::Transport(io) = &error else {
+        panic!("{error:?}");
+    };
+    // `NotFound` everywhere: the serial library's conversion keeps Unix's
+    // ENOENT, and makes Windows' path-not-found (no device to it) the same.
+    assert_eq!(io.kind(), std::io::ErrorKind::NotFound, "{io}");
+    let text = io.to_string();
+    assert!(
+        text.starts_with(&format!("Serial open failed for {port_name}: ")),
+        "{text}"
+    );
+}
+
+/// A GPIO failure is a transport error of the OS error's kind where the
+/// GPIO library keeps the code, and `Other` where it doesn't (#1833).
+#[cfg(feature = "serial-gpio")]
+#[test]
+fn a_gpio_failure_keeps_the_os_errors_kind() {
+    let denied = gpiocdev::Error::from(std::io::Error::from_raw_os_error(libc::EACCES));
+    let none = gpiocdev::Error::NoGpioChips();
+    for (error, kind) in [
+        (denied, std::io::ErrorKind::PermissionDenied),
+        (none, std::io::ErrorKind::Other),
+    ] {
+        let Error::Transport(io) = gpio_error(error, "GPIO request failed") else {
+            panic!("not a transport error");
+        };
+        assert_eq!(io.kind(), kind, "{io}");
+        assert!(io.to_string().starts_with("GPIO request failed: "), "{io}");
     }
 }

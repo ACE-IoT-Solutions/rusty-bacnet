@@ -13,6 +13,7 @@ use bacnet_network::layer::{NetworkReport, ReceivedNetworkControl, ReceivedNetwo
 use bacnet_network::network_number::NumberControl;
 use bacnet_npdu::NetworkMessageType;
 use bacnet_router_core::message::Networks;
+use bacnet_types::sync::MutexExt;
 
 /// Network-report broadcast channel capacity. A subscriber this far behind
 /// loses the oldest and is told how many with `RecvError::Lagged`; the
@@ -53,13 +54,9 @@ pub(super) fn publish(
         let empty_ack = control.npdu.message_type
             == Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK)
             && control.npdu.payload.is_empty()
-            && queried
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .is_some_and(|target| {
-                    target.answers(&control.source_mac, control.npdu.source.as_ref())
-                });
+            && queried.locked().as_ref().is_some_and(|target| {
+                target.answers(&control.source_mac, control.npdu.source.as_ref())
+            });
         empty_ack.then(|| ReceivedNetworkReport {
             source_mac: control.source_mac.clone(),
             source_network: control.npdu.source.clone(),
@@ -90,13 +87,31 @@ fn record(routers: &mut Vec<DiscoveredRouter>, mac: MacAddr, listed: Vec<u16>) {
     networks.dedup();
 }
 
+/// The router core's refusal to write a network list, as the static
+/// [`Error::Encode`] (#1833).
+#[cold]
+fn network_list_refused(error: bacnet_router_core::message::DataError) -> Error {
+    use bacnet_router_core::message::DataError;
+    use bacnet_types::error::EncodeError;
+    let octets = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
+    match error {
+        DataError::NoRoom { needed, available } => {
+            EncodeError::new("message data of {} octets doesn't fit in {}")
+                .with_values(octets(needed), octets(available))
+        }
+        _ => EncodeError::new("network list refused"),
+    }
+    .into()
+}
+
 /// Refuse a network number no router can be asked about: 0, or 0xFFFF,
 /// the global broadcast.
 fn check_network(network: u16) -> Result<(), Error> {
     if network == 0 || network == u16::MAX {
-        return Err(Error::Encoding(format!(
-            "network {network} is not a network number a router can reach; use 1..=65534"
-        )));
+        return Err(Error::InvalidArgument(
+            Refusal::new("network {} is not a network number a router can reach; use 1..=65534")
+                .with_value(u64::from(network)),
+        ));
     }
     Ok(())
 }
@@ -111,23 +126,46 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         self.network_report_tx.subscribe()
     }
 
-    /// Send a Who-Is-Router-To-Network (Clause 6.4.1), asking which router
-    /// reaches `network`, or, for `None`, every router for all the networks
-    /// it reaches. It is broadcast on the local network when
-    /// `destination_mac` is `None`, else sent to that router alone. Answers
-    /// come as [`NetworkReport::IAmRouterToNetwork`] through
+    /// Broadcast a Who-Is-Router-To-Network (Clause 6.4.1) on the local
+    /// network, asking which router reaches `network`, or, for `None`,
+    /// every router for all the networks it reaches. Answers come as
+    /// [`NetworkReport::IAmRouterToNetwork`] through
     /// [`Self::network_reports`]. `network` 0 and 0xFFFF are refused.
-    pub async fn who_is_router_to_network(
+    /// [`Self::who_is_router_to_network_directed`] asks one router.
+    pub async fn who_is_router_to_network(&self, network: Option<u16>) -> Result<(), Error> {
+        self.send_who_is_router(None, network).await
+    }
+
+    /// Send a Who-Is-Router-To-Network to the one router at `router`, its
+    /// MAC on the local network, as [`Self::who_is_router_to_network`]
+    /// broadcasts it. A `router` that names no one station (empty, a
+    /// broadcast or group address, or malformed for the link) is refused
+    /// with [`Error::Transport`] of kind
+    /// [`InvalidInput`](std::io::ErrorKind::InvalidInput), and nothing is
+    /// sent.
+    ///
+    /// The router answers with a local broadcast, not to the asker alone
+    /// (Clause 6.6.3.3). A B/IP router on another IP subnet takes the
+    /// question, but its answer reaches this client only when a BBMD
+    /// forwards it here, as a peer or by foreign-device registration.
+    pub async fn who_is_router_to_network_directed(
         &self,
+        router: &[u8],
         network: Option<u16>,
-        destination_mac: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        self.send_who_is_router(Some(router), network).await
+    }
+
+    async fn send_who_is_router(
+        &self,
+        router: Option<&[u8]>,
+        network: Option<u16>,
     ) -> Result<(), Error> {
         let mut payload = [0u8; 2];
         let len = match network {
             Some(network) => {
                 check_network(network)?;
-                Networks::write([network], &mut payload)
-                    .map_err(|e| Error::Encoding(e.to_string()))?
+                Networks::write([network], &mut payload).map_err(network_list_refused)?
             }
             None => 0,
         };
@@ -136,7 +174,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .send_network_message(
                 NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK,
                 &payload[..len],
-                destination_mac,
+                router,
             )
             .await
     }
@@ -149,6 +187,21 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// address naming this network is a station on this one.
     pub fn network_number(&self) -> Option<u16> {
         self.network.local_network_number().get()
+    }
+
+    /// The numbers of the networks this client's local broadcast reaches,
+    /// as it knows them now: its own network's, once learned
+    /// ([`Self::network_number`]), or none yet; and on a router's
+    /// application port, which is on each of the router's networks, every
+    /// one of them ([`TransportPort::attached_networks`], #2601). An
+    /// answer whose SNET is one of these comes from this network:
+    /// [`Broadcast::answered_from`](super::Broadcast::answered_from) takes
+    /// this list.
+    pub fn local_networks(&self) -> Vec<u16> {
+        match self.network.transport().attached_networks() {
+            [] => self.network_number().into_iter().collect(),
+            attached => attached.to_vec(),
+        }
     }
 
     /// Send a What-Is-Network-Number (Clause 6.4.19), broadcast when
@@ -177,36 +230,61 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(())
     }
 
-    /// Send a Who-Is-Router-To-Network for `network` (or every network).
-    /// With a destination, send to that local station and keep only reports
-    /// from its own MAC without a routed source. With `None`, broadcast and
-    /// collect the I-Am-Router-To-Network messages heard for
+    /// Broadcast a Who-Is-Router-To-Network for `network` (or every
+    /// network), then collect the I-Am-Router-To-Network messages heard for
     /// `wait`: one entry per router MAC, in the order first heard. For a
     /// `network`, only the routers that list it are kept. No answer is an
-    /// empty list, not an error.
+    /// empty list, not an error. [`Self::discover_routers_directed`] asks
+    /// one router.
     pub async fn discover_routers(
         &self,
         network: Option<u16>,
-        destination_mac: Option<&[u8]>,
+        wait: Duration,
+    ) -> Result<Vec<DiscoveredRouter>, Error> {
+        let (routers, _) = self.collect_routers(None, network, wait, false).await?;
+        Ok(routers)
+    }
+
+    /// Ask the one router at `router`, its MAC on the local network, as
+    /// [`Self::who_is_router_to_network_directed`] does, then collect for
+    /// `wait` as [`Self::discover_routers`] does, keeping only the reports
+    /// from `router`'s own MAC that no other router passed on: at most one
+    /// entry. A router asked about a network it has no entry for may ask
+    /// further before it answers.
+    ///
+    /// The router answers with a local broadcast (Clause 6.6.3.3), so a
+    /// B/IP router on another IP subnet is heard only when a BBMD forwards
+    /// its answer here, as a peer or by foreign-device registration; with
+    /// no BBMD, an empty list is the expected result. A `router` that
+    /// names no one station is refused as
+    /// [`Self::who_is_router_to_network_directed`] refuses it.
+    pub async fn discover_routers_directed(
+        &self,
+        router: &[u8],
+        network: Option<u16>,
         wait: Duration,
     ) -> Result<Vec<DiscoveredRouter>, Error> {
         let (routers, _) = self
-            .collect_routers(network, destination_mac, wait, destination_mac.is_some())
+            .collect_routers(Some(router), network, wait, true)
             .await?;
         Ok(routers)
     }
 
+    /// Ask `router` (or broadcast, with `None`) and collect the
+    /// I-Am-Router-To-Network reports heard for `wait`, with the number of
+    /// reports lost to a lagging receiver. A directed ask keeps only
+    /// `router`'s own reports; `local_only` keeps only reports no other
+    /// router passed on.
     pub(super) async fn collect_routers(
         &self,
+        router: Option<&[u8]>,
         network: Option<u16>,
-        destination_mac: Option<&[u8]>,
         wait: Duration,
         local_only: bool,
     ) -> Result<(Vec<DiscoveredRouter>, u64), Error> {
         // Subscribe first, so no answer can arrive before the receiver.
         let mut rx = self.network_reports();
-        self.who_is_router_to_network(network, destination_mac)
-            .await?;
+        self.send_who_is_router(router, network).await?;
         let deadline = tokio::time::Instant::now() + wait;
         let mut routers: Vec<DiscoveredRouter> = Vec::new();
         let lost = collect_until(&mut rx, deadline, "I-Am-Router-To-Network", |received| {
@@ -214,7 +292,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 return;
             };
             if (local_only && received.source_network.is_some())
-                || destination_mac.is_some_and(|peer| received.source_mac.as_slice() != peer)
+                || router.is_some_and(|peer| received.source_mac.as_slice() != peer)
                 || network.is_some_and(|wanted| !listed.contains(&wanted))
             {
                 return;

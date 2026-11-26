@@ -689,3 +689,92 @@ fn a_disabled_node_fails_locally() {
         assert!(!super::timed_out(&error), "{error}");
     }
 }
+
+/// The local refusals #1833 typed out of the encoding error fail locally,
+/// as it did, and so does a send on a stopped transport (#1833): a stopped
+/// local link is the client's own state, not a device that stopped
+/// answering. So does this side's own stored state failing, which was that
+/// error's text too. A link that failed a send is still unreachable.
+#[test]
+fn local_refusals_and_a_stopped_link_fail_locally() {
+    use bacnet_types::error::{Error, Lifecycle, PersistenceError, PersistenceErrorKind};
+    for error in [
+        Error::from(PersistenceError::new(
+            PersistenceErrorKind::BackendFailed,
+            "storage unavailable",
+        )),
+        Error::from(PersistenceError::new(
+            PersistenceErrorKind::Damaged,
+            "checksum mismatch",
+        )),
+        Error::state(
+            Lifecycle::NotConnected,
+            "BACnet/SC transport not in Connected state",
+        ),
+        Error::invalid_config("SC VMAC is zero or broadcast"),
+        Error::invalid_argument("a unicast can't go to a group address"),
+        Error::unsupported("transport reports no B/IP link or data link"),
+        Error::limit_reached("no room to hold a broadcast until registration"),
+        bacnet_transport::port::stopped(),
+        bacnet_transport::port::stopped_for_good(),
+    ] {
+        assert!(super::failed_locally(&error), "{error}");
+        assert!(!super::unreachable(&error), "{error}");
+        assert!(!super::timed_out(&error), "{error}");
+    }
+    let failed = Error::Transport(std::io::Error::other("send failed"));
+    assert!(!super::failed_locally(&failed), "{failed}");
+    assert!(super::unreachable(&failed), "{failed}");
+}
+
+/// A request the client's stop cut off fails locally, as its untyped text
+/// did, whether or not it went out (#1833): no timeout, no unreachable
+/// device, no RPM fallback, and nothing Object_Name could explain.
+#[test]
+fn a_cut_off_request_fails_locally() {
+    use bacnet_types::error::Error;
+    for sent in [false, true] {
+        let error = Error::RequestCutOff { sent };
+        assert!(super::failed_locally(&error), "{error}");
+        assert!(!super::unreachable(&error), "{error}");
+        assert!(!super::timed_out(&error), "{error}");
+        assert_eq!(super::rpm_failure(&error), super::RpmFailure::Other);
+        assert!(!crate::watch::hub::first::name_may_explain(&error));
+    }
+}
+
+/// The links' own refusals of an NPDU too long for them (MS/TP's standard
+/// frames, B/IP's 1,497 octets) are a request too large, which a batch
+/// asks again a row at a time, as for an answer too large: neither the
+/// client's own failure, which ends a read, nor a device gone (#1833).
+#[tokio::test]
+async fn a_links_length_refusal_is_a_request_too_large() {
+    use bacnet_transport::bip::BipTransport;
+    use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
+    use bacnet_transport::port::TransportPort;
+    use std::net::Ipv4Addr;
+
+    let (serial, _peer) = LoopbackSerial::pair();
+    let config = MstpConfig {
+        this_station: 1,
+        max_master: 2,
+        ..MstpConfig::default()
+    };
+    let mut mstp = MstpTransport::new(serial, config);
+    let _from_mstp = mstp.start().await.unwrap();
+    let mut bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
+    let _from_bip = bip.start().await.unwrap();
+    let refusals = [
+        mstp.send_unicast(&[0x01; 502], &[2]).await.unwrap_err(),
+        bip.send_unicast(&[0x01; 1498], &[127, 0, 0, 1, 0xBA, 0xC0])
+            .await
+            .unwrap_err(),
+    ];
+    mstp.stop().await.unwrap();
+    bip.stop().await.unwrap();
+    for error in refusals {
+        assert_eq!(rpm_failure(&error), RpmFailure::TooLarge, "{error}");
+        assert!(!failed_locally(&error), "{error}");
+        assert!(!unreachable(&error), "{error}");
+    }
+}

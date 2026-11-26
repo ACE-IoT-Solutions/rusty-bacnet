@@ -87,7 +87,9 @@ async fn a_row_too_large_alone_is_read_property_by_property() {
     let from = Instant::now();
     tokio::time::sleep(Duration::from_secs(11)).await;
     assert_eq!(lab.sent(RPM, from), 1);
-    assert_eq!(lab.sent(RP, from), POINT_PROPERTIES.len());
+    // And, once, the device's name by the wildcard instance: the poll's
+    // question of which device answers had no answer.
+    assert_eq!(lab.sent(RP, from), POINT_PROPERTIES.len() + 1);
     let snapshot = lease.snapshot();
     assert_eq!((snapshot.polls, snapshot.state), (1, Phase::Live));
     lab.stop().await;
@@ -109,7 +111,7 @@ async fn shutdown_waits_for_the_cancel_of_a_point_given_up() {
     lab.route().await;
     lab.quirks.swallow_cov.store(1, Ordering::Relaxed);
     let point = Point {
-        device: routed_at(),
+        device: Binding::At(routed_at()),
         ..object(ai(1))
     };
     let lease = lab.hub.watch(point).unwrap();
@@ -205,7 +207,7 @@ async fn a_first_read_folded_late_keeps_the_newer_notification() {
 #[tokio::test(start_paused = true)]
 async fn a_first_read_skips_only_what_a_notification_set() {
     use bacnet_types::enums::PropertyIdentifier;
-    let shared = super::shared::Shared::new(object(ai(1)), 1, 4);
+    let shared = super::shared::Shared::new(object(ai(1)), 1, 4, lab_at());
     let seq = std::sync::atomic::AtomicU64::new(0);
     let pv = PropertyIdentifier::PRESENT_VALUE;
     let units = PropertyIdentifier::UNITS;

@@ -76,22 +76,25 @@ mod tests {
                 TestTransport::never_start(),
             )
             .await
+            .map_err(Error::from)
             .err();
             let generic = BACnetServer::generic_builder()
                 .transport(TestTransport::never_start())
                 .get_event_information_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             let bip = BACnetServer::bip_builder()
                 .port(0)
                 .get_event_information_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             for error in [direct, generic, bip] {
                 assert!(
-                    matches!(error, Some(Error::Encoding(m)) if m.contains("event_information_max_"))
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("event_information_max_"))
                 );
             }
             #[cfg(feature = "sc-tls")]
@@ -103,9 +106,10 @@ mod tests {
                     .get_event_information_budget(budget)
                     .build()
                     .await
+                    .map_err(Error::from)
                     .err();
                 assert!(
-                    matches!(error, Some(Error::Encoding(m)) if m.contains("event_information_max_"))
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("event_information_max_"))
                 );
             }
         }

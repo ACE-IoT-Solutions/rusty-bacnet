@@ -1,4 +1,6 @@
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
+
+use crate::io_context::context;
 
 const SER_RS485_ENABLED: u32 = 1;
 const SER_RS485_RTS_ON_SEND: u32 = 1 << 1;
@@ -14,10 +16,14 @@ pub(super) fn configure(
     mut ioctl: impl FnMut(Request, &mut SerialRs485) -> std::io::Result<()>,
 ) -> Result<(), Error> {
     if !delay_before_send_us.is_multiple_of(1_000) || !delay_after_send_us.is_multiple_of(1_000) {
-        return Err(Error::Encoding(format!(
-            "Kernel RS-485 delays must be multiples of 1000 microseconds: \
-             delay_before_send_us={delay_before_send_us}, delay_after_send_us={delay_after_send_us}"
-        )));
+        // The port keeps the delays: configuration, not a one-call argument.
+        return Err(Error::InvalidConfig(
+            Refusal::new(
+                "Kernel RS-485 delays must be multiples of 1000 microseconds: \
+                 delay_before_send_us={}, delay_after_send_us={}",
+            )
+            .with_values(delay_before_send_us.into(), delay_after_send_us.into()),
+        ));
     }
 
     let requested = SerialRs485 {
@@ -35,25 +41,24 @@ pub(super) fn configure(
     // original request separately so that sanitization cannot hide a mismatch.
     let mut config = requested;
     ioctl(Request::Set, &mut config)
-        .map_err(|e| Error::Encoding(format!("TIOCSRS485 ioctl failed: {e}")))?;
+        .map_err(|e| Error::Transport(context(e, "TIOCSRS485 ioctl failed")))?;
     let mut effective = SerialRs485::default();
     ioctl(Request::Get, &mut effective).map_err(|e| {
-        Error::Encoding(format!(
-            "TIOCGRS485 ioctl failed after setting RS-485: {e}; \
-             hardware configuration may have changed; no rollback was attempted"
-        ))
+        let what = "TIOCGRS485 ioctl failed after setting RS-485, so the hardware \
+                    configuration may have changed; no rollback was attempted";
+        Error::Transport(context(e, what))
     })?;
     let required_flags = SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND;
     if effective.flags & required_flags != requested.flags
         || effective.delay_rts_before_send != requested.delay_rts_before_send
         || effective.delay_rts_after_send != requested.delay_rts_after_send
     {
-        return Err(Error::Encoding(format!(
+        return Err(Error::Unsupported(Refusal::text(format!(
             "RS-485 readback mismatch: effective flags={:#010x}, \
              delay_before_send_ms={}, delay_after_send_ms={}; \
              hardware configuration may have changed; no rollback was attempted",
             effective.flags, effective.delay_rts_before_send, effective.delay_rts_after_send
-        )));
+        ))));
     }
     tracing::info!(
         flags = effective.flags,
@@ -84,6 +89,7 @@ mod tests {
                 panic!("invalid delays must not reach the ioctl boundary")
             })
             .unwrap_err();
+            assert!(matches!(error, Error::InvalidConfig(_)), "{error:?}");
             assert!(error.to_string().contains("multiples of 1000 microseconds"));
         }
     }
@@ -178,7 +184,11 @@ mod tests {
             ))
         })
         .unwrap_err();
-        assert!(matches!(&error, Error::Encoding(_)));
+        // The ioctl's own failure, with its kind (#1833).
+        assert!(
+            matches!(&error, Error::Transport(io) if io.kind() == std::io::ErrorKind::PermissionDenied),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("TIOCSRS485 ioctl failed"));
         assert!(error.to_string().contains("set rejected"));
         assert_eq!(requests, [Request::Set]);
@@ -198,6 +208,10 @@ mod tests {
             }
         })
         .unwrap_err();
+        assert!(
+            matches!(&error, Error::Transport(io) if io.kind() == std::io::ErrorKind::Unsupported),
+            "{error:?}"
+        );
         let message = error.to_string();
         assert!(message.contains("TIOCGRS485 ioctl failed"));
         assert!(message.contains("readback unavailable"));

@@ -8,6 +8,23 @@ use bacnet_types::enums::ConfirmedServiceChoice;
 
 const INVOKE_ID_COUNT: usize = 256;
 
+/// The invoke IDs a node's pool keeps for its client role (#2617), the
+/// `requester` reserve an endpoint session with a client role passes to
+/// [`with_reserves`](OutboundTransactionCoordinator::with_reserves):
+/// [`LeaseOwner::Requester`] leases can always reach this many, whatever the
+/// server role holds. Half the pool, since a request refused an ID fails at
+/// once, where the server's work waits for one.
+pub const REQUESTER_RESERVE: usize = 128;
+
+/// The invoke IDs a node's pool keeps for its server role (#2617), the
+/// `notification` reserve an endpoint session with a server role passes to
+/// [`with_reserves`](OutboundTransactionCoordinator::with_reserves):
+/// [`LeaseOwner::Notification`] leases (confirmed notifications, Audit
+/// records and the requests a server's runs make) can always reach this
+/// many, whatever the client holds. A quarter of the pool; with both roles,
+/// the quarter neither keeps is shared.
+pub const NOTIFICATION_RESERVE: usize = 64;
+
 /// Stable peer identity used to correlate a received response.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum CanonicalPeer {
@@ -47,69 +64,66 @@ impl CanonicalPeer {
         }
     }
 
-    /// The peer an inbound APDU came from, which every role matches its
-    /// answers by: the SNET/SADR a router added when there is one, ignoring
-    /// the immediate router, otherwise the immediate link MAC.
+    /// The peer an inbound request came from: the SNET/SADR a router added
+    /// when there is one, ignoring the immediate router, otherwise the
+    /// immediate link MAC.
     ///
     /// `local_network` is the number of the network the receiving link is
     /// attached to, once known. A router attached to it that passes a
     /// station's NPDU back onto it adds that number and the station's MAC as
     /// SNET/SADR (Clause 6.5.4), and network numbers are unique, so the
     /// source is that station: the same direct peer as an NPDU from its MAC
-    /// with no SNET (#1465), as the server already reads a request's source
-    /// (#1404). Any other SNET, and every SNET while the number is unknown,
-    /// stays a routed peer. A routed source with no SADR names no station, so
-    /// the immediate MAC stands.
+    /// with no SNET, as the server reads a request's source (#1404). Any
+    /// other SNET, and every SNET while the number is unknown, stays a routed
+    /// peer. A routed source with no SADR names no station, so the immediate
+    /// MAC stands.
     ///
-    /// This changes what a direct transaction trusts. Before, an answer
-    /// completed one only when its link source was the station's own MAC.
-    /// Now any node that can put a frame on this link, including any peer
-    /// the hub admits on BACnet/SC, can complete it by naming this network
-    /// as SNET and the station as SADR, provided the invoke ID, service and
-    /// owner match. The link source of such an answer is not checked. That
-    /// is the trust every routed transaction already places in a claimed
-    /// SNET/SADR, whichever router relays it, and the trust the server's
-    /// request-source rule (#1404) places in the same pairing. SNET/SADR is
-    /// never a credential here.
+    /// Answers are not read this way: [`Self::of_answer`] keeps that form
+    /// routed, so another station can't complete a request sent straight to
+    /// a device by naming the device as SADR (#2831).
     pub fn from_source(
         immediate_mac: &[u8],
         routed_source: Option<&NpduAddress>,
         local_network: Option<u16>,
     ) -> Self {
         match routed_source {
-            Some(source) if source.mac_address.is_empty() => Self::direct(immediate_mac),
-            Some(source) if Some(source.network) == local_network => {
+            Some(source)
+                if !source.mac_address.is_empty() && Some(source.network) == local_network =>
+            {
                 Self::direct(&source.mac_address)
             }
-            Some(source) => Self::routed(source.network, &source.mac_address),
-            None => Self::direct(immediate_mac),
+            _ => Self::of_answer(immediate_mac, routed_source),
         }
     }
 
-    /// The routed form of a source that [`Self::from_source`] reads as the
-    /// direct station: `Routed(SNET, SADR)` when SNET is the known
-    /// `local_network` and SADR is not empty, otherwise `None`. A request
-    /// routed to this network while its number was still unknown is keyed to
-    /// that form, and keeps that key once the number is learned, so its
-    /// relayed answer has to find it there (#1465). It is exactly the peer
-    /// such an answer matched before the number was known.
-    pub fn routed_alias(
-        routed_source: Option<&NpduAddress>,
-        local_network: Option<u16>,
-    ) -> Option<Self> {
-        routed_source
-            .filter(|source| {
-                !source.mac_address.is_empty() && Some(source.network) == local_network
-            })
-            .map(|source| Self::routed(source.network, &source.mac_address))
+    /// The peer an answer is matched to: the SNET/SADR a router added when
+    /// there is one, otherwise the immediate link MAC. A routed source with
+    /// no SADR names no station, so the immediate MAC stands.
+    ///
+    /// Unlike [`Self::from_source`], an SNET naming this network stays
+    /// routed (#2831). A request sent straight to a station on this link is
+    /// keyed to its MAC, so only an answer from that MAC with no SNET
+    /// completes it. One relayed with this network as SNET completes only a
+    /// request still keyed to that routed form, sent before the number was
+    /// known. The client then checks its sender as it checks any routed
+    /// answer's; the server takes the same admission but doesn't check the
+    /// sender yet (the server half of #2831). A frame's SNET and SADR are
+    /// its sender's own claim; the link address it comes from is the part a
+    /// sender can't choose on most links.
+    pub fn of_answer(immediate_mac: &[u8], routed_source: Option<&NpduAddress>) -> Self {
+        match routed_source {
+            Some(source) if !source.mac_address.is_empty() => {
+                Self::routed(source.network, &source.mac_address)
+            }
+            _ => Self::direct(immediate_mac),
+        }
     }
 
     /// The routed form of a direct answer's source: `Routed(local_network,
     /// immediate MAC)` when the answer has no SNET and `local_network` is
     /// known, otherwise `None`. A request routed to a network that has since
     /// become this one is keyed to that form, and its station, now on this
-    /// link, may answer with no SNET (#2371). Like [`Self::routed_alias`], it
-    /// names the same station.
+    /// link, may answer from its own MAC with no SNET (#2371).
     pub fn direct_alias(
         immediate_mac: &[u8],
         routed_source: Option<&NpduAddress>,
@@ -140,13 +154,8 @@ pub enum LeaseOwner {
 /// reads a lease without claiming it (#2617).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseHolder {
-    /// A full client's request: every [`LeaseOwner::Requester`] lease that
-    /// was not marked as the endpoint requester's.
+    /// The client's request ([`LeaseOwner::Requester`]).
     Client,
-    /// The narrow endpoint requester's request, which it marked as its own.
-    /// Goes when that requester does (#2617).
-    #[doc(hidden)]
-    EndpointRequester,
     /// A request the server role started ([`LeaseOwner::Notification`]).
     Server,
 }
@@ -285,7 +294,9 @@ impl LeaseToken {
 /// Reservation failures that leave coordinator state unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReserveError {
-    /// All 256 device-wide invoke IDs are active.
+    /// No invoke ID this lease's owner may take is free: all 256 are active,
+    /// or the free ones are kept for the other owner's reserve
+    /// ([`OutboundTransactionCoordinator::with_reserves`]).
     Exhausted,
     /// The monotonic generation counter cannot advance without wrapping.
     GenerationExhausted,
@@ -296,7 +307,8 @@ pub enum ReserveError {
 impl fmt::Display for ReserveError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Exhausted => formatter.write_str("all invoke IDs are leased"),
+            Self::Exhausted => formatter
+                .write_str("invoke IDs exhausted: none free in this owner's share of the pool"),
             Self::GenerationExhausted => formatter.write_str("lease generation exhausted"),
             Self::StatePoisoned => formatter.write_str("coordinator state is poisoned"),
         }
@@ -319,6 +331,18 @@ impl fmt::Display for CoordinatorError {
 }
 
 impl std::error::Error for CoordinatorError {}
+
+/// What one [`LeaseOwner`] may lease, as
+/// [`OutboundTransactionCoordinator::room`] read it (#2617).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Room {
+    /// The invoke IDs it could take: free, and within all of the pool but
+    /// the other owner's reserve.
+    pub available: usize,
+    /// What is left of its own reserve: IDs the other owner can't take
+    /// first. `None` when the pool keeps it no reserve.
+    pub reserve_left: Option<usize>,
+}
 
 /// Result of exact-token completion, cancellation, or release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,28 +427,56 @@ struct ActiveLease {
 // The per-invoke-ID tables live on the heap. Inline, they made the state about
 // 18 KB, and a debug build built and moved it through several stack frames
 // (about 110 KB of stack) on every server, client and endpoint start (#953).
+// Boxed arrays, not slices: an index from an invoke ID, or taken modulo 256,
+// is in bounds by its type, so a lease, an admission and a release check none.
 struct CoordinatorState {
-    slots: Box<[Option<ActiveLease>]>,
-    last_released: Box<[Option<u64>]>,
+    slots: Box<[Option<ActiveLease>; INVOKE_ID_COUNT]>,
+    last_released: Box<[Option<u64>; INVOKE_ID_COUNT]>,
     next_invoke_id: usize,
     last_generation: u64,
-    active_count: usize,
-    /// Per invoke ID, the generation of the lease the endpoint requester
-    /// marked as its own, or 0 (no lease has generation 0). A mark is
-    /// compared with the active lease's generation and never cleared, so
-    /// reserving and releasing a lease do no work for it (#2617).
-    endpoint_requester: Box<[u64]>,
+    /// The leases each owner may still take, indexed by [`LeaseOwner`]:
+    /// its ceiling less what it holds. Counting down to the ceiling keeps the
+    /// reserve check to the one compare a lease needs (#2617).
+    room: [usize; 2],
+    /// The most each owner may hold at once: the pool less the other's
+    /// reserve.
+    ceiling: [usize; 2],
+}
+
+/// One entry per invoke ID, built on the heap, never on the stack.
+fn table<T: Clone>() -> Box<[Option<T>; INVOKE_ID_COUNT]> {
+    match vec![None; INVOKE_ID_COUNT].into_boxed_slice().try_into() {
+        Ok(table) => table,
+        Err(_) => unreachable!("a table of {INVOKE_ID_COUNT} entries"),
+    }
 }
 
 impl CoordinatorState {
-    fn new() -> Self {
+    fn new(ceiling: [usize; 2]) -> Self {
         Self {
-            slots: vec![None; INVOKE_ID_COUNT].into_boxed_slice(),
-            last_released: vec![None; INVOKE_ID_COUNT].into_boxed_slice(),
+            slots: table(),
+            last_released: table(),
             next_invoke_id: 0,
             last_generation: 0,
-            active_count: 0,
-            endpoint_requester: vec![0; INVOKE_ID_COUNT].into_boxed_slice(),
+            room: ceiling,
+            ceiling,
+        }
+    }
+
+    /// The leases active, every owner's.
+    fn active(&self) -> usize {
+        (self.ceiling[0] - self.room[0]) + (self.ceiling[1] - self.room[1])
+    }
+
+    /// What `owner` could lease now.
+    fn room(&self, owner: LeaseOwner) -> Room {
+        let at = owner as usize;
+        // The other's ceiling is the pool less this owner's reserve.
+        let reserve = INVOKE_ID_COUNT - self.ceiling[1 - at];
+        let held = self.ceiling[at] - self.room[at];
+        Room {
+            available: self.room[at].min(INVOKE_ID_COUNT - self.active()),
+            reserve_left: (reserve > 0).then(|| reserve.saturating_sub(held)),
         }
     }
 
@@ -438,9 +490,10 @@ impl CoordinatorState {
         let index = usize::from(token.invoke_id);
         match self.slots[index].as_ref() {
             Some(active) if active.generation == token.generation => {
+                // Before the old lease drops, so its owner isn't kept across it.
+                self.room[active.metadata.owner as usize] += 1;
                 self.slots[index] = None;
                 self.last_released[index] = Some(token.generation);
-                self.active_count -= 1;
                 ReleaseOutcome::Released
             }
             Some(_) => ReleaseOutcome::StaleToken,
@@ -456,8 +509,21 @@ impl CoordinatorState {
 ///
 /// Every method holds a synchronous mutex only while inspecting or updating
 /// bounded in-memory state. Callers never carry a coordinator lock across an
-/// await point.
+/// await point, and none takes another lock while holding it: it is the last
+/// lock in any order.
+///
+/// A coordinator made [`with_reserves`](Self::with_reserves) keeps part of
+/// its pool for each [`LeaseOwner`] (#2617): an owner may always hold up to
+/// its reserve, and beyond it borrows from what neither reserve keeps, so an
+/// owner under its reserve is never refused because of the other owner.
+/// [`new`](Self::new) keeps nothing back: either owner may take the whole
+/// pool.
 pub struct OutboundTransactionCoordinator {
+    /// The slots and their generations. A panic under this lock may leave
+    /// a lease half-recorded, and leasing on from that could give two
+    /// transactions one invoke ID, so a poisoned state fails closed: every
+    /// call reports [`CoordinatorError::StatePoisoned`] or
+    /// [`ReserveError::StatePoisoned`], or sees no lease (#2559).
     state: Mutex<CoordinatorState>,
     released: tokio::sync::Notify,
 }
@@ -469,17 +535,70 @@ impl Default for OutboundTransactionCoordinator {
 }
 
 impl OutboundTransactionCoordinator {
-    /// Creates an empty coordinator with one global pool of 256 invoke IDs.
+    /// Creates an empty coordinator with one global pool of 256 invoke IDs,
+    /// any of which either owner may lease: a standalone client's or
+    /// server's, or a node's that runs one role.
     pub fn new() -> Self {
+        Self::with_reserves(0, 0)
+    }
+
+    /// Creates an empty coordinator whose pool of 256 invoke IDs a client
+    /// and a server role share (#2617): `requester` of them are kept for
+    /// [`LeaseOwner::Requester`] leases and `notification` for
+    /// [`LeaseOwner::Notification`] ones. Each owner may hold all of the pool
+    /// but the other's reserve, so the two always find their reserves free.
+    /// A node with both roles keeps [`REQUESTER_RESERVE`] and
+    /// [`NOTIFICATION_RESERVE`].
+    ///
+    /// # Panics
+    ///
+    /// When the two reserves together exceed 256.
+    ///
+    /// ```
+    /// use bacnet_endpoint_core::coordinator::{
+    ///     CanonicalPeer, LeaseMetadata, OutboundTransactionCoordinator, ReserveError,
+    /// };
+    /// use bacnet_types::enums::ConfirmedServiceChoice;
+    ///
+    /// let coordinator = OutboundTransactionCoordinator::with_reserves(200, 56);
+    /// let notification = || {
+    ///     LeaseMetadata::notification(
+    ///         CanonicalPeer::direct(&[1]),
+    ///         ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION,
+    ///     )
+    /// };
+    /// for _ in 0..56 {
+    ///     coordinator.reserve(notification()).unwrap();
+    /// }
+    /// // The other 200 are the client's.
+    /// assert_eq!(coordinator.reserve(notification()), Err(ReserveError::Exhausted));
+    /// ```
+    pub fn with_reserves(requester: usize, notification: usize) -> Self {
+        let kept = requester.checked_add(notification);
+        assert!(
+            kept.is_some_and(|kept| kept <= INVOKE_ID_COUNT),
+            "invoke-ID reserves {requester} and {notification} exceed the pool of {INVOKE_ID_COUNT}"
+        );
+        let mut ceiling = [0; 2];
+        ceiling[LeaseOwner::Requester as usize] = INVOKE_ID_COUNT - notification;
+        ceiling[LeaseOwner::Notification as usize] = INVOKE_ID_COUNT - requester;
         Self {
-            state: Mutex::new(CoordinatorState::new()),
+            state: Mutex::new(CoordinatorState::new(ceiling)),
             released: tokio::sync::Notify::new(),
         }
     }
 
-    /// Reserves one device-wide invoke ID and issues a new exact-generation token.
+    /// Reserves one device-wide invoke ID and issues a new exact-generation
+    /// token, or [`ReserveError::Exhausted`] when none is free that the
+    /// lease's owner may take ([`Self::with_reserves`]).
     pub fn reserve(&self, metadata: LeaseMetadata) -> Result<LeaseToken, ReserveError> {
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
         let mut state = self.state.lock().map_err(|_| ReserveError::StatePoisoned)?;
+        let owner = metadata.owner as usize;
+        // At its ceiling, the owner leaves the rest to the other's reserve.
+        if state.room[owner] == 0 {
+            return Err(ReserveError::Exhausted);
+        }
         let index = state.available_slot().ok_or(ReserveError::Exhausted)?;
         let generation = state
             .last_generation
@@ -497,7 +616,7 @@ impl OutboundTransactionCoordinator {
             metadata,
             terminal_claimed: false,
         });
-        state.active_count += 1;
+        state.room[owner] -= 1;
         Ok(token)
     }
 
@@ -513,6 +632,7 @@ impl OutboundTransactionCoordinator {
         let Some(invoke_id) = response_invoke_id(apdu) else {
             return Ok(AdmissionOutcome::NotOutbound);
         };
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
         let mut state = self
             .state
             .lock()
@@ -547,13 +667,14 @@ impl OutboundTransactionCoordinator {
 
     /// [`Self::admit`] for an answer, by its envelope: the link MAC, the
     /// SNET/SADR, and `local_network`, the receiving link's known network
-    /// number. The answer is matched against [`CanonicalPeer::from_source`].
+    /// number. The answer is matched against [`CanonicalPeer::of_answer`].
     /// Only when that misses on the peer, and the answer has a
-    /// [`CanonicalPeer::routed_alias`] or [`CanonicalPeer::direct_alias`], is
-    /// the alias tried: a lease reserved while the number was unknown then
-    /// gets the answer it would have matched before (#1465), or the station's
-    /// direct answer (#2371). The admission's metadata names the peer that
-    /// matched, which the owner keys its completion to.
+    /// [`CanonicalPeer::direct_alias`], is the alias tried: a lease reserved
+    /// for the routed form of a network that has since become this one then
+    /// gets its station's direct answer (#2371). An answer relayed with this
+    /// network as SNET never stands for the station it names (#2831). The
+    /// admission's metadata names the peer that matched, which the owner
+    /// keys its completion to.
     pub fn admit_from_source(
         &self,
         immediate_mac: &[u8],
@@ -561,36 +682,16 @@ impl OutboundTransactionCoordinator {
         local_network: Option<u16>,
         apdu: &Apdu,
     ) -> Result<AdmissionOutcome, CoordinatorError> {
-        let peer = CanonicalPeer::from_source(immediate_mac, routed_source, local_network);
+        let peer = CanonicalPeer::of_answer(immediate_mac, routed_source);
         match self.admit(&peer, apdu)? {
             AdmissionOutcome::PeerMismatch => {
-                match CanonicalPeer::routed_alias(routed_source, local_network).or_else(|| {
-                    CanonicalPeer::direct_alias(immediate_mac, routed_source, local_network)
-                }) {
+                match CanonicalPeer::direct_alias(immediate_mac, routed_source, local_network) {
                     Some(alias) => self.admit(&alias, apdu),
                     None => Ok(AdmissionOutcome::PeerMismatch),
                 }
             }
             outcome => Ok(outcome),
         }
-    }
-
-    /// Mark the active lease of `invoke_id` as the narrow endpoint
-    /// requester's, so [`Self::holder_of`] tells it from a full client's on
-    /// the same coordinator (#2617). The requester calls this as it
-    /// registers the transaction, before the request is sent. With no active
-    /// lease nothing is marked.
-    #[doc(hidden)]
-    pub fn mark_endpoint_requester(&self, invoke_id: u8) -> Result<(), CoordinatorError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| CoordinatorError::StatePoisoned)?;
-        let index = usize::from(invoke_id);
-        if let Some(generation) = state.slots[index].as_ref().map(|active| active.generation) {
-            state.endpoint_requester[index] = generation;
-        }
-        Ok(())
     }
 
     /// The role that holds the active lease of `invoke_id` for `peer`, or
@@ -608,17 +709,14 @@ impl OutboundTransactionCoordinator {
         peer: &CanonicalPeer,
         invoke_id: u8,
     ) -> Option<(LeaseHolder, ConfirmedServiceChoice)> {
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
         let state = self.state.lock().ok()?;
-        let index = usize::from(invoke_id);
-        let active = state.slots[index].as_ref()?;
+        let active = state.slots[usize::from(invoke_id)].as_ref()?;
         if active.metadata.peer != *peer {
             return None;
         }
         let holder = match active.metadata.owner {
             LeaseOwner::Notification => LeaseHolder::Server,
-            LeaseOwner::Requester if state.endpoint_requester[index] == active.generation => {
-                LeaseHolder::EndpointRequester
-            }
             LeaseOwner::Requester => LeaseHolder::Client,
         };
         Some((holder, active.metadata.service_choice))
@@ -626,8 +724,7 @@ impl OutboundTransactionCoordinator {
 
     /// [`Self::holder_of`] for an answer, by its envelope, matched as
     /// [`Self::admit_from_source`] matches it: the peer
-    /// [`CanonicalPeer::from_source`] reads, then its routed or direct
-    /// alias.
+    /// [`CanonicalPeer::of_answer`] reads, then its direct alias.
     pub fn holder_of_source(
         &self,
         immediate_mac: &[u8],
@@ -650,12 +747,9 @@ impl OutboundTransactionCoordinator {
         local_network: Option<u16>,
         invoke_id: u8,
     ) -> Option<(LeaseHolder, ConfirmedServiceChoice)> {
-        let peer = CanonicalPeer::from_source(immediate_mac, routed_source, local_network);
+        let peer = CanonicalPeer::of_answer(immediate_mac, routed_source);
         self.lease_of(&peer, invoke_id).or_else(|| {
-            let alias =
-                CanonicalPeer::routed_alias(routed_source, local_network).or_else(|| {
-                    CanonicalPeer::direct_alias(immediate_mac, routed_source, local_network)
-                })?;
+            let alias = CanonicalPeer::direct_alias(immediate_mac, routed_source, local_network)?;
             self.lease_of(&alias, invoke_id)
         })
     }
@@ -677,13 +771,25 @@ impl OutboundTransactionCoordinator {
 
     /// Returns the number of device-wide active leases.
     pub fn active_count(&self) -> Result<usize, CoordinatorError> {
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
         self.state
             .lock()
-            .map(|state| state.active_count)
+            .map(|state| state.active())
+            .map_err(|_| CoordinatorError::StatePoisoned)
+    }
+
+    /// What a lease of `owner`'s could take now (#2617). Racing work may
+    /// take it first; [`Self::reserve`] decides.
+    pub fn room(&self, owner: LeaseOwner) -> Result<Room, CoordinatorError> {
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
+        self.state
+            .lock()
+            .map(|state| state.room(owner))
             .map_err(|_| CoordinatorError::StatePoisoned)
     }
 
     fn release_token(&self, token: LeaseToken) -> Result<ReleaseOutcome, CoordinatorError> {
+        // lock-poison: fail-closed (a half-done lease could repeat an invoke ID)
         let outcome = self
             .state
             .lock()
@@ -696,10 +802,25 @@ impl OutboundTransactionCoordinator {
         Ok(outcome)
     }
 
-    /// Internal passive capacity wait. Register before checking reservation.
-    #[doc(hidden)]
+    /// A wait for room in the pool: it completes once a lease ends after it
+    /// is made, or once [`Self::wake_released`] is called, whether or not it
+    /// was polled by then. Nothing is stored for a wait made later, and the
+    /// wait takes no ID: an owner makes it before it reads the room or
+    /// tries [`Self::reserve`], then, on waking, reads or tries again, since
+    /// another owner may have taken what came back. Dropping it gives up
+    /// nothing.
     pub fn released(&self) -> tokio::sync::futures::Notified<'_> {
         self.released.notified()
+    }
+
+    /// Wakes every [`Self::released`] wait made so far, as a lease's end
+    /// does, though none ended. For an owner whose own rule held its work
+    /// back while IDs were free, once the rule no longer does (#2617): no
+    /// lease may end to wake that work. Every other wait made so far wakes
+    /// too, to read the room again and find what it found before; a wait
+    /// made after this call is not woken by it.
+    pub fn wake_released(&self) {
+        self.released.notify_waiters();
     }
 }
 
@@ -797,3 +918,7 @@ mod tests;
 #[cfg(test)]
 #[path = "coordinator_peer_tests.rs"]
 mod peer_tests;
+
+#[cfg(test)]
+#[path = "coordinator_reserve_tests.rs"]
+mod reserve_tests;

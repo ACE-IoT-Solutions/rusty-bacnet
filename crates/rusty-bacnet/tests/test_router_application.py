@@ -9,6 +9,7 @@ import errno
 import unittest
 
 import rusty_bacnet as rb
+from bvll_peer import RawPeer, bvll
 from test_bip_modes import accepted_registration, eventually
 
 PV = rb.PropertyIdentifier.PRESENT_VALUE
@@ -41,6 +42,9 @@ class RouterApplicationSurfaceTests(unittest.TestCase):
             rb.BACnetRouter(ports, "client")  # keyword only
         with self.assertRaisesRegex(ValueError, "needs router="):
             rb.BACnetClient(transport="router")
+        # A router has a port, so its application has a network to be on.
+        with self.assertRaisesRegex(ValueError, "between 1 and 255 ports"):
+            rb.BACnetRouter([], application="client")
         with self.assertRaisesRegex(ValueError, "only to transport='router'"):
             rb.BACnetClient(router=client_router)
         with self.assertRaisesRegex(ValueError, "only to transport='router'"):
@@ -100,13 +104,13 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
             value = await asyncio.wait_for(
                 client.read_property_from_device(BASE + network, AI0, PV), 10)
             self.assertAlmostEqual(value.value, 20.5 + network)
-        # An ip:port names no network, and the router's application has none.
-        with self.assertRaisesRegex(rb.BacnetError, "no network of its own"):
+        # An ip:port names no one of the router's networks.
+        with self.assertRaisesRegex(rb.BacnetError, "names no one station"):
             await asyncio.wait_for(client.read_property(ports[0].address, AI0, PV), 10)
 
     async def test_a_who_is_to_one_attached_network_finds_its_devices(self):
-        # The router's application has no network of its own: a Who-Is
-        # naming one of its networks reaches that network's devices only.
+        # A Who-Is naming one of the router's networks reaches that
+        # network's devices only.
         router = rb.BACnetRouter([bbmd_port(1), bbmd_port(5)], application="client")
         await router.start()
         self.addAsyncCleanup(cleanup, router.close)
@@ -120,6 +124,86 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
             devices = await client.discover(wait=0.5, low=low, high=high, scope=5)
             return [(d.instance, d.network) for d in devices]
         self.assertEqual(await eventually(found, seconds=10), [(BASE + 15, 5)])
+
+    async def test_the_local_scope_is_each_attached_network(self):
+        # The application is on each of the router's networks (#2601): its
+        # local Who-Is and Who-Has go to networks 1, 5 and 6, isolated or
+        # not, and the router passes them no further, so the device on
+        # network 7, behind a second router on network 5, isn't asked.
+        near = rb.BACnetRouter([bbmd_port(1), bbmd_port(5, isolated=True),
+                                bbmd_port(6, isolated=True)], application="client")
+        await near.start()
+        self.addAsyncCleanup(cleanup, near.close)
+        near_ports = await near.ports()
+        far = rb.BACnetRouter([
+            rb.BipRouterPort(5, interface="127.0.0.1", port=0, broadcast_address="127.0.0.1",
+                             foreign_device=rb.ForeignDevice(near_ports[1].address, ttl=60)),
+            bbmd_port(7),
+        ])
+        await far.start()
+        self.addAsyncCleanup(cleanup, far.close)
+        far_ports = await far.ports()
+        servers = {}
+        for network, port in zip((1, 5, 6, 7), near_ports + far_ports[1:]):
+            servers[network] = await self.device(BASE + 20 + network, port.address, network)
+        client = await self.router_client(near)
+        low, high = BASE + 21, BASE + 27
+        attached = [(BASE + 21, 1), (BASE + 25, 5), (BASE + 26, 6)]
+        # A raw listener on network 7, a foreign device of its BBMD, counts
+        # the Who-Is requests for this range that reach that network.
+        listener = RawPeer(lambda data, source: ())
+        self.addCleanup(listener.close)
+        host, udp = far_ports[1].address.rsplit(":", 1)
+        listener.send(bvll(0x05, (60).to_bytes(2, "big")), (host, int(udp)))
+        who_is = (bytes([0x10, 0x08, 0x0B]) + low.to_bytes(3, "big") + bytes([0x1B])
+                  + high.to_bytes(3, "big"))
+
+        def heard():
+            return sum(data.endswith(who_is) for data, _ in list(listener.received))
+
+        async def registered():
+            return any(data[:2] == b"\x81\x00" for data, _ in list(listener.received))
+        await eventually(registered, seconds=10)
+
+        async def found(**scope):
+            rows = await client.discover(wait=0.5, low=low, high=high, **scope)
+            return sorted((d.instance, d.network) for d in rows)
+
+        # Network 7 answers a global Who-Is: it is reachable, only not local.
+        async def everywhere():
+            return await found(scope="global") == attached + [(BASE + 27, 7)]
+        await eventually(everywhere, seconds=15)
+        await asyncio.sleep(0.2)
+        reached = heard()
+        self.assertGreater(reached, 0, "a global Who-Is reaches network 7")
+
+        async def local():
+            return await found() == attached
+        await eventually(local, seconds=10)
+        self.assertEqual(await found(scope="local"), attached)
+        # The same devices, at the same addresses, as each network named.
+        each = []
+        for network in (1, 5, 6):
+            each += await found(scope=network)
+        self.assertEqual(sorted(each), attached)
+
+        async def searched():
+            replies = await client.who_has_replies(AI0, wait=0.5)
+            return sorted(r.device_identifier.instance for r in replies)
+        self.assertEqual(await eventually(searched, seconds=10),
+                         [BASE + 21, BASE + 25, BASE + 26])
+        # A bare instance is asked for locally too, and found on its network.
+        device = await asyncio.wait_for(client.device(BASE + 26), 10)
+        self.assertTrue(device.address.startswith("6:"), device.address)
+        # A RoutedTarget names its network: a directed Who-Is reaches it.
+        station = rb.RoutedTarget(5, await servers[5].local_address())
+        self.assertEqual(await found(scope=station), [(BASE + 25, 5)])
+        # A station's address alone names none of the router's networks.
+        with self.assertRaisesRegex(ValueError, "names no one station for a directed Who-Is"):
+            client.discover(scope=near_ports[0].address)
+        # None of the local, named or directed Who-Is requests reached it.
+        await asyncio.sleep(0.2)
+        self.assertEqual(heard(), reached)
 
     async def test_the_client_reads_a_device_behind_a_second_router(self):
         near = rb.BACnetRouter([bbmd_port(1), bbmd_port(5)], application="client")
@@ -207,15 +291,17 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         await client.__aenter__()
         await client.stop()
 
-    async def test_a_refused_server_start_leaves_the_port_for_the_next(self):
+    async def test_a_refused_registration_leaves_the_port_for_the_next(self):
         router = rb.BACnetRouter([bbmd_port(1)], application="client_and_server")
         await router.start()
         self.addAsyncCleanup(cleanup, router.close)
         broken = rb.BACnetServer(BASE + 200, transport="router", router=router)
         broken.add_analog_input(0, "Same name", 62, 1.0)
-        broken.add_analog_input(1, "Same name", 62, 2.0)
+        # Every builder refuses a name in use at the call (#2711, #2748), so
+        # no start is refused over one; the refused server is never started
+        # and the router's port stays free.
         with self.assertRaisesRegex(ValueError, "duplicate object name"):
-            await broken.start()
+            broken.add_file(1, "Same name")
         hosted = rb.BACnetServer(BASE + 201, transport="router", router=router)
         hosted.add_analog_input(0, "Hosted sensor", 62, 3.0)
         await hosted.start()
@@ -224,6 +310,20 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         late = rb.BACnetServer(BASE + 202, transport="router", router=router)
         with self.assertRaisesRegex(RuntimeError, "already taken"):
             await late.start()
+
+    async def test_a_routing_table_query_is_refused_by_the_link_not_its_argument(self):
+        # The router's application carries APDUs only; network messages are
+        # the router's own. Its link refuses a routing-table query whatever
+        # the router named, so the call raises BacnetError, not ValueError
+        # (#1833).
+        router = rb.BACnetRouter([bbmd_port(1)], application="client")
+        await router.start()
+        self.addAsyncCleanup(cleanup, router.close)
+        [port] = await router.ports()
+        client = await self.router_client(router)
+        with self.assertRaisesRegex(rb.BacnetError, "APDUs only") as caught:
+            await asyncio.wait_for(client.routing_table(port.address), 10)
+        self.assertNotIsInstance(caught.exception, ValueError)
 
     async def test_closing_the_router_fails_the_client_cleanly(self):
         router = rb.BACnetRouter([bbmd_port(1)], application="client")
@@ -235,14 +335,17 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         await self.find(client, BASE + 1)
         await client.read_property_from_device(BASE + 1, AI0, PV)
         await asyncio.wait_for(router.close(), 10)
-        # A request after close fails at once, not by timing out.
-        with self.assertRaises(rb.BacnetTransportError) as caught:
+        # A request after close fails at once, not by timing out, as this
+        # side's closed state, not a link's failure (#1833).
+        with self.assertRaises(rb.BacnetStateError) as caught:
             await asyncio.wait_for(client.read_property_from_device(BASE + 1, AI0, PV), 1)
-        self.assertEqual(caught.exception.errno, errno.ENOTCONN)
-        # The application has no network of its own: its Who-Is names one,
-        # or every one.
-        with self.assertRaises(rb.BacnetTransportError):
-            await asyncio.wait_for(client.who_is(scope="global"), 1)
+        self.assertEqual(caught.exception.state, "closed")
+        self.assertIsInstance(caught.exception, RuntimeError)
+        self.assertNotIsInstance(caught.exception, OSError)
+        # A Who-Is to the router's networks, or to every one, fails at once.
+        for scope in ("local", "global"):
+            with self.assertRaises(rb.BacnetStateError):
+                await asyncio.wait_for(client.who_is(scope=scope), 1)
         await asyncio.wait_for(client.stop(), 10)
 
     async def test_a_dropped_router_leaves_the_client_failing_cleanly(self):
@@ -253,8 +356,8 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         async def stopped():
             try:
                 await asyncio.wait_for(client.who_is(scope="global"), 1)
-            except rb.BacnetTransportError as error:
-                return error.errno == errno.ENOTCONN
+            except rb.BacnetStateError as error:
+                return error.state == "closed"
             return False
         self.assertTrue(await eventually(stopped, seconds=10))
 

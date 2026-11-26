@@ -4,6 +4,7 @@
 use super::super::cov_notify_context::CovFanoutHandles;
 use super::*;
 use crate::cov::timed_store::{ClaimGuard, LodgedClaim};
+use crate::server::event_recipient_route::BroadcastStation;
 use crate::server::notification_transactions::NotificationReserveError;
 use bacnet_device_core::cov::{BeginRefusal, Delivery, PreparedCovCompletion};
 use bacnet_device_core::cov::{CovObservation, CovSubscriptionKey};
@@ -79,25 +80,39 @@ pub(in crate::server) struct ConfirmedSend {
 /// Why [`BACnetServer::admit_confirmed`] gave a report nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum Refusal {
-    /// The peer's in-flight limit or the pool of in-flight slots, counted
-    /// or logged. References already waiting for an invoke ID keep their
-    /// places; others wait for their next fanout (a deliberate throttle,
-    /// #533).
-    InFlight,
-    /// Every invoke ID the server may hold is leased: the report's
-    /// references are owed a look once one comes back (#2661).
-    InvokeId,
+    /// No room: the peer's in-flight limit, the pool of in-flight slots or
+    /// the invoke IDs, each counted and the last two logged, throttled. The
+    /// report's references are owed a look once there is room (#2661,
+    /// #2671); the limits cap what is in flight, and drop no change.
+    NoRoom,
     /// A closed or broken pool, logged.
     Other,
+    /// The subscriber's address on its network is a broadcast or group
+    /// form there (#2732), counted and logged, throttled. Its baseline
+    /// stays, so every later fanout that finds the value away from it is
+    /// refused and counted again; an unconfirmed subscription at the same
+    /// address is still served.
+    NotOneStation,
 }
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Admit a confirmed report to `route` against the peer and global
     /// in-flight limits and an invoke ID. A refusal is counted or logged,
     /// and the report isn't sent; the caller owes its references a look
-    /// when it was refused an invoke ID. Synchronous: it takes leaf mutexes
-    /// only, so the Single fanout calls it under its database and table
-    /// guards.
+    /// when it was refused for want of room. Synchronous: it takes leaf
+    /// mutexes only, so the Single fanout calls it under its database and
+    /// table guards.
+    ///
+    /// A subscriber relayed from another network whose address there is a
+    /// broadcast or group form is refused first ([`BroadcastStation`],
+    /// #2732). The subscription came from a request's SNET and SADR, which
+    /// no router writes as a broadcast, but a crafted or misrelayed
+    /// request can; a confirmed notification sent there would reach every
+    /// station of that network. One from a group MAC on this link was
+    /// ignored on arrival (#1504). The address can't carry the one-station
+    /// mark (#2738), so an ARCNET station 255 or a gateway's two-octet
+    /// virtual station subscribed for confirmed reports gets none; its
+    /// unconfirmed subscription is served.
     pub(in crate::server) fn admit_confirmed(
         handles: &CovFanoutHandles<'_, '_, T>,
         route: &CovSubscriptionSnapshot,
@@ -110,6 +125,23 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             counters,
             ..
         } = handles;
+        if let Some(station) = route
+            .subscriber_network
+            .as_ref()
+            .and_then(|source| BroadcastStation::of(source.network, &source.mac_address, false))
+        {
+            counters
+                .confirmed_broadcast_subscriber
+                .fetch_add(1, Ordering::Relaxed);
+            warn_throttled!(
+                in_flight_tracker.broadcast_warning(),
+                object = ?route.monitored_object_identifier,
+                subscriber = %station,
+                "Confirmed {label} not sent: its subscriber is at a broadcast or group address \
+                 on its network, and a confirmed request goes to one device"
+            );
+            return Err(Refusal::NotOneStation);
+        }
         let guard = match in_flight_tracker.try_acquire(
             route.recipient(),
             ctx.config.cov_policy.max_confirmed_in_flight_per_peer,
@@ -120,14 +152,20 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 counters
                     .notifications_throttled_peer
                     .fetch_add(1, Ordering::Relaxed);
-                return Err(Refusal::InFlight);
+                return Err(Refusal::NoRoom);
             }
+            // Routine now that the report waits and loses nothing: counted
+            // like the peer's limit, and warned at most once an interval.
             Err(InFlightAcquireError::GlobalPoolExhausted) => {
-                warn!(
+                counters
+                    .notifications_throttled_pool
+                    .fetch_add(1, Ordering::Relaxed);
+                warn_throttled!(
+                    in_flight_tracker.pool_warning(),
                     object = ?route.monitored_object_identifier,
-                    "255 confirmed COV notifications in-flight, skipping {label}"
+                    "255 confirmed COV notifications in flight; {label} goes once one ends"
                 );
-                return Err(Refusal::InFlight);
+                return Err(Refusal::NoRoom);
             }
         };
         let (operation, result_rx) = match ctx
@@ -136,11 +174,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         {
             Ok(reservation) => reservation,
             Err(NotificationReserveError::Coordinator(ReserveError::Exhausted)) => {
-                warn!(
+                counters
+                    .notifications_throttled_invoke_id
+                    .fetch_add(1, Ordering::Relaxed);
+                warn_throttled!(
+                    in_flight_tracker.id_warning(),
                     object = ?route.monitored_object_identifier,
                     "No free invoke ID for confirmed {label}; it goes once one comes back"
                 );
-                return Err(Refusal::InvokeId);
+                return Err(Refusal::NoRoom);
             }
             Err(error) => {
                 warn!(%error, "No invoke ID for confirmed {label}");
@@ -154,10 +196,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         })
     }
 
-    /// `report`, a COV-multiple context's, was refused an invoke ID
-    /// (#2661). Its timestamped history, deferred parts included, goes back
+    /// `report`, a COV-multiple context's, found no room: no invoke ID
+    /// (#2661), or its peer at its in-flight limit or the pool full
+    /// (#2671). Its timestamped history, deferred parts included, goes back
     /// to its references first; then every reference of the context is owed
-    /// a look once an ID comes back: a split report's later parts as much as
+    /// a look once there is room: a split report's later parts as much as
     /// its first, which alone it carried. No other lock is held here; the
     /// references are read live under the table's, so one cancelled
     /// meanwhile isn't queued.
@@ -187,24 +230,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let label = report.label();
         let lease = match Self::admit_confirmed(handles, &report.route, report.service, label) {
             Ok(lease) => lease,
-            // Boxed, and only on a refusal: inline, either wait would add
-            // the whole report to every fanout's future, on the request path.
-            Err(Refusal::InvokeId) => {
+            // Boxed, and only on a refusal: inline, the wait for the table
+            // would add the whole report to every fanout's future, on the
+            // request path.
+            Err(Refusal::NoRoom) => {
                 return Box::pin(Self::owe_context(handles, report)).await;
             }
-            // Its history goes back first; then those of its references
-            // being looked at for an invoke ID keep their places. Usually
-            // none is: the check is the revisits' lock alone, reached
-            // through the histories with no table guard and no await.
-            Err(Refusal::InFlight) => {
-                let context = report.route.key().multiple_context().cloned();
-                drop(report);
-                if let Some(context) = context {
-                    handles.timed.revisits().keep_context_waiting(&context);
-                }
-                return;
-            }
-            Err(Refusal::Other) => return,
+            Err(Refusal::Other | Refusal::NotOneStation) => return,
         };
         let buf = match encode(lease.invoke_id()) {
             Ok(buf) => buf,
@@ -235,6 +267,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 report.claim.take(),
                 std::mem::take(&mut report.deferred),
             );
+            // A context that waited for room and found it here waits no
+            // more (#2671).
+            if begun.is_ok()
+                && let Some(context) = report.route.key().multiple_context()
+            {
+                table.revisits().context_sent(context);
+            }
             (begun, Arc::clone(table.revisits()))
         };
         // The instant the table began the report, near enough: its deadline

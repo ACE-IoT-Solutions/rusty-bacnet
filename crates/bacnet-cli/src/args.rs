@@ -262,11 +262,13 @@ pub(crate) struct Cli {
           value_parser = crate::mstp_thread::parse_cpu)]
     pub(crate) mstp_cpus: Vec<usize>,
 
-    /// Output format (table, json; csv too for inventory).
-    #[arg(long, global = true)]
-    pub(crate) format: Option<String>,
+    /// Output format: table or json, and csv for inventory alone; without
+    /// it, a table at a terminal and JSON otherwise. A format the command
+    /// doesn't print is refused.
+    #[arg(long, global = true, value_enum)]
+    pub(crate) format: Option<crate::formats::Format>,
 
-    /// JSON output shorthand.
+    /// JSON output shorthand; it outranks --format.
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
@@ -472,17 +474,26 @@ pub(crate) enum Command {
         /// default: every object, of any type.
         #[arg(long, value_name = "TYPES", value_delimiter = ',')]
         types: Vec<String>,
-        /// Also read each object's Present_Value and Status_Flags.
+        /// Also read each object's Present_Value, Status_Flags, Event_State
+        /// and Reliability, and the priority in control of a commandable
+        /// one: four more properties an object (five on an output), so a
+        /// request holds 3 to 5 objects.
         #[arg(long)]
         values: bool,
         /// Also read each object's COV_Increment, Min_Pres_Value,
-        /// Max_Pres_Value and Relinquish_Default, where it has them.
+        /// Max_Pres_Value, Relinquish_Default and Polarity, where it has
+        /// them.
         #[arg(long)]
         settings: bool,
-        /// With --format csv: write device text exactly. Without it, a
-        /// name, description, state text or string value that starts with
-        /// =, +, -, @, a tab or a carriage return gets an apostrophe
-        /// before it, so a spreadsheet doesn't run it as a formula.
+        /// Also read each object's Device_Type and Profile_Name, where it
+        /// has them: two more properties an object.
+        #[arg(long)]
+        details: bool,
+        /// Write device text exactly in the CSV; needs --format csv.
+        /// Without it, a name, description, device type, profile name,
+        /// state text or string value that starts with =, +, -, @, a tab or
+        /// a carriage return gets an apostrophe before it, so a spreadsheet
+        /// doesn't run it as a formula.
         #[arg(long)]
         csv_exact: bool,
     },
@@ -659,9 +670,12 @@ pub(crate) enum Command {
     /// List the routers on the local network and the networks they reach
     /// (Who-Is-Router-To-Network).
     WhoisRouter {
-        /// Send directly to this local router address and collect its answers.
+        /// Ask only the router at this address on the local network and list
+        /// its own answers. It answers with a local broadcast, so a B/IP
+        /// router on another IP subnet is heard only through a BBMD (see
+        /// --foreign-bbmd); without one, no routers is the expected result.
         #[arg(long, value_name = "ADDRESS")]
-        via: Option<String>,
+        router: Option<String>,
         /// Ask only for the router to this network number (1 to 65534).
         #[arg(long, value_parser = clap::value_parser!(u16).range(1..=65534))]
         dnet: Option<u16>,

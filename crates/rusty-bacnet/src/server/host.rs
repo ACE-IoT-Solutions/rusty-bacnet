@@ -13,6 +13,7 @@
 
 use std::sync::{Arc, Weak};
 
+use bacnet_types::error::Lifecycle;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock, RwLockReadGuard};
@@ -86,12 +87,14 @@ impl ServerHost {
 }
 
 impl HostGuard<'_> {
-    /// The running server, or the RuntimeError its call raises without one.
+    /// The running server, or the `BacnetStateError` its call raises
+    /// without one (#2819).
     pub(crate) fn server(&self) -> PyResult<&Server> {
         match self {
-            Self::Own(guard) => guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started")),
+            // A standalone server starts again after its stop.
+            Self::Own(guard) => guard.as_ref().ok_or_else(|| {
+                crate::errors::lifecycle_error(Lifecycle::NotRunning, "server not started")
+            }),
             Self::Endpoint(guard, run) => guard
                 .as_deref()
                 .and_then(Option::as_ref)
@@ -126,9 +129,11 @@ impl HostGuard<'_> {
     }
 }
 
-/// An endpoint's server after the endpoint's close (or its drop).
+/// An endpoint's server after the endpoint's close (or its drop): that
+/// run's server never starts again.
 fn endpoint_closed() -> PyErr {
-    PyRuntimeError::new_err(
+    crate::errors::lifecycle_error(
+        Lifecycle::Closed,
         "the endpoint this server came from is closed, and its server stopped with it; \
          after a restart, await endpoint.server() for the new one",
     )
@@ -170,7 +175,7 @@ impl super::BACnetServer {
             registered_network_port: None,
             inner: host,
             device_instance,
-            segmentation_supported: bacnet_types::enums::Segmentation::NO_SEGMENTATION,
+            segmentation_supported: bacnet_types::enums::Segmentation::SEGMENTED_BOTH,
             apdu_segment_timeout_ms: 5000,
             device_name: String::new(),
             transport_type: "bip".into(),
@@ -224,14 +229,17 @@ impl super::BACnetServer {
             cov_policy: bacnet_device_core::cov::CovPolicy::default(),
             time_sync_policy: server::TimeSyncPolicy::default(),
             clock_zone: server::ClockConfig::default(),
+            clock_zone_writable: false,
+            device_storage: None,
             audit_notification_sink: None,
             audit_reporters: None,
-            audit_recipient: std::sync::Mutex::new(None),
+            audit_recipient: Arc::new(std::sync::Mutex::new(None)),
             device_bindings: std::collections::BTreeMap::new(),
-            forwarding_configuration_started: AtomicBool::new(false),
+            forwarding_configuration_started: Arc::new(AtomicBool::new(false)),
+            start_in_flight: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
-            pending_objects: std::sync::Mutex::new(Vec::new()),
-            pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
+            pending_objects: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
             router: None,
         }

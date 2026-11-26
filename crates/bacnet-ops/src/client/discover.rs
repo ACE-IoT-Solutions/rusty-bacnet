@@ -1,7 +1,8 @@
 //! Discovery through the client: where a Who-Is or a Who-Has goes
 //! ([`Scope`]), where a handle made from a bare instance asks for its
-//! device ([`ResolveScope`]), one discovery ([`Discover`]), Who-Is under the
-//! rate cap, and the client's discovery table.
+//! device ([`ResolveScope`]), one discovery ([`Discover`]), one router
+//! discovery ([`RouterDiscovery`]), Who-Is under the rate cap, and the
+//! client's discovery table.
 
 use std::ops::RangeInclusive;
 use std::time::Duration;
@@ -32,7 +33,10 @@ pub const DISCOVER_WAIT: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Scope {
-    /// A broadcast on this network alone, which no router passes on.
+    /// A broadcast on this network alone, which no router passes on. A
+    /// client on a router's application port is on each of the router's
+    /// networks, so there it is a broadcast on each of them, and their
+    /// devices answer as routed devices on their networks (#2601).
     #[default]
     Local,
     /// A broadcast on one remote network, 1 to 65534, through its router.
@@ -54,7 +58,9 @@ pub enum Scope {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ResolveScope {
-    /// This network alone: a local broadcast.
+    /// This network alone: a local broadcast, which on a router's
+    /// application port goes to each of the router's networks
+    /// ([`Scope::Local`]).
     #[default]
     Local,
     /// One remote network, 1 to 65534, through its router; 0 and 65535
@@ -175,9 +181,14 @@ impl Scope {
             )),
             Self::Directed(station) => {
                 let (network, mac) = station.address();
-                let address = DeviceAddress::new(network, mac).map_err(|reason| {
-                    OpsError::parse("address", &format!("{station:?}"), reason)
-                })?;
+                // A station the caller marked one station is that address:
+                // the mark is the caller's word (#2738).
+                let address = if station.is_one_station() {
+                    DeviceAddress::marked(network, mac)
+                } else {
+                    DeviceAddress::new(network, mac)
+                }
+                .map_err(|reason| OpsError::parse("address", &format!("{station:?}"), reason))?;
                 if ask == Ask::WhoIs
                     || address
                         .clone()
@@ -202,19 +213,22 @@ impl Scope {
     }
 
     /// Whether a device at `address` is one this scope's Who-Is asked,
-    /// `own` being the client's network number once known: any for a
-    /// global one; for a local one, a station on this network; for a
-    /// remote network, a station on it (this network when it is `own`);
-    /// for a directed one, that station. An I-Am from elsewhere during a
-    /// discovery's wait, unasked or the answer to another's Who-Is, is no
-    /// answer to it, as for a Who-Has (`Scope::answered_by`, #2596).
-    pub(crate) fn covers(&self, address: &DeviceAddress, own: Option<u16>) -> bool {
+    /// `own` being the client's network number once known and `local` the
+    /// networks its local broadcast reaches
+    /// ([`BACnetClient::local_networks`]): any for a global one; for a
+    /// local one, a station on this network, or on a router's application
+    /// on any of the router's networks (#2601); for a remote network, a
+    /// station on it (this network when it is `own`); for a directed one,
+    /// that station. An I-Am from elsewhere during a discovery's wait,
+    /// unasked or the answer to another's Who-Is, is no answer to it, as
+    /// for a Who-Has (`Scope::answered_by`, #2596).
+    pub(crate) fn covers(&self, address: &DeviceAddress, own: Option<u16>, local: &[u16]) -> bool {
         let address = address.clone().localized(own);
         let network = (!address.is_local()).then(|| address.network());
         match self {
-            Self::Local => Broadcast::Local.answered_from(network, own),
-            Self::Network(n) => Broadcast::Network(*n).answered_from(network, own),
-            Self::Global => Broadcast::Global.answered_from(network, own),
+            Self::Local => Broadcast::Local.answered_from(network, local),
+            Self::Network(n) => Broadcast::Network(*n).answered_from(network, local),
+            Self::Global => Broadcast::Global.answered_from(network, local),
             Self::Directed(station) => {
                 let (network, mac) = station.address();
                 address.mac() == mac
@@ -326,7 +340,9 @@ impl From<Scope> for Discover {
 }
 
 impl Discover {
-    /// The devices on this network alone: a local broadcast.
+    /// The devices on this network alone: a local broadcast
+    /// ([`Scope::Local`], each of the router's networks on a router's
+    /// application port).
     pub fn local() -> Self {
         Self::from(Scope::Local)
     }
@@ -346,8 +362,7 @@ impl Discover {
     /// the target grammar, [`Client::station_mac`] finds the MAC:
     ///
     /// ```no_run
-    /// use bacnet_ops::{Client, Discover};
-    /// use bacnet_client::client::Station;
+    /// use bacnet_ops::{Client, Discover, Station};
     /// # async fn example(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     /// let station = Station::local(&client.station_mac("192.168.1.20").await?);
     /// let found = client.discover(Discover::directed(station)).await?;
@@ -381,6 +396,91 @@ impl Discover {
     /// The instance range asked, checked.
     pub(crate) fn instances(&self) -> Result<Option<DeviceInstanceRange>, OpsError> {
         instances(self.range.as_ref())
+    }
+}
+
+/// One router discovery for [`Client::discover_routers`]: which routers its
+/// Who-Is-Router-To-Network asks, the network it asks about, and how long
+/// it listens for the I-Am-Router-To-Network answers.
+/// [`RouterDiscovery::default`] broadcasts on this network, asks about
+/// every network and listens for [`DISCOVER_WAIT`].
+///
+/// ```
+/// use std::time::Duration;
+/// use bacnet_ops::RouterDiscovery;
+///
+/// let every_router = RouterDiscovery::local();
+/// let to_network_5 = RouterDiscovery::local().network(5);
+/// let one_router = RouterDiscovery::directed(&[192, 168, 1, 1, 0xBA, 0xC0])
+///     .wait(Duration::from_secs(5));
+/// # let _ = (every_router, to_network_5, one_router);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterDiscovery {
+    router: Option<Vec<u8>>,
+    network: Option<u16>,
+    wait: Duration,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl Default for RouterDiscovery {
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
+impl RouterDiscovery {
+    /// Every router on this network: a local broadcast.
+    pub fn local() -> Self {
+        Self {
+            router: None,
+            network: None,
+            wait: DISCOVER_WAIT,
+            deadline: None,
+        }
+    }
+
+    /// The one router at `router`, its MAC on this network, by unicast:
+    /// only its own answers count. From text in the target grammar,
+    /// [`Client::station_mac`] finds the MAC.
+    ///
+    /// The router answers with a local broadcast (Clause 6.6.3.3), so a
+    /// B/IP router on another IP subnet is heard only when a BBMD forwards
+    /// its answer here, as a peer or by foreign-device registration; with
+    /// no BBMD, no routers is the expected result.
+    pub fn directed(router: &[u8]) -> Self {
+        Self {
+            router: Some(router.to_vec()),
+            ..Self::local()
+        }
+    }
+
+    /// Ask only about `network` (1 to 65534), keeping the routers that
+    /// list it, instead of every network. Checked when the discovery runs.
+    #[must_use]
+    pub fn network(mut self, network: u16) -> Self {
+        self.network = Some(network);
+        self
+    }
+
+    /// Listen for answers for `wait` ([`DISCOVER_WAIT`] by default).
+    #[must_use]
+    pub fn wait(mut self, wait: Duration) -> Self {
+        self.wait = wait;
+        self
+    }
+
+    /// Stop listening at `deadline` if that comes before the wait ends,
+    /// the wait counted from when the rate slot is granted.
+    #[must_use]
+    pub fn deadline(mut self, deadline: tokio::time::Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// The router asked, or `None` for a local broadcast.
+    pub fn router(&self) -> Option<&[u8]> {
+        self.router.as_deref()
     }
 }
 
@@ -427,19 +527,27 @@ impl<T: TransportPort + 'static> Client<T> {
         sent.map_err(OpsError::from)
     }
 
-    /// Ask one local station, or broadcast with `destination_mac=None`, for
-    /// `network` or every network (`None`), under the rate cap, then
-    /// collect the I-Am-Router-To-Network answers heard for `wait`, or
-    /// until `deadline` if that comes first (counted after the wait for
-    /// the rate slot): one entry per router, with the networks it reaches.
-    /// No answer is an empty list.
+    /// Send one Who-Is-Router-To-Network as `request` says, under this
+    /// network's rate cap, then collect the I-Am-Router-To-Network answers
+    /// heard for its wait, or until its deadline if that comes first
+    /// (counted after the wait for the rate slot): one entry per router,
+    /// with the networks it reaches. No answer is an empty list.
+    ///
+    /// # Errors
+    ///
+    /// [`OpsError`] from the send: a network of 0 or 65535, or a directed
+    /// router address that names no one station on this network. Nothing
+    /// was sent, and the slot isn't charged.
     pub async fn discover_routers(
         &self,
-        network: Option<u16>,
-        destination_mac: Option<&[u8]>,
-        wait: std::time::Duration,
-        deadline: Option<tokio::time::Instant>,
+        request: RouterDiscovery,
     ) -> Result<Vec<DiscoveredRouter>, OpsError> {
+        let RouterDiscovery {
+            router,
+            network,
+            wait,
+            deadline,
+        } = request;
         self.limits().slot(Some(0)).await;
         let wait = match deadline {
             Some(deadline) => {
@@ -447,10 +555,15 @@ impl<T: TransportPort + 'static> Client<T> {
             }
             None => wait,
         };
-        let found = self
-            .low_level()
-            .discover_routers(network, destination_mac, wait)
-            .await;
+        let client = self.low_level();
+        let found = match &router {
+            Some(router) => {
+                client
+                    .discover_routers_directed(router, network, wait)
+                    .await
+            }
+            None => client.discover_routers(network, wait).await,
+        };
 
         // A refused send never left, so it isn't charged.
         if found.is_err() {

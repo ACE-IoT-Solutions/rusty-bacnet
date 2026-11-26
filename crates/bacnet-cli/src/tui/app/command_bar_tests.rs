@@ -67,12 +67,15 @@ fn a_routed_station_names_the_device_the_table_lists_there() {
     for missing in [
         "watch 2:0x06 ai:1",
         "watch 3:0x05 ai:1",
-        "watch 2:0x0005 ai:1",
         "writem 2:0x06 av:1 pv 4",
     ] {
         let error = super::parse(missing, &devices).unwrap_err();
         assert!(error.contains("no device in the device table"), "{error}");
     }
+    // Two octets are no station 5: the refusal is the address rules' own,
+    // not a hint to run a Who-Is.
+    let error = super::parse("watch 2:0x0005 ai:1", &devices).unwrap_err();
+    assert!(error.contains("not a station"), "{error}");
     // One row per address: another instance announced at the station
     // takes its row, and the station names that one now (#2560).
     devices.upsert(device_row(2003, Some((2, &[5]))));
@@ -384,6 +387,7 @@ fn row_of(line: &Line) -> &'static str {
         Line::Mstp(_) | Line::Scan(_) => "mstp",
         Line::Manage(Action::Dcc { .. }) => "dcc",
         Line::Manage(Action::Reinit { .. }) => "reinit",
+        Line::PathLimit(_) | Line::SelectedPathLimit(_) => "path-limit",
     }
 }
 
@@ -405,6 +409,10 @@ fn every_command_has_its_hint_from_the_table_the_parser_reads() {
         "dcc disable-initiation 30",
         "control enable",
         "reinit warmstart",
+        "path-limit 10.0.0.254:47808/5=128",
+        "path-limit mstp:3/7 clear",
+        "path-limit 100 480",
+        "path-limit . clear",
     ];
     let mut rows = std::collections::BTreeSet::new();
     for sample in samples {

@@ -31,6 +31,29 @@ mod refusals;
 #[path = "full_server/object_list.rs"]
 mod object_list;
 
+/// Both roles segment, both ways, beside each other and as the node's
+/// Device says (#2617).
+#[path = "full_server/segmentation.rs"]
+mod segmentation;
+
+/// The same, frame by frame: one peer with a transfer in each role (#2617).
+#[path = "full_server/segmentation_wire.rs"]
+mod segmentation_wire;
+
+/// The client reassembles the segmented notifications it answers (#2646).
+#[path = "full_server/segmented_notifications.rs"]
+mod segmented_notifications;
+
+/// The server hands the client a segmented event notification it
+/// reassembled (#2743).
+#[path = "full_server/segmented_events.rs"]
+mod segmented_events;
+
+/// Its edges: a routed source, one segment, no segmentation, a transfer
+/// sent again, a client made again, unreadable event values (#2743).
+#[path = "full_server/segmented_event_edges.rs"]
+mod segmented_event_edges;
+
 use std::time::Duration;
 
 use bacnet_client::client::{BACnetClient, Broadcast, COVNotificationDelivery};
@@ -133,7 +156,7 @@ async fn lab() -> Lab {
         .unwrap();
     let (session, node_sent, node_link) =
         session(&wire, SessionRole::Both, BACnetServer::generic_builder()).await;
-    let client = session.full_client().unwrap();
+    let client = session.client().unwrap();
     Lab {
         wire,
         session,
@@ -252,7 +275,7 @@ async fn the_full_server_answers_for_the_node_beside_its_full_client() {
     assert_eq!(peer_value.object_identifier, ai1());
 
     // No request found the node without a server.
-    let counters = lab.session.policy_counters().await;
+    let counters = lab.session.policy_counters();
     assert_eq!(counters.no_server_role, 0);
     assert_eq!(counters.confirmed_full_drops, 0);
     let seat = lab.session.server_seat_counters();
@@ -430,7 +453,7 @@ async fn each_answer_goes_to_the_role_that_asked() {
     )));
     // The node's notifications and the client's requests drew on one pool,
     // so nothing was claimed by a role that didn't ask.
-    assert_eq!(lab.session.policy_counters().await.unclaimed_terminal, 0);
+    assert_eq!(lab.session.policy_counters().unclaimed_terminal, 0);
     assert!(sent_to(&lab.node_sent, &other).len() >= 6);
 
     stop(lab).await;

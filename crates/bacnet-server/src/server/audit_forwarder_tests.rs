@@ -41,7 +41,7 @@ impl Capture {
             std::future::pending::<()>().await;
         }
         if self.fail.load(Ordering::Acquire) {
-            return Err(Error::Encoding("injected failure".into()));
+            return Err(Error::Transport(std::io::Error::other("injected failure")));
         }
         Ok(())
     }
@@ -436,6 +436,18 @@ async fn audit_forwarding_invalid_parent_is_visible_at_startup_without_send() {
         PropertyValue::Enumerated(Reliability::CONFIGURATION_ERROR.to_raw())
     );
     f.server.stop().await.unwrap();
+}
+
+/// A delivery whose budget ran out before its send began ends with this
+/// side's I/O timeout, not the timeout that says a peer gave no answer
+/// (#1833); the worker counts it as not sent either way.
+#[test]
+fn a_spent_delivery_budget_is_the_links_timeout() {
+    let error = super::audit_forwarder::forwarding_deadline_expired();
+    assert!(
+        matches!(&error, Error::Transport(io) if io.kind() == std::io::ErrorKind::TimedOut),
+        "{error:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

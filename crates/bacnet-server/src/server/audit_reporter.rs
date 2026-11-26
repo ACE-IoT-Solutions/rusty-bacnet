@@ -151,14 +151,14 @@ impl AuditReportersConfig {
                     || oid.instance_number() == ObjectIdentifier::MAX_INSTANCE
             })
         {
-            return Err(Error::Encoding(
-                "target Audit requires 1..=64 concrete Reporter identifiers".into(),
+            return Err(Error::invalid_config(
+                "target Audit requires 1..=64 concrete Reporter identifiers",
             ));
         }
         self.reporters.sort_by_key(|oid| oid.instance_number());
         if self.reporters.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(Error::Encoding(
-                "duplicate target Audit Reporter identifier".into(),
+            return Err(Error::invalid_config(
+                "duplicate target Audit Reporter identifier",
             ));
         }
         Ok(())
@@ -400,8 +400,12 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
         };
         let reporter = &selected_reporter.configuration;
         let device = crate::local_device::initiating_device(&self.config.device);
-        let route = recipient(db, device)
-            .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
+        let route = recipient(db, device).and_then(|value| {
+            self.transactions
+                .audit_routes
+                .get()?
+                .resolve_for(&value, reporter.confirmed)
+        });
         let status = Arc::clone(&selected_reporter.status);
         status.set_configured(route.is_some());
         let policy = db
@@ -470,8 +474,12 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
         };
         let reporter = &selected_reporter.configuration;
         let device = crate::local_device::initiating_device(&self.config.device);
-        let route = recipient(db, device)
-            .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
+        let route = recipient(db, device).and_then(|value| {
+            self.transactions
+                .audit_routes
+                .get()?
+                .resolve_for(&value, reporter.confirmed)
+        });
         let status = Arc::clone(&selected_reporter.status);
         status.set_configured(route.is_some());
         let policy = db
@@ -552,8 +560,12 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
         };
         let reporter = &selected_reporter.configuration;
         let device = crate::local_device::initiating_device(&self.config.device);
-        let route = recipient(db, device)
-            .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
+        let route = recipient(db, device).and_then(|value| {
+            self.transactions
+                .audit_routes
+                .get()?
+                .resolve_for(&value, reporter.confirmed)
+        });
         let status = Arc::clone(&selected_reporter.status);
         status.set_configured(route.is_some());
         let selected = target.map_or_else(

@@ -14,7 +14,10 @@
 use super::*;
 use bacnet_network::layer::{NetworkReport, RoutingTableEntry};
 use bacnet_npdu::{RejectMessageReason, RejectMessageToNetwork};
+use bacnet_types::sync::MutexExt;
 use tokio::sync::broadcast::error::RecvError;
+
+use crate::poll_gate::PollGate;
 
 /// Most entries a [`BACnetClient::routing_table`] call keeps by default.
 /// A network number is 16 bits, so no table lists more than 65,534
@@ -85,9 +88,23 @@ pub enum RoutingTableError {
     /// looks the same as one that is not there, so this does not say
     /// which. On B/IP, a router that answers from another address or port
     /// than the one queried shows up here too. It is not an empty table.
+    ///
+    /// For a routed query, an older router may answer a table query only
+    /// on its own link: it then answers the next hop, never this client,
+    /// so the call ends here as well. Nothing else tells the two apart.
+    /// So does a router whose control gate refuses table queries from
+    /// other networks: a routed query reaches it with an SNET, and it drops
+    /// the query silently. A hosted router on the hardened control policy
+    /// with no authorizer does this, as does a `bacnet-router-core` host
+    /// that refuses `ControlClass::InitQuery` (#2715).
+    /// A far router that rejects the query as an unknown message (reason
+    /// 3) can end here too: its reject arrives with its near-side network
+    /// as SNET and names a network of its own choosing (Clause 6.4.4).
     NoAnswer {
         /// How long the call waited.
         waited: Duration,
+        /// The queried router's network, for a routed query.
+        routed: Option<u16>,
     },
     /// The queried station rejected the network message before the first
     /// acknowledgement, or its selected next hop rejected forwarding to
@@ -95,7 +112,7 @@ pub enum RoutingTableError {
     Rejected(RejectMessageToNetwork),
     /// The call's arguments were refused and nothing was sent: no entries
     /// kept, a first-answer wait longer than the total, or a router
-    /// address that is empty or a broadcast.
+    /// address that names no one station.
     InvalidArgument(String),
     /// The client's dispatch task ended while the call waited (the client
     /// stopped, its link closed or a seat's node stopped). That is not
@@ -116,18 +133,32 @@ pub enum RoutingTableError {
         /// Network reports lost before the collector read them.
         lost: u64,
     },
-    /// The query was not sent: the link failed or the client's node had
-    /// stopped.
+    /// The query was not sent: the link failed, refused it for its own
+    /// state, configuration, platform or limits (a BACnet/SC link not
+    /// connected to its hub, say), or the client's node had stopped.
     Send(Error),
 }
 
 impl core::fmt::Display for RoutingTableError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NoAnswer { waited } => write!(
+            Self::NoAnswer {
+                waited,
+                routed: None,
+            } => write!(
                 f,
                 "the router sent no routing table within {waited:?}: it did not \
                  answer the query from the expected address"
+            ),
+            Self::NoAnswer {
+                waited,
+                routed: Some(network),
+            } => write!(
+                f,
+                "the router on network {network} sent no routing table back through \
+                 the next hop within {waited:?}: it may be absent, or an older router \
+                 that answers a table query only on its own link; query the next hop, \
+                 or ask from a node on network {network}"
             ),
             Self::Rejected(reject) => write!(
                 f,
@@ -176,14 +207,15 @@ pub(super) struct RoutingQueries {
     pub(super) outstanding: std::sync::Mutex<Option<QueryTarget>>,
     /// Ends (its sender is dropped) when the dispatch task does, however it
     /// ends: stop, abort, a closed link or a seat's node stopping. A call
-    /// waits on it, so it returns `ClientStopped` at once. It is never
+    /// waits on it, so it returns `ClientStopped` at once, and so does a
+    /// confirmed request waiting for its pacing turn (#2720). It is never
     /// sent on, so it costs nothing per APDU.
-    ended: tokio::sync::watch::Receiver<()>,
+    pub(super) ended: tokio::sync::watch::Receiver<()>,
     /// One routing-table query at a time. Network messages carry no invoke
     /// ID, so two queries to one router would each collect both answers.
-    /// The mutex guards no data: holding it across the call's awaits is its
-    /// whole purpose.
-    gate: tokio::sync::Mutex<()>,
+    /// The gate guards no data: holding it across the call's awaits is its
+    /// whole purpose. A call takes it only as it is polled (#2759).
+    gate: PollGate,
 }
 
 impl RoutingQueries {
@@ -193,7 +225,7 @@ impl RoutingQueries {
         Self {
             outstanding: std::sync::Mutex::new(None),
             ended,
-            gate: tokio::sync::Mutex::new(()),
+            gate: PollGate::default(),
         }
     }
 }
@@ -204,10 +236,7 @@ struct Outstanding<'a>(&'a std::sync::Mutex<Option<QueryTarget>>);
 
 impl Drop for Outstanding<'_> {
     fn drop(&mut self) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.0.locked() = None;
     }
 }
 
@@ -245,7 +274,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///   reject after the first ack.
     /// - [`RoutingTableError::InvalidArgument`] for `wait.max_entries` 0,
     ///   `wait.first_answer` longer than `wait.total`, or a `router` that
-    ///   is empty or a broadcast; nothing is sent.
+    ///   names no one station (empty, a broadcast or group address, or
+    ///   malformed for the link); nothing is sent.
     /// - [`RoutingTableError::ClientStopped`] when the client stops
     ///   mid-call.
     ///
@@ -256,8 +286,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// [`RoutingTableError::RouteUnresolved`]. No Device I-Am is required.
     /// A routed ack must arrive from the selected peer with the original
     /// router's SNET/SADR. A device which only answers locally may time out.
-    /// A reject from that peer without SNET, naming the requested DNET,
-    /// can end a routed query before its first ack.
+    /// A reject that comes through that peer naming the requested DNET
+    /// ends a routed query before its first ack with
+    /// [`RoutingTableError::Rejected`], whether the peer sent it (no SNET)
+    /// or relayed it from a router further on (that router's SNET), since
+    /// a router relays a reject back toward the requester (Clause 6.6.3.5).
+    /// Reason 4 (message too long) is ignored: the query is too short to
+    /// draw it, so it answers a larger request to that network.
     ///
     /// Nothing pairs an answer with its question, so a late ack of an
     /// earlier query can be counted by the next query to the same router,
@@ -268,10 +303,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// Network messages carry no invoke ID, so the client runs one
     /// routing-table query at a time: a second call waits for the first,
-    /// and its clock starts when it reaches the gate. A call future left
-    /// unpolled can hold the gate: to cancel one, wrap it in a timeout and
-    /// drop it. With `wait.first_answer` equal to `wait.total`, a complete
-    /// answer that arrives at the end can be marked
+    /// and its clock starts when it reaches the gate. A call left unpolled
+    /// while it waits its turn holds nothing and is passed over until it is
+    /// polled again (#2759). Calls polled when woken go in the order they
+    /// began to wait: strictly on a current-thread runtime, while on a
+    /// multi-thread runtime one slow to be polled can be passed. A call that
+    /// has the gate holds it until it returns or is dropped, polled or not:
+    /// drive it, or wrap it in a timeout. With `wait.first_answer` equal to
+    /// `wait.total`, a complete answer that arrives at the end can be marked
     /// [`RoutingTable::truncated`]. Every bound must fit the clock
     /// (`InvalidArgument` otherwise).
     pub async fn routing_table(
@@ -315,17 +354,22 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let end = start.checked_add(wait.total).ok_or_else(overflow)?;
         let first_deadline = start.checked_add(wait.first_answer).ok_or_else(overflow)?;
         let mut rx = self.network_reports();
-        *self
-            .routing_query
-            .outstanding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(target.clone());
+        *self.routing_query.outstanding.locked() = Some(target.clone());
         let _outstanding = Outstanding(&self.routing_query.outstanding);
         self.network
             .send_routing_table_query(&target.hop, target.station.as_ref())
             .await
             .map_err(|error| match error {
-                Error::Encoding(message) => RoutingTableError::InvalidArgument(message),
+                // The router's address in a form the link refuses.
+                Error::InvalidArgument(refusal) => {
+                    RoutingTableError::InvalidArgument(refusal.to_string())
+                }
+                Error::Transport(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                    RoutingTableError::InvalidArgument(e.to_string())
+                }
+                // The link's state, configuration, platform or limits
+                // refused the send, which no argument of the call caused,
+                // such as a BACnet/SC link not connected to its hub (#1833).
                 other => RoutingTableError::Send(other),
             })?;
         let mut last_ack = start;
@@ -363,6 +407,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     if table.acks == 0 {
                         return Err(RoutingTableError::NoAnswer {
                             waited: deadline.saturating_duration_since(start),
+                            routed: target.station.as_ref().map(|station| station.network),
                         });
                     }
                     // The quiet interval is the normal end; the total is a

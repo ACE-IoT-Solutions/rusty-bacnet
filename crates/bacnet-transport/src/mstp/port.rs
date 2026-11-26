@@ -2,8 +2,9 @@ use bacnet_mstp_codec::BROADCAST_MAC;
 use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
 use bacnet_time::HostClock;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::error::Error;
-use std::sync::{Mutex as StdMutex, PoisonError};
+use bacnet_types::error::{Error, Lifecycle, Refusal};
+use bacnet_types::sync::MutexExt;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, mpsc};
 
 use super::adapter::Task;
@@ -76,7 +77,7 @@ impl Drop for Joining<'_> {
 }
 
 fn lock(running: &StdMutex<Running>) -> std::sync::MutexGuard<'_, Running> {
-    running.lock().unwrap_or_else(PoisonError::into_inner)
+    running.locked()
 }
 
 /// What a send needs from a started transport.
@@ -197,31 +198,37 @@ impl<S: SerialPort> MstpTransport<S> {
     }
 
     fn running_mut(&mut self) -> &mut Running {
-        self.running
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.running.get_mut_locked()
     }
 
-    fn abort_task_and_release_state(&mut self) {
-        let running = self.running_mut();
-        if let Some(task) = running.task.take() {
-            if let Some(runtime) = &running.runtime {
+    /// End the node without waiting, through `&self` (#2617): what an
+    /// abort and a drop do. The queues close, so every later send is
+    /// refused at once; the node's task is aborted, and the serial port
+    /// goes with it as the runtime drops it; a dedicated thread is told to
+    /// end. The task and the thread stay here, so a stop after an abort
+    /// still waits for both, and so for the serial port.
+    fn abort_task(&self) {
+        if let Some(link) = &self.link {
+            link.queues.close();
+        }
+        let mut running = lock(&self.running);
+        let Running { task, runtime } = &mut *running;
+        if let Some(task) = task {
+            if let Some(runtime) = runtime {
                 runtime.hold_until_node_dropped();
             }
             task.abort();
         }
-        running.runtime.take();
-        self.serial.take();
-        self.link.take();
+        if let Some(runtime) = runtime {
+            // The thread ends once its runtime has dropped the aborted node.
+            drop(runtime.stopping());
+        }
     }
 
     /// Queue an NPDU for the core, refusing it at once if it cannot be sent.
     fn enqueue(&self, destination: u8, npdu: &[u8]) -> Result<(), Error> {
         let Some(link) = &self.link else {
-            return Err(Error::Transport(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "MS/TP transport not started",
-            )));
+            return Err(not_started());
         };
         let result = link
             .queues
@@ -230,22 +237,18 @@ impl<S: SerialPort> MstpTransport<S> {
         counts.publish_queues(&link.queues);
         match result {
             Ok(()) => Ok(()),
-            Err(EnqueueError::Closed) => Err(Error::Transport(std::io::Error::new(
-                std::io::ErrorKind::NotConnected,
-                "MS/TP transport is no longer running",
-            ))),
+            // Stopped, aborted, or the node's task ended: checked before the
+            // length, so a stopped port's refusal never draws a router's
+            // too-long reject.
+            Err(EnqueueError::Closed) => Err(no_longer_running()),
+            // Longer than the port's frames carry (#1833): a router answers
+            // it with reject reason 4, and a client may try a smaller one.
             Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&counts.outbound_oversize);
-                let class = if self.config.extended_frames {
-                    "extended"
-                } else {
-                    "standard"
-                };
-                Err(Error::Encoding(format!(
-                    "MS/TP NPDU length {} exceeds {class}-frame maximum {}",
-                    npdu.len(),
-                    self.config.max_npdu_length()
-                )))
+                Err(Error::SendTooLong {
+                    length: npdu.len(),
+                    limit: self.config.max_npdu_length(),
+                })
             }
             Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&counts.outbound_queue_full);
@@ -259,6 +262,41 @@ impl<S: SerialPort> MstpTransport<S> {
             ))),
         }
     }
+}
+
+/// What a send before start gets (#1833): the transport can start, so
+/// [`Lifecycle::NotRunning`].
+#[cold]
+#[inline(never)]
+fn not_started() -> Error {
+    Error::state(Lifecycle::NotRunning, "MS/TP transport not started")
+}
+
+/// What a start gets once the serial port went with an earlier start's
+/// task (#1833): [`Lifecycle::AlreadyStarted`] while that node runs, and
+/// [`Lifecycle::Closed`] once it `ended`, since the transport doesn't start
+/// again.
+#[cold]
+#[inline(never)]
+fn started_refusal(ended: bool) -> Error {
+    if ended {
+        Error::state(
+            Lifecycle::Closed,
+            "MS/TP transport is no longer running: it does not start again",
+        )
+    } else {
+        Error::state(Lifecycle::AlreadyStarted, "MS/TP transport already started")
+    }
+}
+
+/// What a send gets once the node's queues closed (#1833): after a stop or
+/// an abort, or once the node's task ended on a serial failure, which it
+/// reported then. The transport doesn't start again, so
+/// [`Lifecycle::Closed`]; nothing of the send was attempted.
+#[cold]
+#[inline(never)]
+fn no_longer_running() -> Error {
+    Error::state(Lifecycle::Closed, "MS/TP transport is no longer running")
 }
 
 impl<S: SerialPort> TransportPort for MstpTransport<S> {
@@ -276,7 +314,14 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
         let config = self.config.core_config()?;
         self.execution_mode.validate()?;
-        let not_started = || Error::Encoding("MS/TP transport already started".into());
+        // The serial port went with the first start's task: running, that
+        // is a second start; once the node ended (a stop, an abort, a
+        // serial failure), the transport doesn't start again (#1833).
+        let ended = self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.queues.is_closed());
+        let not_started = || started_refusal(ended);
         self.serial
             .as_ref()
             .ok_or_else(not_started)?
@@ -378,16 +423,15 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         Ok(())
     }
 
-    fn abort(&mut self) {
-        self.abort_task_and_release_state();
+    fn abort(&self) {
+        self.abort_task();
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
         let [destination] = mac else {
-            return Err(Error::Encoding(format!(
-                "MS/TP MAC must be 1 byte, got {}",
-                mac.len()
-            )));
+            return Err(Error::InvalidArgument(
+                Refusal::new("MS/TP MAC must be 1 byte, got {}").with_value(mac.len() as u64),
+            ));
         };
         self.enqueue(*destination, npdu)
     }
@@ -437,7 +481,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
 impl<S: SerialPort> Drop for MstpTransport<S> {
     fn drop(&mut self) {
-        self.abort_task_and_release_state();
+        self.abort_task();
     }
 }
 
@@ -506,12 +550,12 @@ impl SerialPort for LoopbackSerial {
         {
             own.send(data.to_vec())
                 .await
-                .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
+                .map_err(|_| Error::state(Lifecycle::Closed, "loopback echo failed"))?;
         }
         self.tx
             .send(data.to_vec())
             .await
-            .map_err(|_| Error::Encoding("loopback write failed".into()))
+            .map_err(|_| Error::state(Lifecycle::Closed, "loopback write failed"))
     }
 
     async fn drain(&self) -> Result<(), Error> {
@@ -543,7 +587,7 @@ impl SerialPort for LoopbackSerial {
                     leftover.extend_from_slice(&data[len..]);
                     return Ok(len);
                 }
-                None => return Err(Error::Encoding("loopback channel closed".into())),
+                None => return Err(Error::state(Lifecycle::Closed, "loopback channel closed")),
             }
         }
     }

@@ -26,7 +26,7 @@ pub(super) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub(super) trait InnerPort: Send + Sync {
     fn start(&mut self) -> BoxFuture<'_, Result<mpsc::Receiver<ReceivedNpdu>, Error>>;
     fn stop(&self) -> BoxFuture<'_, Result<(), Error>>;
-    fn abort(&mut self);
+    fn abort(&self);
     fn prepare_for_routing(&mut self);
     fn send_unicast<'a>(
         &'a self,
@@ -54,6 +54,7 @@ pub(super) trait InnerPort: Send + Sync {
     fn bip6_port(&self) -> Option<Bip6Port>;
     fn number_controls(&self) -> bool;
     fn data_link(&self) -> Option<DataLink>;
+    fn attached_networks(&self) -> &[u16];
     fn bip_transport(&self) -> Option<&BipTransport>;
     #[cfg(feature = "ipv6")]
     fn bip6_transport(&self) -> Option<&Bip6Transport>;
@@ -67,7 +68,7 @@ impl<T: TransportPort + 'static> InnerPort for T {
     fn stop(&self) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(TransportPort::stop(self))
     }
-    fn abort(&mut self) {
+    fn abort(&self) {
         TransportPort::abort(self);
     }
     fn prepare_for_routing(&mut self) {
@@ -136,6 +137,9 @@ impl<T: TransportPort + 'static> InnerPort for T {
     }
     fn data_link(&self) -> Option<DataLink> {
         TransportPort::data_link(self)
+    }
+    fn attached_networks(&self) -> &[u16] {
+        TransportPort::attached_networks(self)
     }
     fn bip_transport(&self) -> Option<&BipTransport> {
         TransportPort::bip_transport(self)

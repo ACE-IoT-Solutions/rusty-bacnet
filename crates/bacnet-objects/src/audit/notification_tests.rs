@@ -31,7 +31,9 @@ impl AuditLogPersistence for MemoryPersistence {
 
     fn commit(&self, snapshot: &AuditLogSnapshot) -> Result<(), Error> {
         if self.fail.load(Ordering::Acquire) {
-            return Err(Error::Encoding("injected commit failure".into()));
+            return Err(Error::from(crate::snapshot::backend_failed(
+                "injected commit failure",
+            )));
         }
         *self.snapshot.lock().unwrap() = Some(snapshot.clone());
         self.commits.fetch_add(1, Ordering::AcqRel);
@@ -549,11 +551,11 @@ fn an_empty_batch_or_a_disabled_log_is_refused_confirmed_or_not() {
     let generation = log.generation();
     assert!(matches!(
         log.store_notifications(&[], 2_000),
-        Err(Error::OutOfRange(_))
+        Err(Error::InvalidArgument(_))
     ));
     assert!(matches!(
         log.store_confirmed_notifications(&[], 2_000, receipt(b"empty", 1)),
-        Err(Error::OutOfRange(_))
+        Err(Error::InvalidArgument(_))
     ));
     log.write_property(
         bacnet_types::enums::PropertyIdentifier::ENABLE,
@@ -596,7 +598,7 @@ impl AuditLogNotificationSink for PlainSink {
         apdu_timeout_ms: u32,
     ) -> Result<(), Error> {
         if self.fail {
-            return Err(Error::Encoding("refused".into()));
+            return Err(Error::from(crate::snapshot::backend_failed("refused")));
         }
         self.stored.push((notifications.len(), apdu_timeout_ms));
         Ok(())

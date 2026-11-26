@@ -35,7 +35,7 @@
 //! | Raw APDU, NetworkLayer | [`NetworkLayer::start`] ([`ApduReceiver`]) | The transport's queue | None | Drops counted by the transport; no admission snapshot |
 //! | Raw APDU, router | [`BACnetRouter::start`](crate::router::BACnetRouter::start) with [`RouterOptions::new`](crate::router::RouterOptions::new) | 256 | None | Full/Closed counted internally; no admission snapshot or depth/high-water tracking |
 //! | Tracked APDU | [`NetworkLayer::start_with_admission`], [`RouterOptions::track_admission`](crate::router::RouterOptions::track_admission) | 256 | 16 queued APDUs per key, defined below | Exact depth/high-water and Full/fairness/Closed totals via [`AdmissionReceiver::counters`] |
-//! | Raw control | [`NetworkLayer::enable_network_control_receiver`], [`RouterOptions::network_control_receiver`](crate::router::RouterOptions::network_control_receiver) | 256, separate from APDUs | None | Full/Closed counted internally; no admission snapshot or depth/high-water tracking |
+//! | Raw control | [`NetworkLayer::enable_network_control_receiver`], [`NetworkLayer::enable_network_control_receiver_counting_drops`], [`RouterOptions::network_control_receiver`](crate::router::RouterOptions::network_control_receiver) | 256, separate from APDUs | None | Full/Closed counted internally, readable through the second's handle (its snapshot shows only those two); no depth/high-water tracking |
 //! | Tracked control | [`NetworkLayer::enable_network_control_receiver_with_admission`], [`RouterOptions::network_control_receiver_with_admission`](crate::router::RouterOptions::network_control_receiver_with_admission) | 256, separate from APDUs | None | Exact depth/high-water and Full/Closed totals; fairness always zero |
 //!
 //! The router's raw receivers and the raw control receiver are
@@ -110,7 +110,7 @@ use bacnet_transport::port::{
 };
 use bacnet_types::MacAddr;
 use bacnet_types::enums::PduType;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -285,35 +285,33 @@ impl std::fmt::Debug for ReceivedApdu {
     }
 }
 
-/// Refuse a caller-supplied DNET that a send naming one network cannot take.
-/// Network numbers start at 1 (Clause 6.2.2.1); the local network is reached
-/// with no DNET at all, and `local_form` tells the caller how to do that.
-/// DNET 0xFFFF selects every device on every network (Clauses 6.1 and
-/// 6.3.2), and its sender puts it on its own network with the broadcast MAC
-/// so that each router there can pass it on. Only
-/// [`NetworkLayer::broadcast_global_apdu`] sends it that way, so every send
-/// that checks here refuses DNET 0xFFFF, with or without a DADR (#1340,
-/// #1380), and points to that method.
-pub(crate) fn check_destination(network: u16, local_form: &str) -> Result<(), Error> {
+/// Refuse, as [`Error::InvalidArgument`], a caller-supplied DNET that a send
+/// naming one network cannot take. Network numbers start at 1 (Clause
+/// 6.2.2.1); the local network is reached with no DNET at all, and `zero`,
+/// the refusal of DNET 0, tells the caller how to do that. DNET 0xFFFF
+/// selects every device on every network (Clauses 6.1 and 6.3.2), and its
+/// sender puts it on its own network with the broadcast MAC so that each
+/// router there can pass it on. Only [`NetworkLayer::broadcast_global_apdu`]
+/// sends it that way, so every send that checks here refuses DNET 0xFFFF,
+/// with or without a DADR (#1340, #1380), and points to that method.
+pub(crate) fn check_destination(network: u16, zero: &'static str) -> Result<(), Error> {
     match network {
-        0 => Err(Error::Encoding(format!(
-            "dest_network 0 is not a network number; {local_form}"
-        ))),
-        0xFFFF => Err(Error::Encoding(
+        0 => Err(Error::invalid_argument(zero)),
+        0xFFFF => Err(Error::invalid_argument(
             "dest_network 0xFFFF is the global broadcast; \
-             use broadcast_global_apdu for a global broadcast"
-                .into(),
+             use broadcast_global_apdu for a global broadcast",
         )),
         _ => Ok(()),
     }
 }
 
-/// Refuse an APDU that a broadcast may not carry, before anything is encoded
-/// or sent. Clause 6.3 lets only an Unconfirmed-Request PDU go to a broadcast
-/// network address, whether local, remote or global: any other PDU names one
-/// peer's transaction, and every device reached would have to answer it or
-/// act on it (#1479). `what` names the broadcast for the error, which also
-/// names the PDU type the APDU's first octet gives (Clause 20.1).
+/// Refuse, as [`Error::InvalidArgument`], an APDU that a broadcast may not
+/// carry, before anything is encoded or sent. Clause 6.3 lets only an
+/// Unconfirmed-Request PDU go to a broadcast network address, whether local,
+/// remote or global: any other PDU names one peer's transaction, and every
+/// device reached would have to answer it or act on it (#1479). `what` names
+/// the broadcast for the error, which also names the PDU type the APDU's
+/// first octet gives (Clause 20.1).
 pub(crate) fn check_broadcast_apdu(apdu: &[u8], what: &str) -> Result<(), Error> {
     let pdu_type = match apdu.first() {
         Some(&first) if PduType::from_raw(first >> 4) == PduType::UNCONFIRMED_REQUEST => {
@@ -322,10 +320,10 @@ pub(crate) fn check_broadcast_apdu(apdu: &[u8], what: &str) -> Result<(), Error>
         Some(&first) => format!("PDU type {}", PduType::from_raw(first >> 4)),
         None => "an empty APDU".to_string(),
     };
-    Err(Error::Encoding(format!(
+    Err(Error::InvalidArgument(Refusal::text(format!(
         "{what} carries only an UNCONFIRMED_REQUEST APDU (Clause 6.3), not {pdu_type}; \
          send anything else to one device"
-    )))
+    ))))
 }
 
 /// A remote device reached through a local router.
@@ -599,7 +597,10 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
         data_attributes: &[DataAttribute],
     ) -> Result<(), Error> {
-        check_destination(dest_network, "use broadcast_apdu for the local network")?;
+        check_destination(
+            dest_network,
+            "dest_network 0 is not a network number; use broadcast_apdu for the local network",
+        )?;
         check_broadcast_apdu(apdu, "a broadcast to one network")?;
         let npdu = Npdu {
             expecting_reply,
@@ -667,7 +668,10 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
         data_attributes: &[DataAttribute],
     ) -> Result<(), Error> {
-        check_destination(target.network, "use send_apdu for a local device")?;
+        check_destination(
+            target.network,
+            "dest_network 0 is not a network number; use send_apdu for a local device",
+        )?;
         if target.mac.is_empty() {
             check_broadcast_apdu(
                 apdu,
@@ -731,12 +735,18 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         priority: NetworkPriority,
         data_attributes: &[DataAttribute],
     ) -> Result<(), Error> {
-        check_destination(dest_network, "use send_apdu for a local device")?;
+        check_destination(
+            dest_network,
+            "dest_network 0 is not a network number; use send_apdu for a local device",
+        )?;
         if dest_mac.is_empty() {
-            return Err(Error::Encoding(format!(
-                "an empty dest_mac addresses the broadcast on network {dest_network}, \
-                 not one device; use broadcast_to_network for a remote broadcast"
-            )));
+            return Err(Error::InvalidArgument(
+                Refusal::new(
+                    "an empty dest_mac addresses the broadcast on network {}, \
+                     not one device; use broadcast_to_network for a remote broadcast",
+                )
+                .with_value(dest_network.into()),
+            ));
         }
         let buf =
             Self::encode_routed_npdu_buf(apdu, dest_network, dest_mac, expecting_reply, priority)?;
@@ -906,19 +916,30 @@ pub(crate) fn next_ingress_sequence(sequence: &AtomicU64) -> u64 {
 }
 
 impl<T: TransportPort> NetworkLayer<T> {
-    fn abort_dispatch_task(&self) {
+    /// End the layer at once, without waiting, through a shared reference,
+    /// so the owner of an `Arc<NetworkLayer>` can end it from a `Drop`
+    /// while a client or another holder still has it (#2617).
+    ///
+    /// Responses are sealed, the [`ApduReceiver`] yields what was queued
+    /// and then `None`, the dispatch task is aborted, not joined, and the
+    /// transport is aborted ([`TransportPort::abort`]): every later send
+    /// through the layer fails with the transport's stopped error, and
+    /// nothing graceful goes out. It needs no runtime and is idempotent.
+    /// Dropping the layer does the same; [`Self::stop`] is the graceful
+    /// path.
+    pub fn abort(&self) {
+        self.response_scope.seal();
+        ingress::close_queue(&self.receiver_queue);
         if let Some(dispatch) = &self.dispatch {
             dispatch.abort.abort();
         }
+        self.transport.abort();
     }
 }
 
 impl<T: TransportPort> Drop for NetworkLayer<T> {
     fn drop(&mut self) {
-        self.response_scope.seal();
-        ingress::close_queue(&self.receiver_queue);
-        self.abort_dispatch_task();
-        self.transport.abort();
+        self.abort();
     }
 }
 

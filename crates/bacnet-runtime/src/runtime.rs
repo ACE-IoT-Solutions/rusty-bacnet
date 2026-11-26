@@ -1,5 +1,6 @@
 mod transition;
 
+use bacnet_types::sync::MutexExt as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -56,11 +57,7 @@ impl OperationGuard {
 
 impl Drop for OperationGuard {
     fn drop(&mut self) {
-        let mut operations = self
-            .inner
-            .operations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut operations = self.inner.operations.locked();
         operations.remove(&self.id);
         self.inner.operation_count.send_replace(operations.len());
     }
@@ -115,7 +112,7 @@ impl BacnetRuntime {
             .acquire()
             .await
             .expect("lifecycle admission stays open");
-        let attachments = self.inner.attachments.lock().unwrap().clone();
+        let attachments = self.inner.attachments.locked().clone();
         let mut health = Vec::with_capacity(attachments.len());
         for attachment in attachments.values() {
             health.push(attachment.health().await);
@@ -153,7 +150,7 @@ impl BacnetRuntime {
             .await
             .expect("lifecycle admission stays open");
         let newly_stopped = !self.inner.stopped.swap(true, Ordering::AcqRel);
-        let has_attachments = !self.inner.attachments.lock().unwrap().is_empty();
+        let has_attachments = !self.inner.attachments.locked().is_empty();
         let has_operations = *self.inner.operation_count.borrow() != 0;
         if !newly_stopped && !has_attachments && !has_operations {
             return Ok(StopReport {
@@ -181,7 +178,7 @@ impl BacnetRuntime {
                     message: "runtime operation shutdown timed out".to_owned(),
                 }),
             };
-        let count = self.inner.attachments.lock().unwrap().len();
+        let count = self.inner.attachments.locked().len();
         let attachments_stopped = self.drain_attachments(Some(deadline)).await;
         match (operations_stopped, attachments_stopped) {
             (Err(drain), Err(cleanup)) => {
@@ -275,11 +272,7 @@ impl BacnetRuntime {
                 attachment_id: None,
                 message: "runtime operation capacity is exhausted".to_owned(),
             })?;
-        let mut operations = self
-            .inner
-            .operations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut operations = self.inner.operations.locked();
         operations.insert(id, None);
         self.inner.operation_count.send_replace(operations.len());
         Ok(OperationGuard::new(id, inner, permit))
@@ -288,21 +281,13 @@ impl BacnetRuntime {
 
 impl RuntimeInner {
     fn register_abort_handle(&self, id: OperationId, handle: AbortHandle) {
-        if let Some(slot) = self
-            .operations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get_mut(&id)
-        {
+        if let Some(slot) = self.operations.locked().get_mut(&id) {
             *slot = Some(handle);
         }
     }
 
     fn abort_operations(&self) -> usize {
-        let operations = self
-            .operations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let operations = self.operations.locked();
         let mut aborted = 0;
         for handle in operations.values().flatten() {
             handle.abort();
@@ -402,8 +387,7 @@ impl RuntimeInner {
 
     fn attachment(&self, id: AttachmentId) -> Result<Arc<ManagedAttachment>, RuntimeError> {
         self.attachments
-            .lock()
-            .unwrap()
+            .locked()
             .get(&id)
             .cloned()
             .ok_or_else(|| RuntimeError::attachment_not_found(id))

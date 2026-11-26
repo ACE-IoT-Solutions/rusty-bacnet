@@ -1,19 +1,17 @@
 //! The endpoint client's pacing on the capture link, on paused time
-//! (#1542): an audited read waits for its turn before it takes an admission
-//! permit or the database, a stopped or dropped session ends the wait at
-//! once and lets go of the database, and a destination routed to this
-//! network shares the lane of the station it names while one on another
-//! network has its own.
+//! (#1542): an audited read waits for its turn holding no slot and no
+//! database, and takes the turn with its slot (#2652); a stopped or dropped
+//! session ends the wait at once and lets go of the database, and a
+//! destination routed to this network shares the lane of the station it
+//! names while one on another network has its own.
 use super::*;
 use tokio::time::Instant;
 
 /// Minutes: a waiting request stays waiting for the whole test.
 const LONG_MS: u64 = 300_000;
 
-fn direct_to_peer() -> EndpointApduDestination {
-    EndpointApduDestination::Direct {
-        destination_mac: mac(PEER),
-    }
+fn direct_to_peer() -> Station {
+    direct_read()
 }
 
 /// A started ClientOnly source session reporting to Device 999 at `SINK`,
@@ -38,15 +36,16 @@ async fn waiting_read(
     read
 }
 
+/// The read waiting for its turn holds no slot and not the database.
 #[tokio::test(start_paused = true)]
-async fn a_waiting_audited_read_holds_no_permit_or_database_lock() {
+async fn a_waiting_audited_read_holds_no_slot_or_database_lock() {
     let mut endpoint = paced_source(LONG_MS).await;
     let source = Arc::clone(endpoint.session.source_audit.as_ref().unwrap());
     let db = Arc::clone(endpoint.session.database.as_ref().unwrap());
     // The database is held here, so a read that took it would block.
     let writing = Arc::clone(&db).write_owned().await;
     let read = waiting_read(&endpoint).await;
-    assert_eq!(source.available_operations(), 64, "no permit taken");
+    assert_eq!(source.available_operations(), 64, "no slot taken");
     assert!(endpoint.sent.try_recv().is_err(), "nothing sent");
     // The read goes at its turn, once the database is free.
     drop(writing);
@@ -61,6 +60,24 @@ async fn a_waiting_audited_read_holds_no_permit_or_database_lock() {
     endpoint.stop().await;
 }
 
+/// Its caller giving up while it waits for its turn leaves nothing held,
+/// with nothing sent then or after.
+#[tokio::test(start_paused = true)]
+async fn a_read_given_up_while_it_waits_for_its_turn_holds_nothing() {
+    let mut endpoint = paced_source(LONG_MS).await;
+    let source = Arc::clone(endpoint.session.source_audit.as_ref().unwrap());
+    let read = waiting_read(&endpoint).await;
+    read.abort();
+    assert!(read.await.unwrap_err().is_cancelled());
+    assert_eq!(source.available_operations(), 64);
+    tokio::time::advance(Duration::from_millis(LONG_MS)).await;
+    assert!(endpoint.sent.try_recv().is_err(), "nothing sent");
+    drop(source);
+    endpoint.stop().await;
+}
+
+/// The read fails with the error a request the stop cut off in flight gets
+/// (#2720), which the Python binding reads as the client having stopped.
 #[tokio::test(start_paused = true)]
 async fn a_waiting_audited_read_fails_at_once_when_the_session_stops_or_drops() {
     for stop in [true, false] {
@@ -76,7 +93,7 @@ async fn a_waiting_audited_read_fails_at_once_when_the_session_stops_or_drops() 
         };
         let error = bounded(read).await.unwrap().unwrap_err();
         assert!(
-            matches!(&error, Error::Encoding(message) if message == "endpoint shutdown"),
+            matches!(error, Error::RequestCutOff { sent: false }),
             "stopped {stop}: {error:?}"
         );
         // The waiter no longer holds the source, so nothing of the session

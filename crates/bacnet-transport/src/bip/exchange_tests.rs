@@ -148,9 +148,7 @@ async fn a_table_reader_reads_through_the_running_transport() {
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let reader = transport.bvlc_table_reader();
     let not_started = |error: BvlcExchangeError| match error {
-        BvlcExchangeError::Transport(Error::Transport(io)) => {
-            assert_eq!(io.kind(), std::io::ErrorKind::NotConnected);
-        }
+        BvlcExchangeError::Transport(Error::State(Lifecycle::NotRunning, _)) => {}
         other => panic!("not the not-started error: {other}"),
     };
     not_started(reader.read_bdt(&mac).await.unwrap_err());
@@ -222,8 +220,8 @@ async fn a_given_up_read_frees_its_slot_at_once() {
     assert!(rows.unwrap().is_empty());
     // Given up while it waited: the given-up error, not a stop's.
     let given_up = |error: BvlcExchangeError| match error {
-        BvlcExchangeError::Transport(Error::Encoding(message)) => {
-            assert!(message.contains("given up"), "{message}");
+        BvlcExchangeError::Transport(Error::State(Lifecycle::Closed, message)) => {
+            assert!(message.to_string().contains("given up"), "{message}");
         }
         other => panic!("not the given-up error: {other}"),
     };

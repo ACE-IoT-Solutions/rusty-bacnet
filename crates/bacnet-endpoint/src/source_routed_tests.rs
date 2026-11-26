@@ -36,6 +36,7 @@ fn routed(network: u16, mac: &[u8]) -> Result<SourceRoutes, Error> {
             oid(ObjectType::DEVICE, 999),
             network,
             MacAddr::from_slice(mac),
+            false,
         )])
     })
 }
@@ -61,7 +62,7 @@ fn a_routed_binding_names_one_station_on_another_network() {
     assert!(
         SourceRoutes::for_link(&[(device, MacAddr::from_slice(&[4]))], other(&SESSION))
             .unwrap()
-            .bind_routed(&[(device, REMOTE, MacAddr::from_slice(&STATION))])
+            .bind_routed(&[(device, REMOTE, MacAddr::from_slice(&STATION), false)])
             .is_err()
     );
 }
@@ -79,6 +80,7 @@ fn a_routed_binding_on_this_network_goes_direct() {
             Some(SourceRoute::Routed {
                 network: REMOTE,
                 mac: MacAddr::from_slice(mac),
+                one_station: false,
             })
         );
         let number = bacnet_network::network_number::LocalNetworkNumber::default();
@@ -105,11 +107,13 @@ fn the_builders_check_routed_bindings() {
         let mstp = crate::mstp::MstpEndpointBuilder::new(line, 3)
             .source_audit_routed_device_binding(device, network, mac.clone())
             .build_session()
-            .map(drop);
+            .map(drop)
+            .map_err(Error::from);
         let bip = crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .source_audit_routed_device_binding(device, network, mac)
             .build_session_over(bus_port())
-            .map(drop);
+            .map(drop)
+            .map_err(Error::from);
         let expected = network == REMOTE;
         for (link, result) in [("SC", sc), ("MS/TP", mstp), ("B/IP", bip)] {
             assert_eq!(result.is_ok(), expected, "{link} {network}");
@@ -145,7 +149,7 @@ async fn a_session_refuses_a_routed_binding_to_the_global_network() {
                 MacAddr::from_slice(&STATION),
             )
             .with_source_audit_reporter(selected());
-    assert!(denied(session.start().await));
+    assert!(denied(session.start().await.map_err(Error::from)));
 }
 
 /// The session on network 1, a `BACnetRouter` between networks 1 and 2,
@@ -185,14 +189,8 @@ impl Site {
         let unicasts = near.record_unicast_destinations();
         let (router_far, station) = LoopbackTransport::pair(ROUTER_FAR.to_vec(), STATION.to_vec());
         let ports = vec![
-            RouterPort {
-                transport: router_near,
-                network_number: 1,
-            },
-            RouterPort {
-                transport: router_far,
-                network_number: REMOTE,
-            },
+            RouterPort::new(router_near, 1),
+            RouterPort::new(router_far, REMOTE),
         ];
         let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
             .await
@@ -448,16 +446,11 @@ async fn lost_routed_records_are_counted_and_summarized_there() {
 #[tokio::test(start_paused = true)]
 async fn an_audited_read_of_a_routed_station_names_its_network() {
     let mut site = Site::start(false, &[AuditOperation::READ]).await;
-    let client = site.session.cloned_client_handle().unwrap();
+    let client = site.session.client().unwrap();
     let read = tokio::spawn(async move {
         client
-            .read_property_with_destination(
-                EndpointApduDestination::Routed {
-                    destination_network: REMOTE,
-                    destination_mac: MacAddr::from_slice(&STATION),
-                    router_mac: MacAddr::from_slice(&ROUTER_NEAR),
-                },
-                Vec::new(),
+            .read_property(
+                &bacnet_client::client::Station::routed(&ROUTER_NEAR, REMOTE, &STATION),
                 target(),
                 PropertyIdentifier::PRESENT_VALUE,
                 None,
@@ -478,65 +471,6 @@ async fn an_audited_read_of_a_routed_station_names_its_network() {
             mac_address: MacAddr::from_slice(&STATION),
         })
     );
-    site.stop().await;
-}
-
-/// The session's full client names a routed station the same way (#2617):
-/// its record is the narrow requester's, but for the invoke ID and time.
-#[tokio::test(start_paused = true)]
-async fn a_full_clients_audited_read_of_a_routed_station_names_its_network() {
-    let mut site = Site::start(false, &[AuditOperation::READ]).await;
-    let narrow = site.session.cloned_client_handle().unwrap();
-    let full = Arc::new(site.session.full_client().unwrap());
-    let mut records = Vec::new();
-    for through_full in [false, true] {
-        let (narrow, full) = (narrow.clone(), Arc::clone(&full));
-        let read = tokio::spawn(async move {
-            if through_full {
-                let station =
-                    bacnet_client::client::Station::routed(&ROUTER_NEAR, REMOTE, &STATION);
-                full.read_property(&station, target(), PropertyIdentifier::PRESENT_VALUE, None)
-                    .await
-            } else {
-                narrow
-                    .read_property_with_destination(
-                        EndpointApduDestination::Routed {
-                            destination_network: REMOTE,
-                            destination_mac: MacAddr::from_slice(&STATION),
-                            router_mac: MacAddr::from_slice(&ROUTER_NEAR),
-                        },
-                        Vec::new(),
-                        target(),
-                        PropertyIdentifier::PRESENT_VALUE,
-                        None,
-                    )
-                    .await
-            }
-        });
-        let request = site.receive().await;
-        let (invoke, rp) = read_request(&request);
-        site.send(ack(invoke, &rp), false).await;
-        assert!(read.await.unwrap().is_ok());
-        let (record, _) = notification(&site.receive().await, false);
-        assert_eq!(record.invoke_id, Some(invoke));
-        records.push(record);
-    }
-    let full_record = records.pop().unwrap();
-    assert_eq!(
-        full_record.target_device,
-        BACnetRecipient::Address(BACnetAddress {
-            network_number: REMOTE,
-            mac_address: MacAddr::from_slice(&STATION),
-        })
-    );
-    let mut narrow_record = records.pop().unwrap();
-    let mut full_record = full_record;
-    for record in [&mut narrow_record, &mut full_record] {
-        record.invoke_id = None;
-        record.source_timestamp = None;
-    }
-    assert_eq!(full_record, narrow_record);
-    drop(full);
     site.stop().await;
 }
 
@@ -656,16 +590,11 @@ async fn client_only_read() -> (
     let operations = [AuditOperation::READ];
     let mut site = Site::start_with(SessionRole::ClientOnly, false, &operations, config).await;
     assert_eq!(site.learned(), None);
-    let client = site.session.cloned_client_handle().unwrap();
+    let client = site.session.client().unwrap();
     let read = tokio::spawn(async move {
         client
-            .read_property_with_destination(
-                EndpointApduDestination::Routed {
-                    destination_network: REMOTE,
-                    destination_mac: MacAddr::from_slice(&STATION),
-                    router_mac: MacAddr::from_slice(&ROUTER_NEAR),
-                },
-                Vec::new(),
+            .read_property(
+                &bacnet_client::client::Station::routed(&ROUTER_NEAR, REMOTE, &STATION),
                 target(),
                 PropertyIdentifier::PRESENT_VALUE,
                 None,
@@ -757,3 +686,9 @@ mod change;
 
 #[path = "source_routed_segmented_tests.rs"]
 mod segmented;
+
+#[path = "source_routed_broadcast_tests.rs"]
+mod broadcast_forms;
+
+#[path = "source_routed_reject_tests.rs"]
+mod reject;

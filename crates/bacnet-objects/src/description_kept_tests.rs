@@ -1,7 +1,8 @@
 //! A written Description kept in the snapshot formats of their own (#2364):
 //! the three logs, Notification Class, Notification Forwarder and Access
-//! Rights, and (in `tags_and_colour`) the Device and the two lighting
-//! outputs in the Tags format and the two colour objects in theirs. Each
+//! Rights, (in `tags_and_colour`) the Device and the two lighting
+//! outputs in the Tags format and the two colour objects in theirs, and (in
+//! `audit_log`) the Audit Log in its snapshot (#2407). Each
 //! comes back on a rebuild; a write whose save fails is refused
 //! with the old value kept; a NULL changes nothing and saves nothing; one
 //! past the cap is refused before anything is saved, but only while it
@@ -30,7 +31,10 @@ use crate::notification_forwarder::{
 use crate::traits::BACnetObject;
 use crate::trend::{TrendLogMultipleObject, TrendLogObject};
 
+mod audit_log;
 mod clear;
+#[cfg(feature = "zone-writes")]
+mod device_zone;
 mod tags_and_colour;
 
 /// One snapshot in memory, saves counted, and a switch that fails them.
@@ -55,7 +59,9 @@ impl<S: Clone> Memory<S> {
 
     fn store(&self, snapshot: &S) -> Result<(), Error> {
         if self.fail.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("storage unavailable".into()));
+            return Err(Error::from(crate::snapshot::backend_failed(
+                "storage unavailable",
+            )));
         }
         *self.saved.lock().unwrap() = Some(snapshot.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -253,7 +259,7 @@ impl<S: Clone + 'static> Kept for Case<S> {
 }
 
 /// The eight octets a format's `encode` result opens with.
-fn tag_of(octets: Result<Vec<u8>, crate::snapshot::SnapshotError>) -> [u8; 8] {
+fn tag_of(octets: Result<Vec<u8>, crate::snapshot::PersistenceError>) -> [u8; 8] {
     octets.unwrap()[..8].try_into().unwrap()
 }
 
@@ -347,6 +353,7 @@ fn cases(saved: Option<&str>) -> Vec<Box<dyn Kept>> {
         }),
     ];
     cases.extend(tags_and_colour::cases(saved.as_deref()));
+    cases.extend(audit_log::cases(saved.as_deref()));
     cases
 }
 

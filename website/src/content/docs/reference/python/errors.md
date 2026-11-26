@@ -17,6 +17,12 @@ The exceptions methods raise. The [Python reference](/rusty-bacnet/reference/pyt
 
 Base exception for all BACnet errors.
 
+Raised as itself for, among others, a device that acknowledged a request
+with the other kind of acknowledgement than its service takes: a
+Complex-ACK to a write or a Simple-ACK to a read (#2721). The request
+failed at once with no retry, and whether the device carried it out is
+unknown.
+
 ## BacnetProtocolError
 
 `class BacnetProtocolError(BacnetError)`
@@ -95,6 +101,18 @@ Attributes:
 
 Raised when a BACnet operation times out.
 
+Attributes:
+busy\_router: When a router on the way said it was busy for the
+device's network (its Reject-Message-To-Network gave reason 2)
+before the request timed out (#2724): that router's address in
+the link's own form. `None` otherwise.
+busy\_network: The network that router was busy for, or `None`.
+
+Attributes:
+
+- `busy_router: str | None`
+- `busy_network: int | None`
+
 ## BacnetRejectError
 
 `class BacnetRejectError(BacnetError)`
@@ -115,13 +133,23 @@ Attributes:
 
 Raised when a BACnet transaction is aborted.
 
+A typed call that runs out of retries raises it with `reason`
+`TSM_TIMEOUT`, the client's own abort.
+
 Attributes:
 reason: The abort reason, an `AbortReason` member (an int equal
 to the wire value, #1816).
+busy\_router: For a `TSM_TIMEOUT` after a router on the way said
+it was busy for the device's network (its
+Reject-Message-To-Network gave reason 2, #2724): that router's
+address in the link's own form. `None` otherwise.
+busy\_network: The network that router was busy for, or `None`.
 
 Attributes:
 
 - `reason: AbortReason`
+- `busy_router: str | None`
+- `busy_network: int | None`
 
 ## BacnetLogNotAdvancingError
 
@@ -198,18 +226,35 @@ Attributes:
 
 `class BacnetNetworkRejectError(BacnetError)`
 
-Raised when a router answers a network-layer message the client sent
-with a Reject-Message-To-Network, as `routing_table()` reports it
-(#2612). Silence raises `BacnetTimeoutError` instead.
+Raised when a router refuses a message the client sent, sending back
+a Reject-Message-To-Network: a confirmed request to a `RoutedTarget`
+(#2724) or a `routing_table()` query (#2612). A request fails at once,
+with no retry, for reason 1 (no route to the network), 6 (an address
+length the router found invalid), 0 (other), 5 or a reason the standard
+doesn't define. A busy router (reason 2) leaves the request to its
+retries; if they run out, the timeout's `busy_router` and
+`busy_network` name it. The client takes a reject as a request's own
+only when the router it went through delivered it to this station alone
+(not as a broadcast), naming its network, after it was sent. Silence
+raises `BacnetTimeoutError` instead.
 
 Attributes:
 reason: The reject reason octet the router sent.
 network: The network the router named.
+router: The router's address in the link's own form, such as
+`"10.0.0.1:47808"` or `"mstp:5"`, which a `RoutedTarget`'s
+`router` takes; `None` for `routing_table()`.
+reached\_device: `False` when the request had sent one frame, so
+the device never received it; `None` once a retry or a
+segment went first: an earlier attempt may have reached the
+device, and a write may have taken effect.
 
 Attributes:
 
 - `reason: int`
 - `network: int`
+- `router: str | None`
+- `reached_device: bool | None`
 
 ## BacnetLookupError
 
@@ -220,7 +265,11 @@ Raised when no device could be placed for the name a call gave
 answered a Who-Is for it, or no router is known for a routed address's
 network. Also a `LookupError`. Nothing was sent to the device. The
 typed `_from_device` and `_to_device` calls raise it for an
-instance the table doesn't hold.
+instance the table doesn't hold. A write or relinquish through a handle
+made from an instance raises it when the device isn't taken for the
+instance at the address the handle holds (#2795): a write never goes to
+another address on its own. Read through the handle to have it look
+for the device, then write again.
 
 Attributes:
 target: The device as it was named: an instance (`"1234"`,
@@ -228,12 +277,21 @@ target: The device as it was named: an instance (`"1234"`,
 instance: The instance named (`1234` for `"1234"` or
 `"2:1234"`); None when the device was named by an address.
 candidates: An empty list here.
+at: For a write a following handle didn't send, the address it
+holds, as `(network, mac)` (network 0 the local one); else
+None.
+candidate: For that write, the one other address the discovery
+table has the instance at, as `(network, mac)`, or None. An
+unconfirmed hint: the table takes I-Ams nobody asked for, and
+nothing asked the device there which it is.
 
 Attributes:
 
 - `target: Optional[str]`
 - `instance: Optional[int]`
 - `candidates: list[tuple[int, bytes]]`
+- `at: Optional[tuple[int, bytes]]`
+- `candidate: Optional[tuple[int, bytes]]`
 
 ## BacnetAmbiguousDeviceError
 
@@ -348,7 +406,8 @@ Attributes:
 Raised when a transport socket or I/O operation fails.
 
 Covers a failed bind or listen (B/IP, B/IPv6, `ScHub.start`), a refused
-or failed dial, and other socket errors. It is also an `OSError`:
+or failed dial, other socket errors, and an MS/TP serial port that
+doesn't open, whose message names the port. It is also an `OSError`:
 `errno` is the operating system's code when it reported one, else the
 code for the failure's kind (for example `errno.EADDRINUSE`), else
 `None`; `strerror` is the message. `except OSError` and
@@ -361,6 +420,41 @@ Attributes:
 - `errno: int | None`
 - `strerror: str | None`
 - `sc_untrusted_peer: ScUntrustedPeerInfo | None`: Untrusted certificate evidence from the actual failed outbound TLS attempt. None when unavailable at the verification observation point. This is not an authenticated peer or a history of background reconnect failures.
+
+## BacnetStateError
+
+`class BacnetStateError(BacnetError, RuntimeError)`
+
+Raised when a call is refused for the state its component is in
+(#1833): a send on a transport that isn't started or has stopped (a
+router-application client's router closed, say), a second start, a
+channel closed under the call, or a BACnet/SC node whose hub connection
+isn't up. The bindings' own lifecycle checks raise it too (#2819): a
+client, server, endpoint, router or hub called before its start, while
+or after it stops, or started twice, with the message those checks
+have always given. Nothing was done, and the link did not fail:
+`except BacnetTransportError` does not catch it. Also a
+`RuntimeError`, the class those checks raised before, so `except RuntimeError` still catches them; `except BacnetError` now does too,
+so a loop that retries on `BacnetError` should let this class through
+(or retry only `"not_connected"`).
+
+A request that went out before the client or its link stopped under it
+is not one: it raises `BacnetError` whose message says the device may
+have carried it out.
+
+Attributes:
+state: Which state refused the call: `"not_running"` (not started
+yet, or stopped and able to start again), `"closed"` (stopped
+for good, or the channel closed), `"stopping"` (a stop is under
+way, a stop failed and awaits another `stop()`, or an abort
+ended it and a start waits for the stop to finish), `"already_started"` (a second start, or a change only
+a component not started yet takes, such as adding objects) or
+`"not_connected"` (running, but its hub or BBMD isn't
+connected). None on the class.
+
+Attributes:
+
+- `state: Literal["already_started", "not_running", "stopping", "not_connected", "closed"] | None`
 
 ## BacnetRouterCloseError
 

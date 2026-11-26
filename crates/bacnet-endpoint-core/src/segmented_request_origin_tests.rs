@@ -98,7 +98,7 @@ async fn relayed_origin() -> TransportProvenance {
     received.provenance
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_segment_from_another_trust_context_ends_the_transfer() {
     let relayed = ResponseRoute::new(relayed_origin().await, None);
     let unverified = ResponseRoute::unverified();
@@ -117,7 +117,7 @@ async fn a_segment_from_another_trust_context_ends_the_transfer() {
     assert_eq!((table.len(), table.saved_bytes()), (0, 0));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_requesters_abort_ends_its_transfer_in_every_non_direct_context() {
     let relayed = ResponseRoute::new(relayed_origin().await, None);
     let mut table = SegmentedRequests::new(Duration::from_secs(1));
@@ -149,10 +149,7 @@ impl Routed {
                 .inbound(rx)
                 .broadcast(SendMode::Ignore)
                 .build();
-            ports.push(RouterPort {
-                transport,
-                network_number: number,
-            });
+            ports.push(RouterPort::new(transport, number));
         }
         let started = BACnetRouter::start(ports, RouterOptions::new())
             .await
@@ -201,7 +198,7 @@ impl Routed {
     }
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_segment_through_another_router_endpoint_retires_the_transfer() {
     let mut routed = Routed::new().await;
     let mut table = SegmentedRequests::new(Duration::from_secs(1));

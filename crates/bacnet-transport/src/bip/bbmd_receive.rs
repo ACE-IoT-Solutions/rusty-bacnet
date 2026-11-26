@@ -11,7 +11,8 @@ use tracing::{debug, warn};
 use bacnet_bip_codec::{BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::Arrival;
 use bacnet_bip_core::bbmd::ForwardRefusal;
-use bacnet_bip_core::node::ForBbmd;
+use bacnet_bip_core::node::{ForBbmd, forward_content_allowed};
+use bacnet_types::sync::MutexExt;
 
 use crate::bbmd::{self, Forward, Reply};
 use crate::bvll::encode_bvll;
@@ -78,11 +79,19 @@ pub(super) async fn handle(share: ForBbmd<'_>, ctx: &RecvContext) {
                 }
             };
 
-            hand_up(ctx, npdu, origin, true, "forwarded");
+            // Handed up only when it carries what a broadcast may: its
+            // origin is a peer's word, and the peer forwards whatever its
+            // subnet broadcast (#2829). Forwarded on either way.
+            if forward_content_allowed(npdu) {
+                hand_up(ctx, npdu, origin, true, "forwarded");
+            } else {
+                ctx.drops.count(DropReason::ForwardedNotBroadcast);
+                debug!(%sender, %origin, "Not handing up a forwarded answer or confirmed request");
+            }
 
             match forward.local_broadcast {
                 Some(local_dest) => {
-                    let _ = send_forwarded_npdu(ctx, local_dest, origin, npdu).await;
+                    let _ = rebroadcast_locally(ctx, local_dest, origin, npdu).await;
                 }
                 None if arrival == Arrival::Broadcast => {
                     debug!("Forwarded-NPDU arrived by broadcast; no local rebroadcast");
@@ -142,7 +151,7 @@ async fn distribute_broadcast(npdu: &[u8], sender: SocketAddrV4, ctx: &RecvConte
         false
     } else {
         match forward.local_broadcast {
-            Some(local_dest) => send_forwarded_npdu(ctx, local_dest, forward.origin, npdu).await,
+            Some(local_dest) => rebroadcast_locally(ctx, local_dest, forward.origin, npdu).await,
             None => true,
         }
     };
@@ -173,10 +182,7 @@ async fn send_table_ack(ack: Bvll<'_>, sender: SocketAddrV4, ctx: &RecvContext) 
             limiter.check_and_record_fdt_response(ip, resp_len)
         }
     };
-    let allowed = match ctx.management_limiter.lock() {
-        Ok(mut limiter) => check(&mut limiter),
-        Err(poison) => check(&mut poison.into_inner()),
-    };
+    let allowed = check(&mut ctx.management_limiter.locked());
     if !allowed {
         debug!(
             ip = %Ipv4Addr::from(ip),
@@ -233,6 +239,25 @@ fn forwarded_npdu(origin: SocketAddrV4, npdu: &[u8]) -> Option<BytesMut> {
             None
         }
     }
+}
+
+/// Rebroadcast `npdu` from `origin` on this BBMD's subnet, to `dest`, as a
+/// Forwarded-NPDU. A loopback BBMD on the wildcard socket refuses a
+/// rebroadcast to 255.255.255.255, counted and logged through a throttle
+/// (loopback_guard.rs, #2691); like a failed send, it is not sent, so a
+/// foreign device's Distribute-Broadcast-To-Network draws a NAK (Annex
+/// J.4.5). The unicast forwards to peers and foreign devices are separate.
+async fn rebroadcast_locally(
+    ctx: &RecvContext,
+    dest: SocketAddrV4,
+    origin: SocketAddrV4,
+    npdu: &[u8],
+) -> bool {
+    if ctx.node.refuses_local_broadcast(dest) {
+        ctx.node.refuse_local_rebroadcast(dest);
+        return false;
+    }
+    send_forwarded_npdu(ctx, dest, origin, npdu).await
 }
 
 /// Send `npdu` from `origin` to `dest` as a Forwarded-NPDU. A failed send

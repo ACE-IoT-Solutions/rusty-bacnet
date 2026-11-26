@@ -88,20 +88,16 @@ impl Session for MixedSession {
         let mut ports = Vec::with_capacity(built.len());
         let mut health = Vec::with_capacity(built.len());
         let mut taps = Vec::with_capacity(built.len());
-        for built in built {
+        for (built, config) in built.into_iter().zip(&self.configured) {
             taps.push(built.tap);
             health.push((built.port.network_number, built.health));
-            ports.push(built.port);
+            ports.push(
+                built
+                    .port
+                    .isolated(self.isolate_sc_ports && matches!(config, PyRouterPortConfig::Sc(_))),
+            );
         }
-        let isolated = self
-            .configured
-            .iter()
-            .enumerate()
-            .filter_map(|(index, config)| {
-                (self.isolate_sc_ports && matches!(config, PyRouterPortConfig::Sc(_)))
-                    .then_some(index)
-            });
-        let started = NativeRouter::start(ports, RouterOptions::new().isolated_ports(isolated))
+        let started = NativeRouter::start(ports, RouterOptions::new())
             .await
             .map_err(to_py_err)?;
         self.install(started, health, taps);
@@ -125,9 +121,9 @@ impl Session for MixedSession {
         let routes = route_snapshot(&router);
         let outcome = router.stop().await;
         let counters = counter_snapshot(&router, &active.health);
-        *self.last_health.lock().unwrap_or_else(|e| e.into_inner()) = health;
-        *self.last_counters.lock().unwrap_or_else(|e| e.into_inner()) = counters;
-        *self.last_routes.lock().unwrap_or_else(|e| e.into_inner()) = routes;
+        *self.last_health.locked() = health;
+        *self.last_counters.locked() = counters;
+        *self.last_routes.locked() = routes;
         outcome
     }
 }

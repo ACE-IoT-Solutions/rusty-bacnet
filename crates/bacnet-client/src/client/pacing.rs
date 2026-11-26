@@ -8,7 +8,9 @@
 //! A request that has to wait sleeps until then and checks again, so a reply
 //! that comes late still gets the whole pause. Requests waiting together go
 //! one at a time, the interval apart, in no particular order. Destinations
-//! don't wait on each other, and an interval of zero changes nothing.
+//! don't wait on each other, and an interval of zero changes nothing. A
+//! request still waiting when the client's tasks end, by its stop or its
+//! node's, fails then and takes no turn (#2720).
 //!
 //! Pacing runs before a routed request takes its path lease. That lease is
 //! shared by every device on the same network behind the same router, so
@@ -18,13 +20,20 @@
 //!
 //! The endpoint client paces through this same type (#1542), before it
 //! reserves an invoke ID, so a request waiting for its turn holds nothing
-//! from the device's shared pool.
+//! from the device's shared pool. On a node that audits the client's
+//! requests, the node takes the turn ([`Turn`]) as it admits the request
+//! (#2652): it waits for the turn to come due holding nothing, then for its
+//! admission, and then takes the turn if it is still due, or lets the
+//! admission go and waits again. So a request that waited for admission
+//! still gets the whole interval after the one before it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
+use bacnet_types::sync::MutexExt;
+use tokio::sync::watch;
 use tokio::time::{Duration, Instant};
 
 use super::ConfirmedTarget;
@@ -40,9 +49,10 @@ pub const MAX_MIN_REQUEST_INTERVAL_MS: u64 = 3_600_000;
 /// Refuse an interval past [`MAX_MIN_REQUEST_INTERVAL_MS`].
 pub(crate) fn validate_interval_ms(interval_ms: u64) -> Result<(), Error> {
     if interval_ms > MAX_MIN_REQUEST_INTERVAL_MS {
-        return Err(Error::Encoding(format!(
-            "invalid min-request-interval {interval_ms} ms; expected 0..={MAX_MIN_REQUEST_INTERVAL_MS}"
-        )));
+        return Err(Error::InvalidConfig(
+            Refusal::new("invalid min-request-interval {} ms; expected 0..={}")
+                .with_values(interval_ms, MAX_MIN_REQUEST_INTERVAL_MS),
+        ));
     }
     Ok(())
 }
@@ -135,14 +145,10 @@ pub(crate) struct PaceGuard {
 }
 
 impl PaceGuard {
-    /// Move the request's turn out, leaving a guard that ends none: for a
-    /// segmented request its node audits, which only borrows its caller's
-    /// guard (#2617).
-    #[cold]
-    pub(crate) fn take(&mut self) -> Self {
-        Self {
-            sent: self.sent.take(),
-        }
+    /// The turn of a request its client doesn't pace: it ends nothing.
+    #[inline]
+    pub(crate) fn unpaced() -> Self {
+        Self { sent: None }
     }
 }
 
@@ -163,6 +169,58 @@ impl Drop for PaceGuard {
     }
 }
 
+/// A request's turn at its destination, not yet taken: an audited client's,
+/// which its node takes once it has admitted the request (#2652).
+pub(crate) struct Turn {
+    pacer: Arc<RequestPacer>,
+    key: PaceKey,
+    /// The client's tasks, as [`RequestPacer::wait`] watches them.
+    ended: watch::Receiver<()>,
+}
+
+impl Turn {
+    pub(crate) fn new(
+        pacer: &Arc<RequestPacer>,
+        key: PaceKey,
+        ended: &watch::Receiver<()>,
+    ) -> Self {
+        Self {
+            pacer: Arc::clone(pacer),
+            key,
+            ended: ended.clone(),
+        }
+    }
+
+    /// Wait for the turn and take it, as [`RequestPacer::wait`] does:
+    /// `None` once the client's tasks end first. Dropping the wait takes
+    /// nothing.
+    pub(crate) async fn take(&self) -> Option<PaceGuard> {
+        self.pacer.wait(self.key.clone(), &self.ended).await
+    }
+
+    /// Wait until the turn is due, without taking it: `false` once the
+    /// client's tasks end first. Another request to the destination may
+    /// take it before this one does.
+    pub(crate) async fn due(&self) -> bool {
+        let mut ending = None;
+        while let Some(due) = self.pacer.due(&self.key) {
+            let ending = ending.get_or_insert_with(|| self.ended.clone());
+            tokio::select! {
+                biased;
+                // Never sent on, so this resolves only when the sender drops.
+                _ = ending.changed() => return false,
+                () = tokio::time::sleep_until(due) => {}
+            }
+        }
+        true
+    }
+
+    /// Take the turn if it is due now.
+    pub(crate) fn try_take(&self) -> Option<PaceGuard> {
+        self.pacer.try_claim(&self.key)
+    }
+}
+
 impl RequestPacer {
     pub(crate) fn new(interval: Duration) -> Self {
         Self::with_capacity(interval, MAX_PACED_DESTINATIONS)
@@ -177,8 +235,29 @@ impl RequestPacer {
         }
     }
 
+    /// Whether this pacer spaces requests at all: an interval of zero
+    /// paces nothing, and a request needs no turn from it.
+    #[inline]
+    pub(crate) fn paces(&self) -> bool {
+        !self.interval.is_zero()
+    }
+
+    /// Whether a request waits for its turn in its client's request path:
+    /// one of a client this pacer spaces, unless the client's node audits
+    /// its requests. That node takes the turn once it has admitted the
+    /// request (#2652), so a request that waits there for its admission
+    /// takes its turn after that wait, not before it.
+    #[inline]
+    pub(crate) fn paces_in_request_path(&self) -> bool {
+        self.paces()
+            && !matches!(
+                self.audit.get(),
+                Some(super::source_audit::Role::Audited(_))
+            )
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Lanes> {
-        self.lanes.lock().unwrap_or_else(PoisonError::into_inner)
+        self.lanes.locked()
     }
 
     /// Make room for one more destination.
@@ -209,11 +288,24 @@ impl RequestPacer {
     /// The check and the claim happen under one lock, so two requests that
     /// wake together can't both go: the second sees the first and sleeps
     /// again. The lock is never held while sleeping.
-    pub(crate) async fn wait(self: &Arc<Self>, key: PaceKey) -> PaceGuard {
+    ///
+    /// `None` once `ended` ends (its sender is dropped: the client's
+    /// dispatch task has ended, by a stop or its node's stop or drop) while
+    /// the request sleeps (#2720). Such a request never went, so it claims
+    /// no turn: the destination's next request is due when it was before.
+    /// A request that doesn't have to sleep never looks at `ended`.
+    pub(crate) async fn wait(
+        self: &Arc<Self>,
+        key: PaceKey,
+        ended: &watch::Receiver<()>,
+    ) -> Option<PaceGuard> {
         if self.interval.is_zero() {
-            return PaceGuard { sent: None };
+            return Some(PaceGuard { sent: None });
         }
         let interval = self.interval;
+        // Cloned once the request has to sleep, so one that goes at once
+        // pays nothing for it.
+        let mut ending = None;
         loop {
             let due = {
                 let mut lanes = self.lock();
@@ -226,14 +318,43 @@ impl RequestPacer {
                     Some(due) if due > now => due,
                     _ => {
                         let (key, generation, ticket) = self.claim(&mut lanes, &key, now);
-                        return PaceGuard {
+                        return Some(PaceGuard {
                             sent: Some((Arc::clone(self), key, generation, ticket)),
-                        };
+                        });
                     }
                 }
             };
-            tokio::time::sleep_until(due).await;
+            let ending = ending.get_or_insert_with(|| ended.clone());
+            // Neither branch takes a lock: the pacer's is a std mutex, held
+            // only above, between polls.
+            tokio::select! {
+                biased;
+                // Never sent on, so this resolves only when the sender drops.
+                _ = ending.changed() => return None,
+                () = tokio::time::sleep_until(due) => {}
+            }
         }
+    }
+
+    /// When a request to `key` may go, or `None` when it may go now.
+    fn due(&self, key: &PaceKey) -> Option<Instant> {
+        let lanes = self.lock();
+        let due = lanes.by_destination.get(key)?.due(self.interval);
+        (due > Instant::now()).then_some(due)
+    }
+
+    /// A turn for `key` if one is due now, taken as [`Self::wait`] takes
+    /// it; the check and the claim under one lock.
+    fn try_claim(self: &Arc<Self>, key: &PaceKey) -> Option<PaceGuard> {
+        let mut lanes = self.lock();
+        let now = Instant::now();
+        if (lanes.by_destination.get(key)).is_some_and(|lane| lane.due(self.interval) > now) {
+            return None;
+        }
+        let (key, generation, ticket) = self.claim(&mut lanes, key, now);
+        Some(PaceGuard {
+            sent: Some((Arc::clone(self), key, generation, ticket)),
+        })
     }
 
     /// Make a request sent `now` the latest to `key`, returning the lane's
@@ -257,6 +378,17 @@ impl RequestPacer {
         };
         lanes.by_destination.insert(key.clone(), lane);
         (key.clone(), lane.generation, lane.ticket)
+    }
+
+    /// [`Self::wait`] for a client whose tasks never end, for tests of the
+    /// pacing alone.
+    #[cfg(test)]
+    pub(crate) async fn turn(self: &Arc<Self>, key: PaceKey) -> PaceGuard {
+        static RUNNING: OnceLock<(watch::Sender<()>, watch::Receiver<()>)> = OnceLock::new();
+        let running = &RUNNING.get_or_init(|| watch::channel(())).1;
+        self.wait(key, running)
+            .await
+            .expect("a client whose tasks run")
     }
 
     #[cfg(test)]

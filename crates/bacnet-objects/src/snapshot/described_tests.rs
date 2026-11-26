@@ -11,7 +11,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use super::framing::{self, HEADER_LEN};
 use super::{
-    SnapshotError, SnapshotErrorKind, access_rights, color, notification_class,
+    PersistenceError, PersistenceErrorKind, access_rights, color, notification_class,
     notification_forwarder, tags,
 };
 use crate::access_control::AccessRightsSnapshot;
@@ -33,8 +33,8 @@ struct Format {
     described: [u8; 8],
     /// The version `described` names.
     version: u8,
-    encode: fn(ObjectIdentifier, Option<&str>) -> Result<Vec<u8>, SnapshotError>,
-    decode: fn(ObjectIdentifier, &[u8]) -> Result<Option<String>, SnapshotError>,
+    encode: fn(ObjectIdentifier, Option<&str>) -> Result<Vec<u8>, PersistenceError>,
+    decode: fn(ObjectIdentifier, &[u8]) -> Result<Option<String>, PersistenceError>,
 }
 
 fn formats() -> [Format; 5] {
@@ -104,6 +104,7 @@ fn formats() -> [Format; 5] {
                 let snapshot = TagsSnapshot {
                     tags: Some(vec![BACnetNameValue::semantic("exhaust")]),
                     description: description.map(Into::into),
+                    zone: Default::default(),
                 };
                 tags::encode(object, &snapshot)
             },
@@ -176,15 +177,22 @@ fn a_reader_of_the_previous_version_refuses_the_new_one() {
         let older = framing::open(&described, &format.magic, None, usize::MAX, format.object);
         assert_eq!(
             older.unwrap_err().kind(),
-            SnapshotErrorKind::UnknownVersion(format.version.into()),
+            PersistenceErrorKind::UnknownVersion(format.version.into()),
             "{}",
             format.object
         );
-        // And this build refuses the version after it the same way.
+        // And this build refuses a version past the newest it reads the
+        // same way: the Tags format's version 3 holds a written zone
+        // (#2395), so its next is 4.
+        let newest = if format.magic == tags::MAGIC {
+            3
+        } else {
+            format.version
+        };
         let mut later = described.clone();
-        later[7] = b'0' + format.version + 1;
+        later[7] = b'0' + newest + 1;
         let error = (format.decode)(format.object, &later).unwrap_err();
-        let unknown = SnapshotErrorKind::UnknownVersion(u16::from(format.version) + 1);
+        let unknown = PersistenceErrorKind::UnknownVersion(u16::from(newest) + 1);
         assert_eq!(error.kind(), unknown, "{}", format.object);
     }
 }
@@ -200,7 +208,11 @@ fn a_damaged_description_is_refused() {
         assert_eq!((format.decode)(object, &octets), Ok(Some(longest.clone())));
         let longer = format!("{longest}d");
         let error = (format.encode)(object, Some(&longer)).unwrap_err();
-        assert_eq!(error.kind(), SnapshotErrorKind::OutOfRange, "{object}");
+        assert_eq!(
+            error.kind(),
+            PersistenceErrorKind::RefusedOnEncode,
+            "{object}"
+        );
 
         let mut past_cap = octets.clone();
         past_cap[HEADER_LEN..HEADER_LEN + 4].copy_from_slice(&(16 * 1024 + 1_u32).to_be_bytes());
@@ -256,5 +268,5 @@ fn every_colour_version_loads() {
     let mut too_large = version_3;
     too_large.resize(color::MAX_LEN + 1, 0);
     let error = color::decode(object, &too_large).unwrap_err();
-    assert_eq!(error.kind(), SnapshotErrorKind::TooLarge);
+    assert_eq!(error.kind(), PersistenceErrorKind::TooLarge);
 }

@@ -30,7 +30,7 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::{Error, RemoteError};
+use bacnet_types::error::{Error, RemoteError, SegmentationError};
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -396,7 +396,8 @@ impl Outcome {
     pub fn of(result: &Result<(), Error>) -> Self {
         let error = match result {
             Ok(()) => return Self::Ack,
-            Err(Error::Timeout(_)) => return Self::Timeout,
+            // A timeout after a router said it was busy is a timeout too.
+            Err(Error::Timeout(_) | Error::RouterBusyTimeout(_)) => return Self::Timeout,
             // The node's DeviceCommunicationControl stopped it (#2617):
             // before it went out it was never sent; once it had, only its
             // retry was held back, and whether it was applied is unknown.
@@ -408,6 +409,30 @@ impl Outcome {
             Err(error @ Error::InitiationDisabled { sent: true }) => {
                 return Self::Failed(error.to_string());
             }
+            // The client's stop ended it (#1833): while it waited for its
+            // turn it was never sent; once it may have gone out, whether it
+            // was applied is unknown, as for a withheld retry.
+            Err(error @ Error::RequestCutOff { sent: false }) => {
+                return Self::NotSent(error.to_string());
+            }
+            Err(error @ Error::RequestCutOff { sent: true }) => {
+                return Self::Failed(error.to_string());
+            }
+            // The client's or its link's own state refused it before
+            // anything of it went out: a link that stopped under a request
+            // already sent is a cut-off above, never this (#1833).
+            Err(error @ Error::State(..)) => return Self::NotSent(error.to_string()),
+            // A request too long for one APDU that the client may not send in
+            // segments, or that the device can't take in segments or in so
+            // many: the client refuses each before anything goes out (#2617).
+            Err(
+                error @ Error::Segmentation(
+                    SegmentationError::LocalCannotTransmit
+                    | SegmentationError::PeerCannotReceive { .. }
+                    | SegmentationError::PeerSegmentLimit { .. }
+                    | SegmentationError::TooManySegments { .. },
+                ),
+            ) => return Self::NotSent(error.to_string()),
             Err(error) => error,
         };
         match error.remote() {
@@ -502,5 +527,62 @@ mod tests {
         let withheld = Outcome::of(&Err(Error::InitiationDisabled { sent: true }));
         assert!(matches!(withheld, Outcome::Failed(_)), "{withheld:?}");
         assert_eq!(withheld.applied(), None);
+    }
+
+    /// A write the client's stop cut off while it waited for its turn was
+    /// not applied; one it cut off after it may have gone out may have been
+    /// (#1833).
+    #[test]
+    fn a_write_the_clients_stop_cut_off() {
+        let unsent = Outcome::of(&Err(Error::RequestCutOff { sent: false }));
+        assert!(matches!(unsent, Outcome::NotSent(_)), "{unsent:?}");
+        assert_eq!(unsent.applied(), Some(false));
+        let sent = Outcome::of(&Err(Error::RequestCutOff { sent: true }));
+        assert!(matches!(sent, Outcome::Failed(_)), "{sent:?}");
+        assert_eq!(sent.applied(), None);
+    }
+
+    /// A write its link refused for its state (stopped, say) never went
+    /// out, so it was not applied: one already sent when the link stopped
+    /// is a cut-off instead (#1833).
+    #[test]
+    fn a_write_its_link_refused_for_its_state_was_not_sent() {
+        for refused in [
+            bacnet_transport::port::stopped(),
+            bacnet_transport::port::stopped_for_good(),
+        ] {
+            let outcome = Outcome::of(&Err(refused));
+            assert!(matches!(outcome, Outcome::NotSent(_)), "{outcome:?}");
+            assert_eq!(outcome.applied(), Some(false));
+        }
+    }
+
+    /// A write too long for one APDU that the client refused to segment,
+    /// or that the device can't take in segments, never went out, so it
+    /// was not applied (#2617). One that failed partway through its
+    /// segments may have been.
+    #[test]
+    fn a_write_refused_for_segmentation_was_not_sent() {
+        use bacnet_types::enums::Segmentation;
+        for refusal in [
+            SegmentationError::LocalCannotTransmit,
+            SegmentationError::PeerCannotReceive {
+                capability: Segmentation::NO_SEGMENTATION,
+            },
+            SegmentationError::PeerSegmentLimit {
+                segments: 9,
+                max: 4,
+            },
+            SegmentationError::TooManySegments { segments: 300 },
+        ] {
+            let outcome = Outcome::of(&Err(Error::Segmentation(refusal)));
+            assert!(matches!(outcome, Outcome::NotSent(_)), "{outcome:?}");
+            assert_eq!(outcome.applied(), Some(false));
+        }
+        let partway = Outcome::of(&Err(Error::Segmentation(
+            SegmentationError::NegativeAckRetriesExhausted,
+        )));
+        assert!(matches!(partway, Outcome::Failed(_)), "{partway:?}");
+        assert_eq!(partway.applied(), None);
     }
 }

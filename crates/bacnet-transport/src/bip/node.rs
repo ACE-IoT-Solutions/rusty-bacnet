@@ -22,7 +22,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::Duration;
 
 use bacnet_bip_codec::{BvlcFunction, Bvll, BvllError};
@@ -33,7 +33,8 @@ use bacnet_bip_core::node::{
     LocalFailure, Mode, Node, NodeCounters, Policy, RegistrationEvent, Response, SendRefusal,
 };
 use bacnet_time::HostClock;
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error, Lifecycle, Refusal};
+use bacnet_types::sync::{MutexExt, RwLockExt};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{Notify, oneshot};
 use tracing::{debug, info, warn};
@@ -82,7 +83,7 @@ impl<'a> HostPolicy<'a> {
 
 impl Policy for HostPolicy<'_> {
     fn admit_management(&mut self, source: SocketAddrV4, _function: BvlcFunction) -> bool {
-        let mut limiter = self.limiter.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut limiter = self.limiter.locked();
         limiter.check_now(source.ip().octets())
     }
 
@@ -295,12 +296,14 @@ pub(super) struct NodeHandle {
     /// the node lock, after the node's own copy changed: lock order is the
     /// node lock, then this.
     link: RwLock<Linked>,
-    /// An explicit loopback interface whose primary send socket bound INADDR_ANY.
+    /// The interface is a loopback address and the socket every send leaves
+    /// from is bound to the wildcard address: the node refuses a local
+    /// broadcast to 255.255.255.255 (loopback_guard.rs, #2691).
     pub(super) loopback_on_wildcard: bool,
     clock: HostClock,
     record: Arc<ClientRecord>,
     /// Where the sends the link refuses are counted.
-    refusals: Arc<SendRefusals>,
+    pub(super) refusals: Arc<SendRefusals>,
     state: Mutex<NodeState>,
     /// Tells the driver that the node changed.
     wake: Notify,
@@ -372,10 +375,7 @@ impl NodeHandle {
     /// The node's link as it stands: its address, subnet and mode. A copy,
     /// so no lock is held while the caller decides on it.
     pub(super) fn link(&self) -> Link {
-        self.link
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .link
+        self.link.read_locked().link
     }
 
     /// Run `send` on the node's link and the socket a send leaves from,
@@ -387,7 +387,7 @@ impl NodeHandle {
         &self,
         send: impl FnOnce(&Link, &Arc<BipSocket>) -> Result<R, Error>,
     ) -> Result<R, Error> {
-        let linked = self.link.read().unwrap_or_else(PoisonError::into_inner);
+        let linked = self.link.read_locked();
         match &linked.socket {
             Some(socket) => send(&linked.link, socket),
             None => Err(crate::port::stopped()),
@@ -455,7 +455,7 @@ impl NodeHandle {
             state.register = None;
             state.attempt_started = None;
             state.refusal_warned = false;
-            self.link.write().unwrap_or_else(PoisonError::into_inner).link = *state.node.link();
+            self.link.write_locked().link = *state.node.link();
             info!(bbmd = ?foreign.bbmd, ttl = foreign.ttl, "B/IP foreign device moved to a new BBMD registration");
             Ok(())
         })
@@ -470,10 +470,7 @@ impl NodeHandle {
                 return Ok(());
             }
             state.node.set_subnet(subnet).map_err(config_error)?;
-            self.link
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .link = *state.node.link();
+            self.link.write_locked().link = *state.node.link();
             Ok(())
         })
     }
@@ -493,21 +490,18 @@ impl NodeHandle {
     /// The socket every send leaves from, or `None` once the node has
     /// stopped.
     pub(super) fn socket(&self) -> Option<Arc<BipSocket>> {
-        self.link
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .socket
-            .clone()
+        self.link.read_locked().socket.clone()
     }
 
-    /// The error for a send the link refused, counted.
-    pub(super) fn refuse_send(&self, refusal: SendRefusal) -> Error {
+    /// The error for a send of an NPDU of `length` octets the link
+    /// refused, counted.
+    pub(super) fn refuse_send(&self, refusal: SendRefusal, length: usize) -> Error {
         self.refusals.count(refusal);
-        send_refusal(refusal)
+        send_refusal(refusal, length)
     }
 
     fn lock(&self) -> MutexGuard<'_, NodeState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     /// The link's returns, which the client record keeps (#2572).
@@ -578,7 +572,7 @@ impl NodeHandle {
             let admission = state
                 .node
                 .admit_broadcast(now)
-                .map_err(|refusal| self.refuse_send(refusal))?;
+                .map_err(|refusal| self.refuse_send(refusal, npdu.len()))?;
             let copy = || Bytes::copy_from_slice(npdu);
             let waiting = state.releasing || !state.release.is_empty() || !state.queued.is_empty();
             match admission {
@@ -588,7 +582,7 @@ impl NodeHandle {
                         let mut counters = NodeCounters::default();
                         counters.broadcasts_hold_full = 1;
                         self.record.absorb(&counters);
-                        return Err(self.refuse_send(SendRefusal::HoldFull));
+                        return Err(self.refuse_send(SendRefusal::HoldFull, npdu.len()));
                     }
                     state.queued.push(copy());
                 }
@@ -648,12 +642,7 @@ impl NodeHandle {
         let mut state = self.lock();
         // Taken under the node lock (lock order: the node lock, then the
         // link's), and let go of once both are free.
-        let socket = self
-            .link
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .socket
-            .take();
+        let socket = self.link.write_locked().socket.take();
         let kept = state.held.len() + state.queued.len();
         let discarded = u32::try_from(kept).unwrap_or(u32::MAX);
         if discarded > 0 && !state.stopped {
@@ -810,19 +799,60 @@ fn owned(function: BvlcFunction, frame: &[u8]) -> BvllMessage {
 }
 
 /// Why a matched response doesn't answer: the codec's error, or the
-/// policy's.
+/// policy's. The policy names every refusal it makes, as a table's decoding
+/// error, so the last arm is only a fallback; it reads as the policy's own
+/// refusals do.
 fn refused(decode: Option<BvllError>, policy: Option<Error>) -> Error {
     match (decode, policy) {
         (Some(error), _) => bvll_error(error),
         (None, Some(error)) => error,
-        (None, None) => Error::Encoding("BVLC response refused".into()),
+        (None, None) => {
+            DecodeError::new(DecodingKind::InvalidEncoding, 0, "BVLC response refused").into()
+        }
     }
 }
 
+/// A configuration the node engine refused: [`Error::Unsupported`] for a
+/// change only a foreign device can make, [`Error::InvalidConfig`] for the
+/// rest, in the engine's words.
 pub(super) fn config_error(error: ConfigError) -> Error {
-    Error::Encoding(error.to_string())
+    let text = Refusal::text(error.to_string());
+    match error {
+        ConfigError::NotForeign => Error::Unsupported(text),
+        _ => Error::InvalidConfig(text),
+    }
 }
 
-fn send_refusal(refusal: SendRefusal) -> Error {
-    Error::Encoding(refusal.to_string())
+/// A send of an NPDU of `length` octets the node engine refused, in the
+/// engine's words, which a test holds these labels to (#1833): a group
+/// address given as a unicast's destination is [`Error::InvalidArgument`],
+/// no room to hold a broadcast is [`Error::LimitReached`], and a foreign
+/// device's BBMD not known yet is [`Error::State`] with
+/// [`Lifecycle::NotConnected`]. An NPDU too long for B/IP is
+/// [`Error::SendTooLong`] with the engine's limit, as on MS/TP and
+/// Ethernet: a router answers it with reject reason 4, and a client may
+/// try a smaller request. A socket that can't take the datagram now is an
+/// [`Error::Transport`] of kind `WouldBlock`, as a full MS/TP queue is, and
+/// a socket's own failure one of kind `Other`; the transport's own sends
+/// report their socket's error itself, so only a refusal the engine
+/// reports for its glue comes here as either.
+pub(super) fn send_refusal(refusal: SendRefusal, length: usize) -> Error {
+    match refusal {
+        SendRefusal::GroupDestination => Error::invalid_argument(
+            "a unicast can't go to a group address; send a broadcast instead",
+        ),
+        SendRefusal::HoldFull => {
+            Error::limit_reached("no room to hold a broadcast until registration")
+        }
+        SendRefusal::NoBbmd => Error::state(
+            Lifecycle::NotConnected,
+            "the foreign device's BBMD isn't known yet",
+        ),
+        SendRefusal::TooLong { max } => Error::SendTooLong { length, limit: max },
+        SendRefusal::SocketFull => Error::Transport(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            refusal.to_string(),
+        )),
+        _ => Error::Transport(std::io::Error::other(refusal.to_string())),
+    }
 }

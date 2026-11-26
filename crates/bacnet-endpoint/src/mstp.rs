@@ -39,6 +39,7 @@
 use std::time::Duration;
 
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_server::server::{__endpoint_start_refused as start_refused, StartError};
 use bacnet_transport::mstp::{MstpConfig, MstpExecutionMode, MstpTransport, SerialPort};
 use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
@@ -97,6 +98,7 @@ pub struct MstpEndpointBuilder<S: SerialPort> {
     role: SessionRole,
     session: SessionConfig,
     database: Option<ObjectDatabase>,
+    device_storage_path: Option<std::path::PathBuf>,
     identity: Option<crate::identity::DeviceIdentity>,
     source_audit_bindings: Vec<(ObjectIdentifier, MacAddr)>,
     source_audit_routed: crate::session::RoutedBindings,
@@ -126,6 +128,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             role: SessionRole::Both,
             session: SessionConfig::default(),
             database: None,
+            device_storage_path: None,
             identity: None,
             source_audit_bindings: Vec::new(),
             source_audit_routed: Vec::new(),
@@ -159,7 +162,20 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         network: u16,
         mac: MacAddr,
     ) -> Self {
-        self.source_audit_routed.push((device, network, mac));
+        self.source_audit_routed.push((device, network, mac, false));
+        self
+    }
+
+    /// [`source_audit_routed_device_binding`](Self::source_audit_routed_device_binding)
+    /// with the address marked one station (#2738); see
+    /// [`EndpointSession::with_source_audit_routed_one_station_binding`].
+    pub fn source_audit_routed_one_station_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: MacAddr,
+    ) -> Self {
+        self.source_audit_routed.push((device, network, mac, true));
         self
     }
 
@@ -277,6 +293,15 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         self
     }
 
+    /// Keeps what peers write to the Device the session builds in the file
+    /// at `path` (#2730), a relative one resolved against the current
+    /// directory here; see [`EndpointSession::with_device_storage_path`].
+    pub fn device_storage_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        self.device_storage_path = Some(std::path::absolute(&path).unwrap_or(path));
+        self
+    }
+
     /// Composes the single Device identity.
     ///
     /// At start, its requested ceiling resolves against the transport's
@@ -297,7 +322,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// timeouts within Clause 9.5.3's ranges and a pad of at most 15 ms,
     /// plus a nonzero echo grace on a port that declares an echo
     /// ([`Echo::validate`](bacnet_transport::mstp::Echo::validate)); returns
-    /// a typed [`Error::Encoding`] otherwise.
+    /// [`Error::InvalidConfig`] otherwise.
     pub fn validate_only(&self) -> Result<(), Error> {
         self.config().validate()?;
         match &self.serial {
@@ -325,18 +350,27 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     ///
     /// Validates the configuration first, then takes the serial port by
     /// value: a second call returns `"MS/TP endpoint serial owner is missing"`.
+    /// Source Audit route data or a Device storage path, which a bare
+    /// transport would discard, require `build_session()`.
     pub fn build_transport(mut self) -> Result<MstpTransport<S>, Error> {
         self.validate_only()?;
         if !self.source_audit_bindings.is_empty() || !self.source_audit_routed.is_empty() {
-            return Err(Error::Encoding(
-                "source Audit route data requires build_session()".into(),
+            return Err(Error::invalid_config(
+                "source Audit route data requires build_session()",
+            ));
+        }
+        if self.device_storage_path.is_some() {
+            return Err(Error::invalid_config(
+                "a Device storage path requires build_session()",
             ));
         }
         let config = self.config();
-        let serial = self
-            .serial
-            .take()
-            .ok_or_else(|| Error::Encoding("MS/TP endpoint serial owner is missing".into()))?;
+        // Only a build takes the port, and a build takes the builder: never
+        // met.
+        let serial = self.serial.take().ok_or(Error::state(
+            bacnet_types::error::Lifecycle::AlreadyStarted,
+            "MS/TP endpoint serial owner is missing",
+        ))?;
         Ok(MstpTransport::new(serial, config).with_execution_mode(self.execution_mode))
     }
 
@@ -351,7 +385,13 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// identity resolves against the transport's receive capacity before
     /// generating or validating its Device. An identity-free session keeps
     /// the [`SessionConfig`] 480 default.
-    pub fn build_session(self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
+    ///
+    /// Refuses what [`validate_only`](Self::validate_only) refuses, session
+    /// settings [`EndpointSession::new`] refuses and source Audit bindings
+    /// the link can't take, before the database moves into the session: the
+    /// [`StartError`] hands back the one [`database`](Self::database) gave,
+    /// as given (#2766).
+    pub fn build_session(self) -> Result<EndpointSession<MstpTransport<S>>, StartError> {
         self.build_session_wrapped(std::convert::identity)
     }
 
@@ -361,25 +401,42 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// does. The transport's diagnostics are taken before `wrap`, so
     /// [`EndpointSession::mstp_diagnostics`] keeps working. `wrap` must pass
     /// every [`TransportPort`](bacnet_transport::port::TransportPort) call
-    /// through to the transport it is given.
+    /// through to the transport it is given. A refusal hands back the
+    /// database, as [`build_session`](Self::build_session)'s does.
     pub fn build_session_wrapped<U: bacnet_transport::port::TransportPort + 'static>(
         mut self,
         wrap: impl FnOnce(MstpTransport<S>) -> U,
-    ) -> Result<EndpointSession<U>, Error> {
-        self.validate_only()?;
+    ) -> Result<EndpointSession<U>, StartError> {
         let bindings = std::mem::take(&mut self.source_audit_bindings);
         let routed = std::mem::take(&mut self.source_audit_routed);
-        crate::session::check_link_bindings(&bindings, &routed, &[self.this_station])?;
+        let checked = self
+            .validate_only()
+            .and_then(|()| self.session.validate())
+            .and_then(|()| {
+                crate::session::check_link_bindings(&bindings, &routed, &[self.this_station])
+            });
+        if let Err(error) = checked {
+            return Err(start_refused(error, self.database.take()));
+        }
         let role = self.role;
         let session = self.session.clone();
         let database = self.database.take();
+        let device_storage_path = self.device_storage_path.take();
         let identity = self.identity.take();
-        let transport = self.build_transport()?;
-        let diagnostics = transport.diagnostics();
-        let mut endpoint = EndpointSession::new(wrap(transport), role, session)?;
+        let built = self.build_transport().and_then(|transport| {
+            let diagnostics = transport.diagnostics();
+            EndpointSession::new(wrap(transport), role, session).map(|end| (end, diagnostics))
+        });
+        let (mut endpoint, diagnostics) = match built {
+            Ok(built) => built,
+            Err(error) => return Err(start_refused(error, database)),
+        };
         endpoint.mstp_diagnostics = Some(diagnostics);
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);
+        }
+        if let Some(path) = device_storage_path {
+            endpoint = endpoint.with_device_storage_path(path);
         }
         if let Some(id) = identity {
             endpoint = endpoint.device(id);

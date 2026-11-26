@@ -299,6 +299,7 @@ fn fake_segmented_send_handle(
         segment_ack_tx,
         control_tx,
         total_segments,
+        None,
     ));
     handle
         .current_sequence
@@ -307,19 +308,22 @@ fn fake_segmented_send_handle(
 }
 
 mod ack_window;
+mod answer_end;
 mod control_limits;
 mod duplicate_window;
 mod get_event_information;
 mod refusal_warnings;
 mod request_byte_budget;
 mod request_byte_budget_failures;
+mod request_during_answer;
 mod request_payload_detachment;
 mod request_peer_quota;
-mod request_peer_quota_state;
 mod request_progress;
 mod request_progress_expiry;
 mod request_reassembly;
 mod request_receive_timeout;
+mod request_repeat_while_executing;
+mod request_window_interop;
 mod routing_overlap;
 
 mod segment_timeout_config;

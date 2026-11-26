@@ -24,6 +24,12 @@
 //!   `find ""`, closes the list.
 //! - `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`: the MS/TP
 //!   monitor's thresholds, and how long its join wizard listens.
+//! - `path-limit DEVICE SIZE|clear`, `path-limit ROUTER/NETWORK=SIZE` and
+//!   `path-limit ROUTER/NETWORK clear`: a routed path's size limit for the
+//!   session (#2667), named by a device reached through it (#2726) or by
+//!   its router. A router form's first word always holds the `/` between
+//!   router and network, which no device word has. DEVICE is a row of the
+//!   device table as `writem` takes it, or `.` for the selected device.
 //! - `dcc ACTION [MINUTES]` (or `control`) and `reinit STATE`:
 //!   DeviceCommunicationControl and ReinitializeDevice to the selected
 //!   device, the action and state named as the one-shot `control` and
@@ -47,10 +53,12 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use self::words::Word;
 use super::devices::DeviceTable;
+use super::manage::NO_DEVICE;
 use super::monitor::Setting;
 use super::{App, FLASH_FOR, FilterKey, Overlay};
 use crate::commands::device::{parse_enable_disable, parse_reinit_state};
 use crate::tui::message::{Command, DeviceRow};
+use crate::tui::routed_paths::{PathLimit, PathTo};
 use crate::tui::safety::WriteSpec;
 use crate::tui::safety::manage::{Action, DccTime};
 use crate::tui::watched::{Point, WatchCommand};
@@ -83,6 +91,9 @@ impl Syntax {
             ("find", _) if passive => "Not in a passive session, which sends no Who-Has",
             ("find", "find --dnet N NAME") => "Who-Has by object name on remote network N",
             ("find", "find --global NAME") => "Who-Has by object name on every network",
+            ("path-limit", "path-limit DEVICE SIZE|clear") => {
+                "The size limit of the path to DEVICE (. for the selected one); sends nothing"
+            }
             _ => self.what,
         }
     }
@@ -129,6 +140,16 @@ pub(crate) const COMMANDS: &[Syntax] = &[
             "mstp scan SECS|cancel",
         ],
         what: "Monitor thresholds, safe-join window, or receive-only baud scan",
+    },
+    Syntax {
+        name: "path-limit",
+        alias: None,
+        usage: &[
+            "path-limit DEVICE SIZE|clear",
+            "path-limit ROUTER/NETWORK=SIZE",
+            "path-limit ROUTER/NETWORK clear",
+        ],
+        what: "A routed path's size limit; sends nothing",
     },
     Syntax {
         name: "dcc",
@@ -203,6 +224,11 @@ pub(crate) enum Line {
     /// DeviceCommunicationControl or ReinitializeDevice to the selected
     /// device.
     Manage(Action),
+    /// Set or clear a routed path's size limit.
+    PathLimit(PathLimit),
+    /// Set or clear the size limit of the path to the selected device
+    /// (`path-limit . SIZE|clear`); `None` clears it.
+    SelectedPathLimit(Option<u16>),
 }
 
 /// `dcc ACTION [MINUTES|forever]`. A disable without a duration lasts
@@ -230,6 +256,41 @@ fn dcc(action: &str, duration: Option<&str>) -> Result<Action, String> {
     Ok(Action::Dcc { state, time })
 }
 
+/// `path-limit`'s words (#2726). A first word with a `/` names the path by
+/// its router (`ROUTER/NETWORK`); any other names a device, since no form
+/// of the target grammar has a `/`: `.` for the selected device, or a row
+/// of the device table as `writem` takes it, then SIZE or `clear`.
+fn path_limit(words: &[&str], devices: &DeviceTable) -> Result<Line, String> {
+    match words {
+        [first, ..] if first.contains('/') => Ok(Line::PathLimit(PathLimit::parse(words)?)),
+        [".", size] => Ok(Line::SelectedPathLimit(PathLimit::size(size)?)),
+        [device, size] => {
+            let max_npdu = PathLimit::size(size)?;
+            let row = row(device, "path-limit", devices).map_err(|why| {
+                match parse_target(device) {
+                    // An address: perhaps a router, named without its network.
+                    Ok(Target::Mac(_)) => {
+                        format!("{why}; a path through a router is ROUTER/NETWORK=SIZE")
+                    }
+                    _ => why,
+                }
+            })?;
+            Ok(Line::PathLimit(PathLimit {
+                path: PathTo::Device {
+                    instance: row.instance,
+                    at: row.at.clone(),
+                },
+                max_npdu,
+            }))
+        }
+        [word] if word.contains('=') => Err(format!(
+            "'{word}': a device takes its size as a word of its own (path-limit DEVICE SIZE); \
+             ROUTER/NETWORK=SIZE names a path by its router"
+        )),
+        _ => Err(crate::tui::routed_paths::USAGE.into()),
+    }
+}
+
 /// `mstp rotation|hold MS` or `mstp listen SECS`, each at least 1.
 fn mstp_setting(which: &str, value: &str) -> Result<Setting, String> {
     let number = value
@@ -254,8 +315,12 @@ fn device(word: &str, command: &str, devices: &DeviceTable) -> Result<(u32, Opti
     match parse_target(word)? {
         Target::Instance(instance) => Ok((instance, None)),
         Target::Routed { dnet, instance } => Ok((instance, Some(dnet))),
-        Target::RoutedMac { dnet, mac } => {
-            let row = at_station(devices, word, dnet, &mac)?;
+        Target::RoutedMac {
+            dnet,
+            mac,
+            one_station,
+        } => {
+            let row = at_station(devices, word, (dnet, &mac, one_station))?;
             Ok((row.instance, Some(dnet)))
         }
         _ => Err(format!(
@@ -281,7 +346,11 @@ fn row<'a>(word: &str, command: &str, devices: &'a DeviceTable) -> Result<&'a De
             let here = claims.into_iter().filter(|row| row.network == Some(dnet));
             one_claim(word, here.collect()).ok_or_else(missing)?
         }
-        Target::RoutedMac { dnet, mac } => at_station(devices, word, dnet, &mac),
+        Target::RoutedMac {
+            dnet,
+            mac,
+            one_station,
+        } => at_station(devices, word, (dnet, &mac, one_station)),
         Target::Mac(mac) => {
             let at = DeviceAddress::local(&mac).map_err(|why| format!("'{word}': {why}"))?;
             devices.at(&at).ok_or_else(missing)
@@ -314,20 +383,28 @@ fn one_claim<'a>(word: &str, claims: Vec<&'a DeviceRow>) -> Option<Result<&'a De
 
 /// The device the table lists at station `mac` on network `dnet` (#1914):
 /// the table holds one row per address (#2560).
+///
+/// `station` is its network, its MAC and whether the target marked it one
+/// station (`dnet:0xMAC:one-station`, #2738). The table keys a row by the
+/// address its I-Am gave, which is never marked (an I-Am can't say what a
+/// router's network is), so no row is at a marked address: the refusal says
+/// where such a device is reached instead.
 fn at_station<'a>(
     devices: &'a DeviceTable,
     word: &str,
-    dnet: u16,
-    mac: &[u8],
+    station: (u16, &[u8], bool),
 ) -> Result<&'a DeviceRow, String> {
-    DeviceAddress::new(dnet, mac)
-        .ok()
-        .and_then(|at| devices.at(&at))
-        .ok_or_else(|| {
-            format!(
-                "'{word}': no device in the device table is at that station; run a Who-Is first"
-            )
-        })
+    let (dnet, mac, one_station) = station;
+    if one_station {
+        return Err(format!(
+            "'{word}': the device table lists no device at a one-station address (an I-Am \
+             can't mark its own); a one-shot command or an MCP tool reaches it by this address"
+        ));
+    }
+    let at = DeviceAddress::new(dnet, mac).map_err(|why| format!("'{word}': {why}"))?;
+    devices.at(&at).ok_or_else(|| {
+        format!("'{word}': no device in the device table is at that station; run a Who-Is first")
+    })
 }
 
 fn object(word: &str) -> Result<ObjectIdentifier, String> {
@@ -493,6 +570,7 @@ pub(crate) fn parse(text: &str, devices: &DeviceTable) -> Result<Line, String> {
             Ok(Line::Scan(Some(Duration::from_secs(seconds))))
         }
         ("mstp", [which, value]) => Ok(Line::Mstp(mstp_setting(which, value)?)),
+        ("path-limit", words) => path_limit(words, devices),
         ("dcc", [action, rest @ ..]) if rest.len() <= 1 => {
             Ok(Line::Manage(dcc(action, rest.first().copied())?))
         }
@@ -534,9 +612,25 @@ impl App {
                     Ok(Line::Mstp(setting)) => self.mstp_setting(setting),
                     Ok(Line::Scan(window)) => self.mstp_scan(window, out),
                     Ok(Line::Manage(action)) => self.open_manage(action),
+                    Ok(Line::PathLimit(change)) => out.push(Command::PathLimit(change)),
+                    Ok(Line::SelectedPathLimit(max_npdu)) => {
+                        self.selected_path_limit(max_npdu, out);
+                    }
                     Err(error) => self.flash(error, FLASH_FOR),
                 }
             }
+        }
+    }
+
+    /// `path-limit . SIZE|clear`: the path to the device in front of the
+    /// operator, as `:dcc` finds it.
+    fn selected_path_limit(&mut self, max_npdu: Option<u16>, out: &mut Vec<Command>) {
+        match self.selected_device() {
+            Some((instance, at)) => out.push(Command::PathLimit(PathLimit {
+                path: PathTo::Device { instance, at },
+                max_npdu,
+            })),
+            None => self.flash(NO_DEVICE, FLASH_FOR),
         }
     }
 }

@@ -41,10 +41,7 @@ async fn native(errors: Vec<Option<Error>>) -> BACnetRouter {
         errors
             .into_iter()
             .enumerate()
-            .map(|(i, error)| RouterPort {
-                network_number: 1 + i as u16 * 4,
-                transport: failing_port(error),
-            })
+            .map(|(i, error)| RouterPort::new(failing_port(error), 1 + i as u16 * 4))
             .collect(),
         RouterOptions::new(),
     )
@@ -291,8 +288,10 @@ fn real_python_context_preserves_sentinel_while_failed_cleanup_blocks_restart() 
                             port: 0,
                             broadcast: std::net::Ipv4Addr::LOCALHOST,
                             mode: bacnet_transport::bip::BipMode::Normal,
+                            isolated: false,
                         }],
                         application: super::application::Application::None,
+                        settings: super::config::RouterSettings::default(),
                         lifecycle,
                         event_loop: std::sync::Mutex::new(None),
                     },

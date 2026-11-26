@@ -39,19 +39,19 @@ fn the_list_settings_make_a_valid_hub() {
 }
 
 /// Present_Value follows the object (SubscribeCOV); any other property is
-/// a property watch; the hub's point is at the row's device address.
+/// a property watch; the hub's point follows the row's device instance on
+/// its network (#2795).
 #[test]
 fn rows_map_to_hub_points() {
-    let at = bacnet_ops::DeviceAddress::new(2, &[5]).unwrap();
     let mut point = Point {
         device: 2001,
         network: Some(2),
         object: ai(1),
         property: PropertyIdentifier::PRESENT_VALUE,
     };
-    assert_eq!(hub_point(&point, at.clone()).watched, Watched::Object);
+    assert_eq!(hub_point(&point).watched, Watched::Object);
     point.property = PropertyIdentifier::STATUS_FLAGS;
-    let hub = hub_point(&point, at.clone());
+    let hub = hub_point(&point);
     assert_eq!(
         hub.watched,
         Watched::Property {
@@ -59,7 +59,11 @@ fn rows_map_to_hub_points() {
             index: None,
         }
     );
-    assert_eq!((hub.device, hub.object), (at, ai(1)));
+    let follows = Binding::Follows {
+        instance: 2001,
+        network: Some(2),
+    };
+    assert_eq!((hub.device, hub.object), (follows, ai(1)));
 }
 
 fn snapshot(source: Option<hub::Source>, why: Option<Why>, note: Option<&str>) -> Snapshot {
@@ -117,6 +121,27 @@ fn a_snapshot_reads_as_the_row_source() {
             ),
             Some(Source::Failed(
                 "the device answers at mstp:9 now; watch it there".into(),
+            )),
+        ),
+        // Another device at the address now: the row fails, naming both.
+        (
+            snapshot(
+                poll,
+                Some(Why::Replaced {
+                    watched: 1001,
+                    found: 1002,
+                }),
+                Some("device 1002 answers at mstp:9 now, not device 1001"),
+            ),
+            Some(Source::Failed(
+                "device 1002 answers at mstp:9 now, not device 1001".into(),
+            )),
+        ),
+        // Notifications naming a sender that can't be told apart: polled.
+        (
+            snapshot(poll, Some(Why::ForeignSender { sender: 1002 }), None),
+            Some(Source::Polled(
+                "notifications name device 1002, which can't be told apart".into(),
             )),
         ),
         // Between the steps of a change: no source yet.

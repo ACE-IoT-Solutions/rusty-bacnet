@@ -49,10 +49,10 @@ impl NodeHandle {
             let dest = codec::address_from_slice(mac).map_err(bvll_error)?;
             let outgoing = link
                 .unicast(dest, npdu)
-                .map_err(|refusal| self.refuse_send(refusal))?;
+                .map_err(|refusal| self.refuse_send(refusal, npdu.len()))?;
             // An Original-Unicast-NPDU is a four-octet header and `npdu`.
             let datagram = OutgoingDatagram::split(&outgoing.message, npdu).ok_or_else(|| {
-                Error::Encoding("a unicast BVLL message is not a header and its NPDU".into())
+                Error::encode("a unicast BVLL message is not a header and its NPDU")
             })?;
             Ok((datagram, outgoing.to))
         })
@@ -62,7 +62,10 @@ impl NodeHandle {
     /// its BBMD as Distribute-Broadcast-To-Network (Annex J.2.10); otherwise
     /// it goes out as an Original-Broadcast-NPDU to the subnet's broadcast
     /// address (Annex J.4.1), and a BBMD first hands it to `forwarder` for
-    /// its BDT peers and foreign devices (Annex J.4.5).
+    /// its BDT peers and foreign devices (Annex J.4.5). On a loopback
+    /// interface with a wildcard socket, a local broadcast to
+    /// 255.255.255.255 fails with [`LoopbackBroadcastRefused`](super::LoopbackBroadcastRefused),
+    /// after a BBMD's fanout is queued.
     pub(super) async fn send_broadcast(
         &self,
         npdu: &[u8],
@@ -77,7 +80,7 @@ impl NodeHandle {
         let mut decided = match link.broadcast(npdu) {
             Ok(decided) => Some(decided),
             Err(SendRefusal::NoBbmd) => None,
-            Err(refusal) => return Err(self.refuse_send(refusal)),
+            Err(refusal) => return Err(self.refuse_send(refusal, npdu.len())),
         };
 
         // A foreign device asks its node first, which holds the broadcast
@@ -107,7 +110,7 @@ impl NodeHandle {
                     // `forward_own` (false for a foreign device), stays.
                     let again = admitted
                         .broadcast(npdu)
-                        .map_err(|refusal| self.refuse_send(refusal))?;
+                        .map_err(|refusal| self.refuse_send(refusal, npdu.len()))?;
                     decided = Some(again);
                 }
                 Some(_) => {}
@@ -115,24 +118,7 @@ impl NodeHandle {
         }
         // Only a waiting foreign device has none, and its node never sends.
         let (outgoing, forward_own) =
-            decided.ok_or_else(|| self.refuse_send(SendRefusal::NoBbmd))?;
-        // A wildcard socket lets the OS select the egress interface for a
-        // limited broadcast. With an explicit loopback identity this can send
-        // the packet onto a LAN and deliver its echo from a different address.
-        // Refuse the local frame before a BBMD schedules its fanout, too.
-        if self.loopback_on_wildcard
-            && outgoing.to.ip().is_broadcast()
-            && matches!(outgoing.message, codec::Bvll::OriginalBroadcastNpdu(_))
-        {
-            return self.with_sending(|_, _| {
-                Err(Error::Transport(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "an explicit loopback interface on a wildcard socket cannot send to \
-                     255.255.255.255. Set broadcast_address to the loopback subnet's \
-                     broadcast address (for example, 127.255.255.255)",
-                )))
-            });
-        }
+            decided.ok_or_else(|| self.refuse_send(SendRefusal::NoBbmd, npdu.len()))?;
         let mut buf = BytesMut::with_capacity(4 + npdu.len());
         encode_bvll(&mut buf, &outgoing.message)?;
 
@@ -146,7 +132,15 @@ impl NodeHandle {
             forwarder.forward(npdu);
         }
 
+        // On a loopback interface with a wildcard socket, the local leg to
+        // 255.255.255.255 is refused, counted, after the fanout above: a
+        // BBMD's unicast forwards are a separate leg (loopback_guard.rs). A
+        // foreign device's broadcast goes to its BBMD's own address, and a
+        // B/IP-M node's to its group, so neither is refused.
         let to = outgoing.to;
+        if self.refuses_local_broadcast(to) {
+            return self.with_sending(|_, _| Err(self.refuse_local_broadcast()));
+        }
         self.send_now(|_| Ok((OutgoingDatagram::whole(&buf), to)))
             .await
     }

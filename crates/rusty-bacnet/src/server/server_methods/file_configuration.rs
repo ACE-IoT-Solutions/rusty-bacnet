@@ -3,7 +3,7 @@ use super::super::*;
 use bacnet_objects::file::FileConfiguration;
 use bacnet_types::enums::{FileAccessMethod, ObjectType};
 use bacnet_types::primitives::ObjectIdentifier;
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::types::{PyBytes, PyList};
 
 const INVALID_ACCESS_METHOD: &str = "access_method must be 'stream' or 'record'";
@@ -39,13 +39,13 @@ impl BACnetServer {
         operation: impl FnOnce(&dyn FileConfiguration) -> PyResult<R>,
     ) -> PyResult<R> {
         let oid = file_oid(instance)?;
-        let guard = self.lock_pending()?;
+        let guard = self.lock_pending();
+        self.check_start_not_in_flight()?;
         if self.started.load(Ordering::Acquire) {
-            return Err(PyRuntimeError::new_err(STARTED_CONFIGURATION));
+            return Err(already_started(STARTED_CONFIGURATION));
         }
         let object = guard
             .iter()
-            .rev()
             .find(|object| object.object_identifier() == oid)
             .ok_or_else(|| missing_file(instance))?;
         let configuration = object
@@ -60,13 +60,13 @@ impl BACnetServer {
         operation: impl FnOnce(&mut dyn FileConfiguration) -> PyResult<R>,
     ) -> PyResult<R> {
         let oid = file_oid(instance)?;
-        let mut guard = self.lock_pending()?;
+        let mut guard = self.lock_pending();
+        self.check_start_not_in_flight()?;
         if self.started.load(Ordering::Acquire) {
-            return Err(PyRuntimeError::new_err(STARTED_CONFIGURATION));
+            return Err(already_started(STARTED_CONFIGURATION));
         }
         let object = guard
             .iter_mut()
-            .rev()
             .find(|object| object.object_identifier() == oid)
             .ok_or_else(|| missing_file(instance))?;
         let configuration = object
@@ -176,6 +176,7 @@ mod tests {
     use bacnet_objects::binary::BinaryValueObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
     use bacnet_types::error::Error;
+    use pyo3::exceptions::PyRuntimeError;
     use std::borrow::Cow;
 
     fn test_server() -> BACnetServer {
@@ -217,7 +218,7 @@ mod tests {
             _property: PropertyIdentifier,
             _array_index: Option<u32>,
         ) -> Result<PropertyValue, Error> {
-            Err(Error::Encoding("not used by this test".into()))
+            Err(Error::unsupported("not used by this test"))
         }
 
         fn write_property(
@@ -227,7 +228,7 @@ mod tests {
             _value: PropertyValue,
             _priority: Option<u8>,
         ) -> Result<(), Error> {
-            Err(Error::Encoding("not used by this test".into()))
+            Err(Error::unsupported("not used by this test"))
         }
 
         fn property_metadata(
@@ -267,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_lookup_uses_file_identity_and_reverse_replacement_order() {
+    fn pending_lookup_uses_file_identity() {
         Python::initialize();
         let server = test_server();
         server
@@ -277,7 +278,7 @@ mod tests {
             .push_pending(Box::new(BinaryValueObject::new(4, "NON-FILE").unwrap()))
             .unwrap();
         server
-            .push_pending(Box::new(file(4, "SECOND", b"second")))
+            .push_pending(Box::new(file(5, "SECOND", b"second")))
             .unwrap();
 
         Python::attach(|py| {
@@ -286,14 +287,14 @@ mod tests {
                 .unwrap();
         });
 
-        let guard = server.lock_pending().unwrap();
+        let guard = server.lock_pending();
         assert_eq!(
             guard[0]
                 .file_configuration()
                 .unwrap()
                 .stream_data()
                 .unwrap(),
-            b"first"
+            b"effective"
         );
         assert_eq!(
             guard[2]
@@ -301,8 +302,36 @@ mod tests {
                 .unwrap()
                 .stream_data()
                 .unwrap(),
-            b"effective"
+            b"second"
         );
+    }
+
+    /// A panic under the pending-objects lock leaves configuration working:
+    /// the lock is taken as the panic left it, where it once raised
+    /// `RuntimeError` "lock poisoned" (#2559).
+    #[test]
+    fn a_poisoned_pending_lock_still_configures_files() {
+        Python::initialize();
+        let server = test_server();
+        server
+            .push_pending(Box::new(file(9, "FILE", b"kept")))
+            .unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = server.pending_objects.lock();
+            panic!("poison the pending objects");
+        }));
+        assert!(unwound.is_err());
+        assert!(server.pending_objects.is_poisoned());
+        Python::attach(|py| {
+            server
+                .set_file_data(9, &PyBytes::new(py, b"changed"))
+                .unwrap();
+            assert_eq!(server.get_file_data(py, 9).unwrap().as_bytes(), b"changed");
+        });
+        server
+            .push_pending(Box::new(file(10, "SECOND", b"two")))
+            .unwrap();
+        assert_eq!(server.lock_pending().len(), 2);
     }
 
     #[test]
@@ -384,11 +413,16 @@ mod tests {
             let error = started
                 .set_file_data(8, &PyBytes::new(py, b"changed"))
                 .unwrap_err();
+            // A lifecycle refusal (#2819): BacnetStateError, still a
+            // RuntimeError, with its text unchanged.
             assert!(error.is_instance_of::<PyRuntimeError>(py));
+            assert!(error.is_instance_of::<crate::errors::BacnetError>(py));
+            let state: String = error.value(py).getattr("state").unwrap().extract().unwrap();
+            assert_eq!(state, "already_started");
             assert_eq!(py_message(py, &error), STARTED_CONFIGURATION);
         });
         assert_eq!(
-            started.lock_pending().unwrap()[0]
+            started.lock_pending()[0]
                 .file_configuration()
                 .unwrap()
                 .stream_data()
@@ -400,7 +434,7 @@ mod tests {
         drained
             .push_pending(Box::new(file(9, "DRAINED", b"gone")))
             .unwrap();
-        drained.lock_pending().unwrap().drain(..);
+        drained.lock_pending().drain(..);
         Python::attach(|py| {
             let error = drained.get_file_data(py, 9).unwrap_err();
             assert!(error.is_instance_of::<PyValueError>(py));

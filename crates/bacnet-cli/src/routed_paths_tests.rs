@@ -18,7 +18,7 @@ fn a_reserved_router_network_is_rejected_by_clap_before_ipv6_resolution() {
             "whois-router",
             "--dnet",
             network,
-            "--via",
+            "--router",
             "[::1]:47808",
         ])
         .unwrap_err();
@@ -34,12 +34,17 @@ fn limit(router: &str, network: u16, max_npdu: u16) -> LimitArg {
     }
 }
 
-fn row(source: &'static str, learned: Option<u16>, seen: bool) -> PathRow {
-    PathRow {
-        router: "192.168.1.20:47808".to_owned(),
-        network: 5,
+fn row(source: &'static str, learned: Option<u16>, seen: bool) -> RoutedPathStatus {
+    use bacnet_ops::RoutedPathLimitSource::{Configured, Default, Learned};
+    RoutedPathStatus {
+        path: bacnet_ops::RoutedPath::new(AddressStyle::Bip, &[192, 168, 1, 20, 0xBA, 0xC0], 5)
+            .unwrap(),
         max_npdu: 128,
-        source,
+        source: match source {
+            "configured" => Configured,
+            "learned" => Learned,
+            _ => Default,
+        },
         configured_max_npdu: Some(128),
         learned_max_npdu: learned,
         below_minimum_reject_seen: seen,
@@ -179,13 +184,15 @@ fn the_flag_repeats_on_one_shots_and_is_refused_where_nothing_uses_it() {
 /// limits set by flag only with `-v`.
 #[test]
 fn the_summary_shows_for_what_was_not_asked_for() {
-    let configured = Summary::new(vec![row("configured", None, false)], 0, 0, false);
+    let configured = Summary::new(vec![row("configured", None, false)], 0, 0, 0, false);
     assert!(!configured.shown(0));
     assert!(configured.shown(1));
-    assert!(!Summary::new(Vec::new(), 0, 0, false).shown(2));
-    assert!(Summary::new(vec![row("learned", Some(300), false)], 0, 0, false).shown(0));
-    assert!(Summary::new(Vec::new(), 1, 0, false).shown(0));
-    assert!(Summary::new(vec![row("default", None, true)], 0, 1, false).shown(0));
+    assert!(!Summary::new(Vec::new(), 0, 0, 0, false).shown(2));
+    assert!(Summary::new(vec![row("learned", Some(300), false)], 0, 0, 0, false).shown(0));
+    assert!(Summary::new(Vec::new(), 1, 0, 0, false).shown(0));
+    assert!(Summary::new(vec![row("default", None, true)], 0, 1, 0, false).shown(0));
+    // An answer refused for the path it came by is shown unasked (#2831).
+    assert!(Summary::new(Vec::new(), 0, 0, 1, false).shown(0));
 }
 
 /// The hint comes with a timeout after a dropped below-minimum reject, and
@@ -193,9 +200,9 @@ fn the_summary_shows_for_what_was_not_asked_for() {
 #[test]
 fn a_timeout_after_a_below_minimum_drop_names_the_flag() {
     let paths = vec![row("default", None, true)];
-    assert_eq!(Summary::new(paths.clone(), 0, 1, false).hint, None);
-    assert_eq!(Summary::new(paths.clone(), 3, 0, true).hint, None);
-    let hint = Summary::new(paths, 0, 1, true).hint.unwrap();
+    assert_eq!(Summary::new(paths.clone(), 0, 1, 0, false).hint, None);
+    assert_eq!(Summary::new(paths.clone(), 3, 0, 0, true).hint, None);
+    let hint = Summary::new(paths, 0, 1, 0, true).hint.unwrap();
     assert!(
         hint.contains("--routed-path-limit 192.168.1.20:47808/5=SIZE"),
         "{hint}"
@@ -206,7 +213,7 @@ fn a_timeout_after_a_below_minimum_drop_names_the_flag() {
 /// path, the counts and the hint.
 #[test]
 fn the_summary_renders_as_one_json_line_or_a_table() {
-    let summary = Summary::new(vec![row("default", None, true)], 2, 1, true);
+    let summary = Summary::new(vec![row("default", None, true)], 2, 1, 3, true);
     let json = summary.render(OutputFormat::Json);
     assert!(!json.contains('\n'));
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -229,13 +236,14 @@ fn the_summary_renders_as_one_json_line_or_a_table() {
         ),
         (&serde_json::json!(2), &serde_json::json!(1))
     );
+    assert_eq!(value["off_path_answer_drops"], serde_json::json!(3));
     assert!(
         value["hint"]
             .as_str()
             .unwrap()
             .contains("--routed-path-limit")
     );
-    let quiet = Summary::new(Vec::new(), 1, 0, false).render(OutputFormat::Json);
+    let quiet = Summary::new(Vec::new(), 1, 0, 0, false).render(OutputFormat::Json);
     let value: serde_json::Value = serde_json::from_str(&quiet).unwrap();
     assert_eq!(value["hint"], serde_json::Value::Null);
 
@@ -246,11 +254,12 @@ fn the_summary_renders_as_one_json_line_or_a_table() {
         "Small request refused",
         "Too-long rejects not believed: 2 that could answer",
         "1 for a request of 228 NPDU octets or fewer",
+        "Answers refused for the path they came by: 3 not from the request's router or device",
         "Hint: a router refused",
     ] {
         assert!(table.contains(text), "{text}: {table}");
     }
-    let empty = Summary::new(Vec::new(), 1, 0, false).render(OutputFormat::Table);
+    let empty = Summary::new(Vec::new(), 1, 0, 0, false).render(OutputFormat::Table);
     assert!(
         empty.contains("none beyond the default of 228 NPDU octets"),
         "{empty}"

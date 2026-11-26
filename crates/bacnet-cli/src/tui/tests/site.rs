@@ -26,7 +26,7 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::MacAddr;
-use bacnet_types::enums::ConfirmedServiceChoice;
+use bacnet_types::enums::{ConfirmedServiceChoice, Segmentation};
 use bytes::Bytes;
 use ratatui::crossterm::event::KeyCode;
 use tokio::sync::mpsc;
@@ -385,10 +385,11 @@ pub(super) async fn bounded<T>(future: impl Future<Output = T>) -> T {
         .expect("in-process TUI test exceeded its deadline")
 }
 
-/// A device with only its Device object, vendor 0.
+/// A device with only its Device object, vendor 0, that doesn't segment.
 fn bare_device(instance: u32) -> (bacnet_objects::DeviceIdentity, ObjectDatabase) {
     let identity = bacnet_objects::DeviceIdentity::new(instance, 0)
         .expect("valid Device identity")
+        .with_segmentation(bacnet_types::enums::Segmentation::NO_SEGMENTATION)
         .with_name(format!("Lab device {instance}"));
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
@@ -544,7 +545,11 @@ impl Site {
             .transport(hub_port(&hub, [10, 0, 0, 1], Quirks::default()))
             .apdu_timeout_ms(2_000)
             .max_apdu_length(limits.max_apdu)
-            .segmented_response_accepted(limits.segmented);
+            .segmentation(if limits.segmented {
+                Segmentation::SEGMENTED_BOTH
+            } else {
+                Segmentation::SEGMENTED_TRANSMIT
+            });
         let client = bounded(boxed(|| client.build())).await.unwrap();
         boxed(|| Self::launch(hub, started, client, options)).await
     }

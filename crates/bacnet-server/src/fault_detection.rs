@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use bacnet_device_core::event::{ReliabilityChange, fault_pass};
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::sync::MutexExt;
 
 /// Fault detection engine.
 ///
@@ -29,10 +30,7 @@ impl FaultDetector {
     }
 
     fn should_warn_internal_failure(&self, oid: ObjectIdentifier, error: &str) -> bool {
-        let mut warned = self
-            .warned_internal_failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut warned = self.warned_internal_failures.locked();
         if warned.get(&oid).is_some_and(|previous| previous == error) {
             false
         } else {
@@ -42,16 +40,12 @@ impl FaultDetector {
     }
 
     fn clear_internal_failure(&self, oid: &ObjectIdentifier) {
-        self.warned_internal_failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(oid);
+        self.warned_internal_failures.locked().remove(oid);
     }
 
     fn noted_internal_failures(&self) -> Vec<ObjectIdentifier> {
         self.warned_internal_failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .locked()
             .keys()
             .copied()
             .collect()
@@ -109,6 +103,8 @@ mod tests {
     use super::*;
     use bacnet_types::enums::EngineeringUnits;
 
+    /// What a failing hook returns: an I/O failure, as reading its sensor
+    /// would be (#1833). The detector only logs it, rate-limited by text.
     const HOOK_ERROR: &str = "test reliability hook failed";
 
     struct WarningCounter {
@@ -201,7 +197,7 @@ mod tests {
             if property == PropertyIdentifier::RELIABILITY {
                 Ok(PropertyValue::Enumerated(self.reliability.to_raw()))
             } else {
-                Err(Error::Encoding("test property is unsupported".into()))
+                Err(Error::unsupported("test property is unsupported"))
             }
         }
 
@@ -212,7 +208,7 @@ mod tests {
             _value: PropertyValue,
             _priority: Option<u8>,
         ) -> Result<(), Error> {
-            Err(Error::Encoding("test object is read-only".into()))
+            Err(Error::unsupported("test object is read-only"))
         }
 
         fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
@@ -227,7 +223,7 @@ mod tests {
     impl ReliabilityEval for OptInReliabilityObject {
         fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
             if self.fail.load(Ordering::SeqCst) {
-                return Err(Error::Encoding(HOOK_ERROR.into()));
+                return Err(Error::Transport(std::io::Error::other(HOOK_ERROR)));
             }
             if self.reliability == self.target_reliability {
                 return Ok(ReliabilityEvaluation::Unchanged);
@@ -261,7 +257,7 @@ mod tests {
             _property: PropertyIdentifier,
             _array_index: Option<u32>,
         ) -> Result<PropertyValue, Error> {
-            Err(Error::Encoding("test property is unsupported".into()))
+            Err(Error::unsupported("test property is unsupported"))
         }
 
         fn write_property(
@@ -271,7 +267,7 @@ mod tests {
             _value: PropertyValue,
             _priority: Option<u8>,
         ) -> Result<(), Error> {
-            Err(Error::Encoding("test object is read-only".into()))
+            Err(Error::unsupported("test object is read-only"))
         }
 
         fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
@@ -290,7 +286,7 @@ mod tests {
 
         fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Err(Error::Encoding(HOOK_ERROR.into()))
+            Err(Error::Transport(std::io::Error::other(HOOK_ERROR)))
         }
     }
 

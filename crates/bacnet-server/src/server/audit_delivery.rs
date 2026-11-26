@@ -1,5 +1,6 @@
 //! Shared one-attempt wire delivery and configuration-fenced health.
 use super::*;
+use bacnet_types::sync::MutexExt;
 
 pub(in crate::server) fn encode_notification(
     notification: &BACnetAuditNotification,
@@ -72,6 +73,16 @@ pub(in crate::server) async fn deliver_global_broadcast<T: TransportPort + 'stat
 /// DISABLE_INITIATION, and the server refuses the deprecated DISABLE, so no
 /// state a peer can set stops audit traffic. Every audit sender in the server
 /// funnels through here or follows the same rule.
+///
+/// A confirmed one whose recipient is a Device bound at a broadcast or group
+/// form on another network, as the binding's one-station mark has it
+/// (#2738), is not sent and not delivered (#2732): a
+/// confirmed request goes to one station. Its reporter reads a
+/// communication failure, and the warning logged when the binding was
+/// configured says why ([`DeviceBindingTable::insert_configured`]). An
+/// unconfirmed one still goes there.
+///
+/// [`DeviceBindingTable::insert_configured`]: crate::server::device_bindings::DeviceBindingTable::insert_configured
 pub(in crate::server) async fn deliver_observed<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
     route: &ConfirmedRecipientRoute,
@@ -80,10 +91,18 @@ pub(in crate::server) async fn deliver_observed<T: TransportPort + 'static>(
     deadline: tokio::time::Instant,
     local: Option<super::audit_batch_queue::LocalDisposition>,
 ) -> bool {
-    let local = std::sync::Mutex::new(local);
     let confirmed = reserved.is_some();
+    if confirmed && let Some(station) = route.broadcast_station() {
+        debug!(
+            recipient = %station,
+            "Confirmed audit notification not sent: its recipient is at a broadcast or \
+             group address on its network"
+        );
+        return false;
+    }
+    let local = std::sync::Mutex::new(local);
     let send = || async {
-        let _local = local.lock().unwrap().take();
+        let _local = local.locked().take();
         match (&route.local_target, &route.remote) {
             (Some(mac), None) => {
                 network
@@ -95,7 +114,7 @@ pub(in crate::server) async fn deliver_observed<T: TransportPort + 'static>(
                     .send_apdu_routed(bytes, *net, mac, router, confirmed, NetworkPriority::Normal)
                     .await
             }
-            _ => Err(Error::Encoding("audit destination is unavailable".into())),
+            _ => Err(route.unplaced()),
         }
     };
     tokio::time::timeout_at(deadline, async {

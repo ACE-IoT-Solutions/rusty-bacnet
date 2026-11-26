@@ -9,9 +9,10 @@ use std::sync::atomic::AtomicU64;
 /// `cov_wait_expired`), each saturating at `u64::MAX`. A new server starts at
 /// zero, and the totals stay readable after `stop()`. Fields are sampled
 /// independently, not as one atomic aggregate. Each refusal also logs a
-/// warning (the forwarding cap's at most once a minute), and each wait for
-/// an invoke ID a debug line; these totals are the running signal, not an
-/// audit log.
+/// warning (the forwarding cap's at most once a minute, and a confirmed
+/// recipient's at a broadcast or group form on another network at most once
+/// every ten seconds), and each wait for an invoke ID a debug line; these
+/// totals are the running signal, not an audit log.
 ///
 /// The first four count transitions (event or acknowledgment notifications)
 /// whose Notification Class lookup failed closed, so no recipient received
@@ -76,10 +77,12 @@ pub struct EventNotificationCounters {
     /// when no Who-Is may go out for it (within a minute of one that drew
     /// nothing, or with 256 devices already being looked for). Both clear
     /// once the device's I-Am is observed again or a binding is configured.
-    /// A confirmed notification whose observed binding expires before an
-    /// attempt (a retry, or a first one that waited for its invoke ID) ends
-    /// there, its invoke ID freed, and counts here rather than in
-    /// `confirmed_unanswered` (#1371).
+    /// A confirmed notification whose observed binding expires before a
+    /// retry ends there, its invoke ID freed, and counts here rather than in
+    /// `confirmed_unanswered` (#1371). One that waited for its invoke ID
+    /// reads the binding again first: one that lapsed or moved meanwhile is
+    /// looked for as above, its ID given back, and counts here only if the
+    /// device stays silent (#2569).
     pub device_recipient_unbound: u64,
     /// Recipients that cannot be routed as configured, so no binding or
     /// retry delivers them: a Device recipient whose identifier is not a
@@ -91,14 +94,26 @@ pub struct EventNotificationCounters {
     /// address (local, remote or global, the link's own broadcast MAC
     /// included), or at any other group address the link reports
     /// ([`TransportPort::is_group_destination`], such as a B/IP multicast
-    /// address, #1493). Clause 6.3 lets only unconfirmed requests be
-    /// broadcast, and sending one unconfirmed would drop the acknowledgment
-    /// the destination asks for. No invoke ID is reserved for them.
+    /// address, #1493). Also an Address or a Device binding on another
+    /// network whose MAC there is a broadcast or group form, judged by its
+    /// length and octets since that link is unknown here (#2732): the one
+    /// octet `0xFF` (an MS/TP broadcast), two octets starting `0x00` or
+    /// `0xFF` (a LonTalk broadcast or group), three of `0xFF`, or six
+    /// starting `FF:FF:FF:FF`. An Address recipient can't carry the
+    /// one-station mark, so an ARCNET station 255 or a gateway's two-octet
+    /// virtual station named by its address counts here too; a Device
+    /// binding marked one station ([`DeviceBinding::one_station`], #2738)
+    /// takes such a station out, but for `0x0000` and `0xFFFF`. Clause 6.3
+    /// lets only unconfirmed requests be broadcast, and sending one
+    /// unconfirmed would drop the acknowledgment the destination asks for.
+    /// No invoke ID is reserved for them.
     pub confirmed_broadcast_recipient: u64,
     /// Confirmed notifications that found every invoke ID in use and waited
-    /// for one to come back, counted once each as its wait starts (#2537).
-    /// None is dropped for want of an ID: it waits in its destination's
-    /// lane and holds up only that destination.
+    /// for one to come back, counted once each as its wait starts (#2537),
+    /// and those that found others already waiting and queued behind them,
+    /// even with an ID free (#2563). None is dropped for want of an ID: it
+    /// waits in its destination's lane and holds up only that destination,
+    /// and the waiters get IDs in the order they began to wait.
     pub confirmed_waited_for_invoke_id: u64,
     /// Confirmed notifications the recipient answered with an Error, Reject
     /// or Abort.
@@ -205,6 +220,9 @@ pub(crate) struct EventSuppressions {
     /// The throttle on the warning for a notification that reached the
     /// forwarding cap, one per server (#1950).
     pub(crate) cap_warning: bacnet_transport::warn_throttle::WarnThrottle,
+    /// The throttle on the warning for a confirmed recipient at a broadcast
+    /// or group form on another network (#2732), one per server.
+    pub(crate) broadcast_warning: bacnet_transport::warn_throttle::WarnThrottle,
 }
 
 impl EventSuppressions {

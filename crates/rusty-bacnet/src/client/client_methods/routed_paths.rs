@@ -35,11 +35,12 @@ fn int_arg(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u16> {
 }
 
 /// A refused argument (a router MAC of the wrong length, a network outside
-/// 1 to 65534, a limit too small to carry a request) is a ValueError; the
+/// 1 to 65534, a limit too small to carry a request), the client's
+/// [`Error::InvalidArgument`] (#1833), is a ValueError with its text; the
 /// rest as every call raises it.
 fn path_err(error: Error) -> PyErr {
     match error {
-        Error::Encoding(message) => PyValueError::new_err(message),
+        Error::InvalidArgument(refusal) => PyValueError::new_err(refusal.to_string()),
         other => to_py_err(other),
     }
 }
@@ -60,11 +61,11 @@ impl BACnetClient {
     /// the standard asks; one that could carry no request at all (under 66
     /// on B/IP, 61 on MS/TP) raises ValueError, as do a bad router or
     /// network; an `int` outside 0 to 65535 raises OverflowError, a `bool`
-    /// TypeError. The call waits for a request active on the path, or one
-    /// queued for it, but not out the hold a request with no answer leaves:
-    /// the change applies at once, and the next request still waits the hold
-    /// out. Nothing goes through the path. Raises RuntimeError before start
-    /// and after stop.
+    /// TypeError. The change applies at once (#2683): it waits neither for
+    /// a request on the path nor out the hold a request with no answer
+    /// leaves; a request waiting out the hold goes sized to the new limit
+    /// when it ends. Nothing goes through the path. Raises RuntimeError
+    /// before start and after stop.
     fn configure_routed_path_max_npdu<'py>(
         &self,
         py: Python<'py>,
@@ -81,7 +82,6 @@ impl BACnetClient {
             let mac = router.on(&client, NOT_A_ROUTER).await?;
             client
                 .configure_routed_path_max_npdu(&mac, network, max_npdu)
-                .await
                 .map_err(path_err)
         })
     }
@@ -89,7 +89,7 @@ impl BACnetClient {
     /// Put the routed path through `router` to `network` back on the
     /// default, 228 octets, dropping the limit set or learned for it.
     /// Takes `router` and `network` as `configure_routed_path_max_npdu`
-    /// does, and waits the same way. Nothing goes through the path.
+    /// does, and applies at once too. Nothing goes through the path.
     fn clear_routed_path_limit<'py>(
         &self,
         py: Python<'py>,
@@ -104,7 +104,6 @@ impl BACnetClient {
             let mac = router.on(&client, NOT_A_ROUTER).await?;
             client
                 .clear_routed_path_limit(&mac, network)
-                .await
                 .map_err(path_err)
         })
     }
@@ -151,5 +150,47 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             Ok(started(&inner).await?.below_minimum_reject_drops())
         })
+    }
+
+    /// How many answers for a device's open request the client dropped
+    /// since start because they came by another path than the request took
+    /// (#2831): from another station than a routed request's router, or
+    /// relayed with this network's own number as SNET for a request sent
+    /// straight to the device. A rise means a station is answering for
+    /// other devices. Raises RuntimeError before start and after stop.
+    fn off_path_answer_drops<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.clone();
+        crate::py_async::future_into_py(py, async move {
+            Ok(started(&inner).await?.off_path_answer_drops())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_types::error::Refusal;
+
+    /// The client refuses a path's router, network or limit as an argument
+    /// (#1833), which raises ValueError with its text alone, as the untyped
+    /// text it replaces did; a full path table raises as every call does.
+    #[test]
+    fn a_refused_argument_is_a_value_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let refused = path_err(Error::invalid_argument("routed DNET must be in 1..=65534"));
+            assert!(refused.is_instance_of::<PyValueError>(py));
+            assert_eq!(
+                refused.value(py).str().unwrap().to_str().unwrap(),
+                "routed DNET must be in 1..=65534"
+            );
+            let short = path_err(Error::InvalidArgument(Refusal::text(
+                "a routed path limit of 10 NPDU octets carries no request",
+            )));
+            assert!(short.is_instance_of::<PyValueError>(py));
+            let full = path_err(Error::RoutedPathCapacityExceeded { capacity: 256 });
+            assert!(!full.is_instance_of::<PyValueError>(py));
+            assert!(full.is_instance_of::<crate::errors::BacnetError>(py));
+        });
     }
 }

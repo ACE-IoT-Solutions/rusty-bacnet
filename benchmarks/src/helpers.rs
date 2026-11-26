@@ -57,6 +57,7 @@ pub async fn make_bip_server() -> Result<BACnetServer<BipTransport>, Error> {
         .database(db)
         .build()
         .await
+        .map_err(Error::from)
 }
 
 /// Create a BIP client on an ephemeral port.
@@ -82,6 +83,7 @@ pub async fn make_bip6_server() -> Result<BACnetServer<Bip6Transport>, Error> {
         .database(db)
         .build()
         .await
+        .map_err(Error::from)
 }
 
 /// Create a BIP6 client on an ephemeral port.
@@ -106,7 +108,12 @@ pub async fn resolve_bip6_server(
     let address = server
         .transport()
         .and_then(Bip6Transport::local_address)
-        .ok_or_else(|| Error::Encoding("the BIP6 server is not running".into()))?;
+        .ok_or_else(|| {
+            Error::state(
+                bacnet_types::error::Lifecycle::NotRunning,
+                "the BIP6 server is not running",
+            )
+        })?;
     let vmac = client.transport().resolve_virtual_address(address).await?;
     Ok(vmac.octets().to_vec())
 }

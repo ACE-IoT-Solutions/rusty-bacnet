@@ -7,10 +7,9 @@
 //! failing with [`OpsError`] instead, which answers the
 //! same questions with its own methods.
 //!
-//! [`read_inventory`] and [`read_point_record`] are the layer under
-//! [`Device::inventory`](crate::Device::inventory) and
-//! [`Device::point_record`](crate::Device::point_record): the same reads
-//! over a [`Reader`], for a caller that owns a low-level client.
+//! [`read_inventory`] is the layer under
+//! [`Device::inventory`](crate::Device::inventory): the same reads over a
+//! [`Reader`], for a caller that owns a low-level client.
 //!
 //! [`who_is`] sends a discovery's Who-Is straight from a low-level client,
 //! for a front end that holds one and no [`Client`](crate::Client), and
@@ -18,6 +17,11 @@
 //! [`Scope`] as [`Client::discover`](crate::Client::discover) and
 //! [`Client::find`](crate::Client::find) do, but takes no rate slot and
 //! charges no account.
+//!
+//! [`routed_paths`] and [`routed_path_to`] read the routed path limits
+//! (#2667) from a low-level client, as
+//! [`Client::routed_paths`](crate::Client::routed_paths) and
+//! [`Device::routed_path`](crate::Device::routed_path) do.
 
 use std::time::Duration;
 
@@ -31,10 +35,10 @@ use crate::client::{Ask, Scope, find};
 use crate::error::OpsError;
 
 pub use crate::client::read::ListStop;
-pub use crate::inventory::read::{InventoryHalt, read_inventory, read_point_record};
+pub use crate::inventory::read::{InventoryHalt, read_inventory};
 
 pub use crate::client::read::{
-    Halt, Reader, RpmFailure, rpm_failure, rpm_rows, timed_out, unreachable,
+    Halt, Reader, RpmFailure, failed_locally, rpm_failure, rpm_rows, timed_out, unreachable,
 };
 use crate::device::{DeviceAddress, path_to};
 use crate::limits::{RequestLimits, Turn};
@@ -128,4 +132,27 @@ pub async fn who_has_replies<T: TransportPort + 'static>(
     find::replies(client, scope, station, object, range, wait)
         .await
         .map_err(OpsError::Client)
+}
+
+/// The routed paths `client` holds more than the default for, decoded for
+/// its link, with its two counts of too-long rejects it did not believe:
+/// [`Client::routed_paths`](crate::Client::routed_paths) for a front end
+/// that holds a low-level client alone. Sends nothing.
+pub fn routed_paths<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+) -> crate::client::RoutedPaths {
+    crate::client::RoutedPaths::of(client)
+}
+
+/// The routed path a request from `client` to the device at `address`
+/// takes: through the router `client`'s discovery table holds for its
+/// network, `None` on `client`'s own network. A remote address whose network
+/// has no router in the table fails as [`OpsError::UnknownDevice`].
+/// [`Device::routed_path`](crate::Device::routed_path) for a handle. Sends
+/// nothing.
+pub async fn routed_path_to<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+    address: &DeviceAddress,
+) -> Result<Option<crate::client::RoutedPath>, OpsError> {
+    crate::client::routed_paths::routed_path_to(client, address).await
 }

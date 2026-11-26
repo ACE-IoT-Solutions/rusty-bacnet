@@ -19,6 +19,45 @@ pub(super) struct ComplexAckParams {
     pub(super) client_max_segments: Option<u8>,
 }
 
+/// Whether a requester's Abort, a newer answer under the same requester and
+/// invoke ID, or a different request under them has closed this send; logs
+/// which.
+fn send_closed(
+    handle: &SegmentedSendHandle,
+    control_rx: &mut watch::Receiver<Option<SegmentedSendControlEvent>>,
+    registry: &segmented_send::SegmentedSendRegistry,
+    invoke_id: u8,
+) -> bool {
+    if !handle.closed.load(Ordering::Acquire) {
+        return false;
+    }
+    match control_rx.borrow_and_update().clone() {
+        Some(SegmentedSendControlEvent::Abort(abort)) => {
+            warn_throttled!(
+                registry.warning,
+                invoke_id = abort.invoke_id,
+                reason = ?abort.abort_reason,
+                "Client aborted segmented ComplexAck send"
+            );
+        }
+        Some(SegmentedSendControlEvent::Cancel) | None => {
+            warn_throttled!(
+                registry.warning,
+                invoke_id,
+                "Segmented ComplexAck send cancelled by newer same-peer transaction"
+            );
+        }
+        Some(SegmentedSendControlEvent::Supersede) => {
+            warn_throttled!(
+                registry.warning,
+                invoke_id,
+                "Segmented ComplexAck send ended by a different request under its invoke ID"
+            );
+        }
+    }
+    true
+}
+
 #[derive(Debug)]
 enum SegmentedSendWaitResult {
     SegmentAck(SegmentAckPdu),
@@ -243,6 +282,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             seg_ack_tx.clone(),
             control_tx,
             total_segments,
+            pending.as_ref().and_then(PendingConfirmedRequest::id),
         ));
         let key =
             segmented_transaction_key(source_mac, source_network, invoke_id, route.provenance());
@@ -296,12 +336,26 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             );
             replaced.send_control(SegmentedSendControlEvent::Cancel);
         }
+        // From here a different request under this requester and invoke ID
+        // ends the answer (#2770); every way out passes `finish` below.
+        if let Some(pending) = &pending {
+            pending.answering(&send_handle);
+        }
 
         let seg_timeout = options.segment_timeout;
         let mut seg_idx: usize = 0;
         let mut retransmission_retries: u8 = 0;
 
         'send_segments: while seg_idx < total_segments {
+            // Before every send, not only while waiting: a segment sent
+            // again after a requester's Abort, or after a different request
+            // took the final acknowledgment as lost (#2770), could reach a
+            // new request under the same invoke ID.
+            if send_closed(&send_handle, &mut control_rx, seg_ack_senders, invoke_id)
+                || !send_handle.sending()
+            {
+                break;
+            }
             let is_last = seg_idx == total_segments - 1;
 
             let pdu = Apdu::ComplexAck(ComplexAck {
@@ -336,27 +390,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             }
 
             debug!(seq = seg_idx, is_last, "Sent ComplexAck segment");
+            if is_last {
+                send_handle.last_sent();
+            }
 
             let ack_deadline = tokio::time::Instant::now() + seg_timeout;
             loop {
-                if send_handle.closed.load(Ordering::Acquire) {
-                    match control_rx.borrow_and_update().clone() {
-                        Some(SegmentedSendControlEvent::Abort(abort)) => {
-                            warn_throttled!(
-                                seg_ack_senders.warning,
-                                invoke_id = abort.invoke_id,
-                                reason = ?abort.abort_reason,
-                                "Client aborted segmented ComplexAck send"
-                            );
-                        }
-                        Some(SegmentedSendControlEvent::Cancel) | None => {
-                            warn_throttled!(
-                                seg_ack_senders.warning,
-                                invoke_id,
-                                "Segmented ComplexAck send cancelled by newer same-peer transaction"
-                            );
-                        }
-                    }
+                if send_closed(&send_handle, &mut control_rx, seg_ack_senders, invoke_id) {
                     break 'send_segments;
                 }
 
@@ -373,7 +413,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 Some(SegmentedSendControlEvent::Cancel) => {
                                     SegmentedSendWaitResult::Cancel
                                 }
-                                None => continue,
+                                // The check above logs it and stops.
+                                Some(SegmentedSendControlEvent::Supersede) | None => continue,
                             }
                         }
                     }
@@ -433,10 +474,20 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     retries = retransmission_retries,
                                     "Too many negative SegmentAck retries, aborting segmented send"
                                 );
+                                // Settled first, so this is the one Abort
+                                // even if a different request has just
+                                // ended the answer (#2770), when it is that
+                                // request's; until it is issued, requests
+                                // under the invoke ID are dropped.
+                                let abort_reason = if send_handle.aborting() {
+                                    AbortReason::INVALID_APDU_IN_THIS_STATE
+                                } else {
+                                    AbortReason::TSM_TIMEOUT
+                                };
                                 let abort = Apdu::Abort(AbortPdu {
                                     sent_by_server: true,
                                     invoke_id,
-                                    abort_reason: AbortReason::TSM_TIMEOUT,
+                                    abort_reason,
                                 });
                                 let mut abort_buf = BytesMut::new();
                                 encode_apdu(&mut abort_buf, &abort).expect("valid APDU encoding");
@@ -508,6 +559,27 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     }
                 }
             }
+        }
+        // A different request came under this requester and invoke ID
+        // midway (Clause 5.4.5.4, #2770): its Abort goes out here, after the
+        // last segment this task sent, so no segment follows it.
+        if send_handle.finish() {
+            let abort = Apdu::Abort(AbortPdu {
+                sent_by_server: true,
+                invoke_id,
+                abort_reason: AbortReason::INVALID_APDU_IN_THIS_STATE,
+            });
+            let mut buf = BytesMut::new();
+            encode_apdu(&mut buf, &abort).expect("valid APDU encoding");
+            let _ = Self::issue_terminal_response(
+                network,
+                &buf,
+                source_mac,
+                source_network,
+                route,
+                pending.take(),
+            )
+            .await;
         }
     }
 }

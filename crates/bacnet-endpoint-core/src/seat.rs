@@ -25,8 +25,11 @@
 //!   or ConfirmedCOVNotificationMultiple goes to the client seat instead,
 //!   with its reply authority. A
 //!   ConfirmedEventNotification goes to the server role, and a copy with no
-//!   reply authority to the client seat. On an endpoint with no server role
-//!   every Confirmed-Request goes to the client seat;
+//!   reply authority to the client seat. One that comes in segments goes to
+//!   the server alone, segment by segment: once the server has reassembled
+//!   it, it hands the client the whole request ([`ClientCopies`], #2743), a
+//!   copy as ingress makes of one that comes whole. On an endpoint with no
+//!   server role every Confirmed-Request goes to the client seat;
 //! - an answer (Simple-ACK, Complex-ACK and its segments, Error, Reject, and
 //!   an Abort or Segment-ACK sent by the answering side) goes to the seat of
 //!   the role [`OutboundTransactionCoordinator::holder_of_source`] names for
@@ -40,10 +43,9 @@
 //!   counted and dropped;
 //! - an Abort or Segment-ACK sent by a requester is about a request the
 //!   node serves: it goes to the server seat, or to the endpoint's answer
-//!   queue when there is none;
-//! - the client seat gets a copy of a requester's Abort without reply
-//!   authority to end an incoming COV transfer. The server seat or endpoint
-//!   retains the original;
+//!   queue when there is none. The client seat also gets a copy of such an
+//!   Abort, with no reply authority: the client may be reassembling the
+//!   segmented notification it ends (#2646);
 //! - every network control goes to the client seat, beside the endpoint's
 //!   own Number owner. The server seat gets none: the node's one Number
 //!   owner answers for the network number.
@@ -59,8 +61,8 @@
 //! spare finds it full first:
 //!
 //! - Unconfirmed-Requests (I-Ams, Who-Is, notifications), and on the client
-//!   seat the segmented answers no lease holds, may fill it only down to
-//!   half of it;
+//!   seat the segmented answers no lease holds and the copies of a
+//!   requester's Abort, may fill it only down to half of it;
 //! - Confirmed-Requests may fill it down to its last quarter, the reserve
 //!   each endpoint queue keeps;
 //! - answers to the role's own requests, and a requester's Abort or
@@ -101,15 +103,21 @@
 //! hold: it has a graceful stop of its own, best run before the endpoint's.
 
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use bacnet_network::layer::{NetworkLayer, ReceivedApdu, ReceivedNetworkControl};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::error::Error;
+use bacnet_types::sync::MutexExt;
 use tokio::sync::{Notify, mpsc};
 
 use crate::coordinator::OutboundTransactionCoordinator;
+
+#[path = "seat_copies.rs"]
+mod copies;
+pub use copies::{ClientCopies, MAX_REASSEMBLED_COPY_OCTETS};
+pub(crate) use copies::{CopyBudget, ReservedCopy};
 
 /// APDUs a client seat queues by default before ingress drops for it. A
 /// Who-Is can bring hundreds of I-Ams at once, and the seat's queue is the
@@ -168,7 +176,7 @@ pub struct SeatHolds {
 
 impl SeatHolds {
     fn role(&self) -> std::sync::MutexGuard<'_, SeatedRole> {
-        self.role.lock().unwrap_or_else(PoisonError::into_inner)
+        self.role.locked()
     }
 
     /// A hold for one task, or `None` once the endpoint is stopping.
@@ -256,7 +264,7 @@ impl NodeDccState {
         if self.restricted && !self.exempt.is_empty() {
             tracing::warn!(
                 exempt_clients = self.exempt.len(),
-                "DeviceCommunicationControl disabled initiation on this node, but a full client \
+                "DeviceCommunicationControl disabled initiation on this node, but a client \
                  started outside the node's DeviceCommunicationControl keeps initiating \
                  (an operator override of Clause 16.1)"
             );
@@ -295,7 +303,7 @@ impl std::fmt::Debug for NodeDcc {
 
 impl NodeDcc {
     fn state(&self) -> std::sync::MutexGuard<'_, NodeDccState> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.locked()
     }
 
     /// Whether the node's server has restricted initiation now.
@@ -407,9 +415,6 @@ pub struct NodeDevice {
 /// [module docs](self). Its parts are for the client that runs on it.
 #[non_exhaustive]
 pub struct ClientSeat<T: TransportPort> {
-    /// Segmentation capability and segment timeout advertised by the node's Device, when present.
-    #[doc(hidden)]
-    pub device_segmentation: Option<(bacnet_types::enums::Segmentation, std::time::Duration)>,
     /// The node's started network layer. The seat never stops it.
     #[doc(hidden)]
     pub network: Arc<NetworkLayer<T>>,
@@ -472,6 +477,10 @@ pub struct ServerSeat<T: TransportPort> {
     /// and its server serves its own Device.
     #[doc(hidden)]
     pub node: Option<NodeDevice>,
+    /// Where the server hands the node's client a request it reassembled
+    /// from segments that the client hears a copy of (#2743).
+    #[doc(hidden)]
+    pub client_copies: ClientCopies,
 }
 
 impl<T: TransportPort> std::fmt::Debug for ServerSeat<T> {
@@ -523,10 +532,21 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    fn name(self) -> &'static str {
+    /// The refusal of a seat queue with no room, a static label for each
+    /// role (#1833).
+    fn no_room(self) -> &'static str {
         match self {
-            Self::Client => "client",
-            Self::Server => "server",
+            Self::Client => "client seat queue capacity must be greater than zero",
+            Self::Server => "server seat queue capacity must be greater than zero",
+        }
+    }
+
+    /// The refusal of a second full role of this kind, which one at a time
+    /// holds (#1833).
+    fn taken(self) -> &'static str {
+        match self {
+            Self::Client => "the endpoint already has a full client: drop it before making another",
+            Self::Server => "the endpoint already has a full server: drop it before making another",
         }
     }
 }
@@ -544,7 +564,7 @@ pub(crate) struct Attached {
 
 impl Attached {
     fn seated(&self) -> std::sync::MutexGuard<'_, SeatedRole> {
-        self.seated.lock().unwrap_or_else(PoisonError::into_inner)
+        self.seated.locked()
     }
 
     /// Whether the seat still has, or may still get, a role: its queue is
@@ -587,6 +607,9 @@ pub(crate) struct SeatSlot {
     /// By [`Role`].
     counts: [Counts; 2],
     control_full_drops: AtomicU64,
+    /// The octets of the reassembled requests' copies the client seat holds
+    /// (see [`ClientCopies`]).
+    reassembled_octets: Arc<AtomicUsize>,
 }
 
 /// The free slots of a seat of `capacity` that Unconfirmed-Requests leave:
@@ -624,12 +647,13 @@ impl SeatSlot {
             dcc: NodeDcc::default(),
             counts: Default::default(),
             control_full_drops: AtomicU64::new(0),
+            reassembled_octets: Arc::default(),
         });
         (slot, held)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     pub(crate) fn number(&self) -> &SeatNumber {
@@ -668,7 +692,6 @@ impl SeatSlot {
     ) -> Result<ClientSeat<T>, Error> {
         let made = self.make(Role::Client, &coordinator, roles, capacity)?;
         Ok(ClientSeat {
-            device_segmentation: None,
             network,
             coordinator,
             apdus: made.apdus,
@@ -683,7 +706,7 @@ impl SeatSlot {
     /// Make the server's seat on `network`. One server at a time, as for
     /// the client.
     pub(crate) fn attach_server<T: TransportPort>(
-        &self,
+        self: &Arc<Self>,
         network: Arc<NetworkLayer<T>>,
         coordinator: Arc<OutboundTransactionCoordinator>,
         capacity: usize,
@@ -697,6 +720,7 @@ impl SeatSlot {
             number: self.number.for_seat(Role::Server),
             dcc: self.dcc.claim(),
             node: None,
+            client_copies: ClientCopies(Arc::downgrade(self)),
         })
     }
 
@@ -708,23 +732,17 @@ impl SeatSlot {
         capacity: usize,
     ) -> Result<Made, Error> {
         if capacity == 0 {
-            return Err(Error::Encoding(format!(
-                "{} seat queue capacity must be greater than zero",
-                role.name()
-            )));
+            return Err(Error::invalid_config(role.no_room()));
         }
         let mut state = self.state();
         let Some(holds) = state.holds.as_ref().map(mpsc::Sender::downgrade) else {
-            return Err(Error::Encoding("endpoint shutdown".into()));
+            return Err(crate::endpoint_ingress::shutdown_error());
         };
         if state.seats[role as usize]
             .as_ref()
             .is_some_and(Attached::occupied)
         {
-            return Err(Error::Encoding(format!(
-                "the endpoint already has a full {}: drop it before making another",
-                role.name()
-            )));
+            return Err(Error::limit_reached(role.taken()));
         }
         // Answers go to a seat by the lease its coordinator names, so every
         // role on one node leases from the same pool.
@@ -733,8 +751,8 @@ impl SeatSlot {
             .as_ref()
             .is_some_and(|other| other.occupied() && !Arc::ptr_eq(&other.coordinator, coordinator))
         {
-            return Err(Error::Encoding(
-                "every seat on one endpoint shares its pool of invoke IDs".into(),
+            return Err(Error::invalid_config(
+                "every seat on one endpoint shares its pool of invoke IDs",
             ));
         }
         let (apdu_tx, apdus) = mpsc::channel(capacity);
@@ -811,8 +829,14 @@ impl SeatSlot {
     /// [module docs](self)). One that isn't is dropped and counted here,
     /// before any copy is made. An answer is offered as it is.
     pub(crate) fn takes(&self, attached: &Attached, received: &ReceivedApdu) -> bool {
+        self.has_room(attached, received.apdu.first().map(|first| first >> 4))
+    }
+
+    /// [`Self::takes`], for an APDU of `pdu_type`.
+    #[inline]
+    fn has_room(&self, attached: &Attached, pdu_type: Option<u8>) -> bool {
         let capacity = attached.apdus.max_capacity();
-        let floor = match received.apdu.first().map(|first| first >> 4) {
+        let floor = match pdu_type {
             Some(1) => copy_floor(capacity),
             // Too small for three tiers: the server seat's confirmed
             // requests keep the request queue's rule (#2635) and may take

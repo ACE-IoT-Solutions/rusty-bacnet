@@ -26,6 +26,9 @@
 //! [`Client::find`] the devices that hold an object; each one's Who-Is or
 //! Who-Has is a local broadcast unless the [`Discover`] or [`Find`] names
 //! another [`Scope`].
+//!
+//! [`Client::routed_paths`] shows the size limit of each path through a
+//! router, and [`Client::set_routed_path_limit`] sets one (#2667).
 
 pub(crate) mod batch;
 mod connect;
@@ -33,10 +36,11 @@ mod discover;
 pub(crate) mod find;
 mod log;
 pub(crate) mod read;
+pub(crate) mod routed_paths;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use bacnet_client::client::{BACnetClient, DeviceEvent};
@@ -44,6 +48,7 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
+use bacnet_types::sync::MutexExt;
 use tokio::sync::broadcast;
 
 #[cfg(feature = "serial")]
@@ -54,7 +59,7 @@ pub use self::connect::MstpConnect;
 pub use self::connect::ScConnect;
 pub use self::connect::{Bip6Connect, BipConnect};
 pub(crate) use self::discover::Ask;
-pub use self::discover::{DISCOVER_WAIT, Discover, ResolveScope, Scope};
+pub use self::discover::{DISCOVER_WAIT, Discover, ResolveScope, RouterDiscovery, Scope};
 pub use self::find::{FIND_WAIT, Find, FoundObject};
 pub use self::log::Naming;
 pub(crate) use self::log::PagedLog;
@@ -62,10 +67,14 @@ pub(crate) use self::read::{
     Halt, Reader, RpmFailure, failed_locally, rpm_failure, timed_out, unreachable,
 };
 pub use self::read::{ListRead, MAX_OBJECTS, ReadVia, Wanted};
+pub use self::routed_paths::{
+    DEFAULT_ROUTED_PATH_MAX_NPDU, RoutedPath, RoutedPathStatus, RoutedPaths,
+};
 use crate::device::{ClientEvent, DeviceAddress, Follows};
 use crate::format::Value;
 use crate::limits::RequestLimits;
 use crate::reading::Reading;
+use crate::watch::WatchSettings;
 use crate::write::WritePolicy;
 
 #[cfg(doc)]
@@ -91,6 +100,10 @@ pub const DEVICE_PROPERTIES: [PropertyIdentifier; 13] = [
 
 /// How long a handle made from an instance no address claims waits for
 /// the device's I-Am, unless [`Client::with_resolve_wait`] says otherwise.
+/// It is the wait per Who-Is: a handle made from a remote address the
+/// discovery table holds no row for may send two, one addressed to the
+/// station and one to its network, so a silent station costs up to twice
+/// this (6 s by default), plus any wait for the Who-Is rate limit.
 pub const RESOLVE_WAIT: Duration = Duration::from_secs(3);
 
 /// The stop flag of the client's readers. Nothing sets it: a call is
@@ -139,9 +152,28 @@ impl DeviceSummary {
 /// clone: clones share everything but how a handle made from an instance
 /// looks for its device: how long it waits for an I-Am
 /// ([`with_resolve_wait`](Self::with_resolve_wait)) and where its Who-Is
-/// goes ([`with_resolve_scope`](Self::with_resolve_scope)); and the
+/// goes ([`with_resolve_scope`](Self::with_resolve_scope)); the
 /// priorities its handles may write at
-/// ([`with_write_policy`](Self::with_write_policy)).
+/// ([`with_write_policy`](Self::with_write_policy)); and the settings its
+/// watches take ([`with_watch_settings`](Self::with_watch_settings)), whose
+/// hubs every clone shares by settings ([`watch_with`](Self::watch_with)).
+///
+/// What the client learns of a device it keeps by the device's address,
+/// for every handle and clone: that it refused ReadPropertyMultiple
+/// ([`refused_rpm`](Self::refused_rpm)), which it then reads by
+/// ReadProperty for the client's life; the instance the device last named
+/// itself, read by a handle made from the address or in answer to a watch
+/// hub's own reads (#2603); the most properties one ReadPropertyMultiple of
+/// [`Device::point_records`] can ask it for, once it couldn't send a larger
+/// batch's answer ([`rpm_limit`](Self::rpm_limit)); and what a watch hub
+/// learned there: that the device refused a COV service, or a read by the
+/// wildcard instance. All but the first go when the discovery table loses
+/// its row at that address or a device there announces another instance,
+/// since another device may answer there now, and when more of the table's
+/// changes came at once than the client's channel holds, as it then can't
+/// tell which addresses changed: each device's next point records cost one
+/// refused request to learn the limit again. Each is kept for at most 4,096
+/// addresses.
 ///
 /// The transport type defaults to [`AnyTransport`], which the connect
 /// builders ([`bip`](Client::bip) and the others) make, so an application
@@ -156,6 +188,8 @@ pub struct Client<T: TransportPort + 'static = AnyTransport> {
     resolve_scope: ResolveScope,
     /// The priorities this clone's handles may write and relinquish at.
     write_policy: WritePolicy,
+    /// What this clone's watches take unless told otherwise.
+    pub(crate) watch_settings: WatchSettings,
 }
 
 /// What a [`Client`]'s clones share. Each std mutex is held only to look up
@@ -166,12 +200,18 @@ pub(crate) struct Shared<T: TransportPort + 'static> {
     /// Addresses whose device refused ReadPropertyMultiple, read by
     /// ReadProperty from then on.
     no_rpm: Mutex<HashSet<DeviceAddress>>,
-    /// Watch hubs made on this client, so each takes its own range of
-    /// subscriber process identifiers (#2185).
-    hubs: AtomicU32,
-    /// The client's own hub, which its [`watch`](Client::watch)es share
-    /// while any holds a point, and its range of process identifiers.
-    pub(crate) hub: Mutex<crate::watch::OwnHub<T>>,
+    /// The most properties one ReadPropertyMultiple of point records asks
+    /// for at each address whose device couldn't send a larger batch's
+    /// answer ([`Client::rpm_limit`]), with the instance that device had:
+    /// it only ever shrinks, and goes with the address's other learned
+    /// facts (`Client::sweep`); at most `device::follow::REMEMBERED`.
+    pub(crate) rpm_limits: Mutex<HashMap<DeviceAddress, (u32, usize)>>,
+    /// The ranges of subscriber process identifiers the client's live hubs
+    /// hold, so no two alive at once share one (#2185).
+    pub(crate) ranges: Mutex<crate::watch::hub::ranges::Ranges>,
+    /// The hubs the client's [`watch`](Client::watch)es run on, one for
+    /// each set of watch settings in use. Taken before `ranges`.
+    pub(crate) watch_pool: Mutex<crate::watch::Pool<T>>,
     /// What each address's device declared and did of COV
     /// ([`CovSupport`](crate::watch::CovSupport)).
     pub(crate) cov: Mutex<HashMap<DeviceAddress, crate::watch::CovMemory>>,
@@ -185,10 +225,18 @@ pub(crate) struct Shared<T: TransportPort + 'static> {
     /// loses a row at its address, or a device there announces another
     /// instance.
     pub(crate) instances: Mutex<HashMap<DeviceAddress, u32>>,
+    /// The stations on other networks a lookup by address found answering
+    /// only a Who-Is to their network, or nothing
+    /// ([`StationMisses`](crate::device::StationMisses)).
+    pub(crate) station_misses: Mutex<crate::device::StationMisses>,
     /// The discovery table's changes, for the rows it loses and the
     /// instances announced at each address.
     pub(crate) changes: Mutex<broadcast::Receiver<DeviceEvent>>,
     pub(crate) events: broadcast::Sender<ClientEvent>,
+    /// One confirmed request's time with every retry on the low-level
+    /// client (its APDU timeout times one more than its retries), which a
+    /// watch's renewals leave room for.
+    pub(crate) request_budget: Duration,
 }
 
 impl<T: TransportPort + 'static> Clone for Client<T> {
@@ -198,13 +246,14 @@ impl<T: TransportPort + 'static> Clone for Client<T> {
             resolve_wait: self.resolve_wait,
             resolve_scope: self.resolve_scope,
             write_policy: self.write_policy,
+            watch_settings: self.watch_settings.clone(),
         }
     }
 }
 
 /// Lock `mutex`, past a panic elsewhere.
 pub(crate) fn lock<V>(mutex: &Mutex<V>) -> MutexGuard<'_, V> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    mutex.locked()
 }
 
 impl<T: TransportPort + 'static> Client<T> {
@@ -212,34 +261,40 @@ impl<T: TransportPort + 'static> Client<T> {
     /// any other worker on the same low-level client).
     pub fn new(client: Arc<BACnetClient<T>>, limits: Arc<RequestLimits>) -> Self {
         let changes = Mutex::new(client.device_events());
+        let request_budget = client.apdu_timeout() * (u32::from(client.apdu_retries()) + 1);
         Self {
             shared: Arc::new(Shared {
                 client,
                 limits,
                 no_rpm: Mutex::new(HashSet::new()),
-                hubs: AtomicU32::new(0),
-                hub: Mutex::new(crate::watch::OwnHub::new()),
+                rpm_limits: Mutex::new(HashMap::new()),
+                ranges: Mutex::default(),
+                watch_pool: Mutex::new(crate::watch::Pool::new()),
                 cov: Mutex::new(HashMap::new()),
                 follows: Mutex::new(HashMap::new()),
                 instances: Mutex::new(HashMap::new()),
+                station_misses: Mutex::default(),
                 changes,
                 events: broadcast::channel(64).0,
+                request_budget,
             }),
             resolve_wait: Some(RESOLVE_WAIT),
             resolve_scope: ResolveScope::default(),
             write_policy: WritePolicy::default(),
+            watch_settings: WatchSettings::default(),
         }
     }
 
     /// A clone with the settings [`new`](Self::new) gives, whichever clone
-    /// this is: what the client's own watch hub works with (it never
-    /// writes).
+    /// this is: what the client's watch hubs work with (they never write,
+    /// and their own settings are theirs).
     pub(crate) fn base(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
             resolve_wait: Some(RESOLVE_WAIT),
             resolve_scope: ResolveScope::default(),
             write_policy: WritePolicy::default(),
+            watch_settings: WatchSettings::default(),
         }
     }
 
@@ -250,12 +305,6 @@ impl<T: TransportPort + 'static> Client<T> {
         Arc::try_unwrap(self.shared)
             .ok()
             .map(|shared| shared.client)
-    }
-
-    /// How many watch hubs were made on this client before this one: a
-    /// client's hubs share it, so their subscriptions can't clash.
-    pub(crate) fn next_hub(&self) -> u32 {
-        self.shared.hubs.fetch_add(1, Ordering::Relaxed)
     }
 
     /// The limits every request waits for.
@@ -271,7 +320,11 @@ impl<T: TransportPort + 'static> Client<T> {
 
     /// A clone of this client whose handles made from an instance that no
     /// address claims wait `wait` for the device's I-Am after one Who-Is
-    /// ([`RESOLVE_WAIT`] for [`new`](Self::new)'s), and whose following
+    /// ([`RESOLVE_WAIT`] for [`new`](Self::new)'s), whose handles made from
+    /// a remote address with no row wait `wait` after each of up to two
+    /// (addressed to the station, then to its network: up to `2 × wait`
+    /// for a silent station, plus any wait for the Who-Is rate limit), and
+    /// whose following
     /// handles, after a request times out, ask once where the device went
     /// and give the answers that long (see [`QUIET`](crate::device::QUIET)).
     /// `None` sends no Who-Is: such a handle fails at once with
@@ -382,6 +435,57 @@ impl<T: TransportPort + 'static> Client<T> {
     /// Remember that the device at `address` refused ReadPropertyMultiple.
     pub(crate) fn refuse_rpm(&self, address: &DeviceAddress) {
         lock(&self.shared.no_rpm).insert(address.clone());
+    }
+
+    /// The most properties one ReadPropertyMultiple of
+    /// [`Device::point_records`] asks the device at `device` for, once it
+    /// couldn't send the answer to a larger batch of several objects (an
+    /// abort or reject for the answer's size, or a request too long for
+    /// the link or a router's path): half that batch's properties, so it
+    /// holds for any [`InventoryOptions`](crate::InventoryOptions), whose
+    /// objects ask for more or fewer each. `None` while no batch was
+    /// refused for its size, and 32 properties apply.
+    ///
+    /// It only shrinks: a device whose buffer was full once keeps the
+    /// smaller batches, which cost more requests but are never refused for
+    /// their size again. It goes, with the instance read for the address,
+    /// when the discovery table loses its row at that address or a device
+    /// there announces another instance, and then starts again from 32;
+    /// every device's goes when a burst of the table's changes overran the
+    /// client's channel, and its next point records cost one refused
+    /// request to learn it again. A timeout, a silent device or any other
+    /// error leaves it as it was. An
+    /// [`inventory`](crate::Device::inventory) keeps its own count, which
+    /// starts at 16 objects for each inventory and never reads or sets
+    /// this.
+    pub fn rpm_limit(&self, device: &DeviceAddress) -> Option<usize> {
+        self.sweep();
+        lock(&self.shared.rpm_limits)
+            .get(device)
+            .map(|&(_, properties)| properties)
+    }
+
+    /// Remember that the device at `device`, instance `instance`, takes
+    /// at most `properties` properties a ReadPropertyMultiple of point
+    /// records, when that is fewer than before.
+    pub(crate) fn settle_rpm_limit(
+        &self,
+        device: &DeviceAddress,
+        instance: u32,
+        properties: usize,
+    ) {
+        if properties >= batch::MAX_BATCH_PROPERTIES {
+            return;
+        }
+        self.sweep();
+        let mut limits = lock(&self.shared.rpm_limits);
+        match limits.get_mut(device) {
+            Some((known, limit)) if *known == instance => *limit = (*limit).min(properties),
+            _ => {
+                crate::device::keep_room(&mut limits, |_| true);
+                limits.insert(device.clone(), (instance, properties));
+            }
+        }
     }
 }
 

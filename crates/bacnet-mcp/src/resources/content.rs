@@ -1,19 +1,18 @@
 //! What each resource holds.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_ops::client::Wanted;
 use bacnet_ops::format::{self, RawRow};
 use bacnet_ops::label::kebab;
 use bacnet_ops::limits::charged;
-use bacnet_ops::watch::Watched;
 use bacnet_ops::watch::hub::{Phase, Snapshot, Source};
+use bacnet_ops::watch::{Watched, Why};
 use bacnet_ops::{DeviceAddress, PropertyError, PropertyRef, Reading};
 use bacnet_transport::port::TransportPort;
-use bacnet_types::constructed::BACnetAddress;
+use bacnet_types::sync::MutexExt;
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
@@ -40,13 +39,13 @@ const CACHE_CAP: usize = 64;
 pub(crate) type Cache = Mutex<HashMap<DeviceAddress, (Instant, Value)>>;
 
 fn cached(cache: &Cache, device: &DeviceAddress, ttl: Duration) -> Option<Value> {
-    let cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let cache = cache.locked();
     let (at, body) = cache.get(device)?;
     (at.elapsed() < ttl).then(|| body.clone())
 }
 
 fn keep(cache: &Cache, cap: usize, device: &DeviceAddress, body: &Value) {
-    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut cache = cache.locked();
     if cache.len() >= cap.max(CACHE_CAP)
         && !cache.contains_key(device)
         && let Some(oldest) = cache
@@ -95,7 +94,9 @@ pub(super) async fn point<T: TransportPort + 'static>(
             };
             match device.handle.read(wanted).await {
                 Ok(value) => vec![(property, Ok(value.raw))],
-                Err(error) if error.unreachable() => return Err(failed(error)),
+                Err(error) if error.unreachable() || error.failed_locally() => {
+                    return Err(failed(error));
+                }
                 Err(error) => vec![(property, Err(PropertyError::from(error)))],
             }
         }
@@ -162,6 +163,7 @@ pub(crate) fn point_body<T: TransportPort + 'static>(
             });
             body["state"] = json!(state_name(snapshot.state));
             body["note"] = json!(snapshot.note);
+            body["why"] = why_body(snapshot.why.as_ref());
             body["seq"] = json!(snapshot.seq);
             body["age_ms"] = json!(
                 snapshot
@@ -179,31 +181,43 @@ pub(crate) fn point_body<T: TransportPort + 'static>(
     body
 }
 
+/// Why a watched point isn't live, as data beside the note: its kind, with
+/// the instances a replaced point names or the address a moved one does.
+/// Numbers and names only, no device text, so an agent need not read the
+/// note.
+pub(crate) fn why_body(why: Option<&Why>) -> Value {
+    let kind = |kind: &str| json!({ "kind": kind });
+    match why {
+        None => Value::Null,
+        Some(Why::Replaced { watched, found }) => {
+            json!({ "kind": "replaced", "watched": watched, "found": found })
+        }
+        Some(Why::Moved { to }) => json!({ "kind": "moved", "to": to }),
+        Some(Why::Refused(_)) => kind("refused"),
+        Some(Why::ForeignSender { sender }) => {
+            json!({ "kind": "foreign-sender", "sender": sender })
+        }
+        Some(Why::NoAnswer(_)) => kind("no-answer"),
+        Some(Why::Full(_)) => kind("full"),
+        Some(Why::Lapsed(_)) => kind("lapsed"),
+        Some(Why::Missing) => kind("missing"),
+        Some(_) => kind("other"),
+    }
+}
+
 pub(crate) fn state_name(state: Phase) -> &'static str {
     match state {
         Phase::Starting => "starting",
         Phase::Live => "live",
         // The hub gives a point up when its device answers at another
-        // address now (the note says where), or under
+        // address now (the note says where), when another device answers
+        // at its address (the note names both instances), or under
         // `MissingDevice::Fail`, which the server doesn't use: a failed
         // watch either way.
         Phase::Failed | Phase::Gone => "failed",
         Phase::Unreachable => "unreachable",
         Phase::Stopped => "stopped",
     }
-}
-
-/// The row a device is listed by: its instance, then its address as the
-/// discovery table keys it. No two rows share it. A row with no one
-/// station to name (the table keeps none) falls back to its MAC. The table
-/// never stores such a row, so the fallback cannot run; it only spares a
-/// panic.
-fn row_key(found: &DiscoveredDevice) -> uri::DeviceCursor {
-    let address = found.address().unwrap_or_else(|| BACnetAddress {
-        network_number: 0,
-        mac_address: found.mac_address.clone(),
-    });
-    uri::DeviceCursor::new(found.object_identifier.instance_number(), address)
 }
 
 /// A page of the discovery table, in reach: no device text, nothing sent.
@@ -226,10 +240,10 @@ pub(super) async fn devices<T: TransportPort + 'static>(
                 .policy
                 .allows_device(found.object_identifier.instance_number())
     });
-    devices.sort_by_cached_key(row_key);
+    devices.sort_by_cached_key(uri::DeviceCursor::of);
     let total = devices.len();
     let start = after.map_or(0, |after| {
-        devices.partition_point(|found| row_key(found) <= *after)
+        devices.partition_point(|found| uri::DeviceCursor::of(found) <= *after)
     });
     let page = ctx.policy.caps.devices;
     let shown = &devices[start..total.min(start.saturating_add(page))];
@@ -248,7 +262,7 @@ pub(super) async fn devices<T: TransportPort + 'static>(
         "hint": "bacnet_discover finds more; this lists only devices already heard",
     });
     if truncated && let Some(last) = shown.last() {
-        body["next"] = json!(uri::devices_after(&row_key(last)));
+        body["next"] = json!(uri::devices_after(&uri::DeviceCursor::of(last)));
     }
     Ok(body)
 }
@@ -450,6 +464,11 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "requests_last_10_s": limits.recent(),
             "agents_requests_last_10_s": limits.recent_agents(),
         });
+        // The routed paths' size limits and the too-long rejects the client
+        // did not believe (#2667): why requests through a router may time
+        // out. Read-only: a limit is set where the client was started.
+        body["routed_paths"] =
+            serde_json::to_value(client.routed_paths()).expect("routed paths serialize");
     }
     // Attached to the TUI: whether a write could be confirmed there now
     // (#2185). Read-only: only the person at the TUI arms it.

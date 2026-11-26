@@ -203,7 +203,7 @@ class MixedWorkloadTests(unittest.IsolatedAsyncioTestCase):
             next_frame = anext(waiting_frames)
             next_event = anext(events)
             await self.endpoint.close()
-            with self.assertRaisesRegex(rb.BacnetError, "the client stopped while it waited"):
+            with self.assertRaisesRegex(rb.BacnetError, "request ended without an answer"):
                 await withheld
             for pending in (next_frame, next_event, anext(frames)):
                 with self.assertRaises(StopAsyncIteration):

@@ -154,6 +154,27 @@ fn padded_frame_decodes_correctly() {
     assert_eq!(decoded.source, src);
 }
 
+/// An NPDU longer than a frame carries is refused as too long for the
+/// link, with its length and the limit (#1833), as MS/TP and B/IP refuse
+/// theirs; the longest goes.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_npdu_past_1497_octets_is_too_long_for_the_link() {
+    use transport::{MAX_ETHERNET_NPDU, fits};
+    fits(&[0; MAX_ETHERNET_NPDU]).unwrap();
+    let refused = fits(&[0; MAX_ETHERNET_NPDU + 1]).unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::SendTooLong {
+                length: 1498,
+                limit: 1497
+            }
+        ),
+        "{refused:?}"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn ethernet_transport_new() {
@@ -233,17 +254,25 @@ fn the_loopback_link_resolves_by_index() {
 }
 
 /// #1883: starting on a missing interface fails before any socket opens,
-/// so it needs no raw-socket permission, and leaves the transport unstarted.
+/// so it needs no raw-socket permission, and leaves the transport unstarted:
+/// a send is refused as one to a transport not running (#1833), and a stop
+/// doesn't change that, since the transport starts again.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn starting_on_a_missing_interface_fails_cleanly() {
+    use bacnet_types::error::Lifecycle;
     let mut transport = EthernetTransport::new("bacnet-none0");
     let error = transport.start().await.unwrap_err();
     assert!(error.to_string().contains("bacnet-none0"), "{error}");
     assert_eq!(transport.local_mac(), &[0; 6]);
     assert!(matches!(
         transport.send_broadcast(&[1, 0]).await,
-        Err(Error::Transport(e)) if e.kind() == std::io::ErrorKind::NotConnected
+        Err(Error::State(Lifecycle::NotRunning, _))
+    ));
+    transport.stop().await.unwrap();
+    assert!(matches!(
+        transport.send_unicast(&[1, 0], &[2; 6]).await,
+        Err(Error::State(Lifecycle::NotRunning, _))
     ));
 }
 

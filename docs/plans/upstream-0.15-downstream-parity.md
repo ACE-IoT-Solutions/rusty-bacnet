@@ -1,5 +1,10 @@
 # Upstream 0.15 integration: downstream acceptance
 
+This is the historical 0.15 integration record. The 0.18.0 release candidate
+integrates upstream `4ade571740ab4cdbe54417cbf171db3b86c4cf7c`. Its merge
+decisions and qualification scopes are recorded in [downstream runtime support](downstream-runtime-support.md).
+
+
 The integration merges upstream `dev` through
 `0ac1fc102fd466c7c101f6eef7196c2070a6c6f1` into the ACE migration base
 `788e4d28e3ec2feb25a906c9320c834948f4d332`. The first checkpoint was

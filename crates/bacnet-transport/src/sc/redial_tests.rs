@@ -66,9 +66,9 @@ fn loopback_redial_connector(
         Box::pin(async move {
             dial_count.fetch_add(1, Ordering::SeqCst);
             let (client, hub) = LoopbackWebSocket::pair();
-            hub_tx
-                .send(hub)
-                .map_err(|_| Error::Encoding("test connector hub receiver dropped".into()))?;
+            hub_tx.send(hub).map_err(|_| {
+                Error::Transport(std::io::Error::other("test connector hub receiver dropped"))
+            })?;
             Ok(client)
         })
     }
@@ -121,14 +121,14 @@ fn loopback_first_success_then_error_connector(
         Box::pin(async move {
             let attempt = dial_count.fetch_add(1, Ordering::SeqCst) + 1;
             if attempt != 1 {
-                return Err(Error::Encoding(format!(
+                return Err(Error::Transport(std::io::Error::other(format!(
                     "test connector rejects dial attempt {attempt}"
-                )));
+                ))));
             }
             let (client, hub) = LoopbackWebSocket::pair();
-            hub_tx
-                .send(hub)
-                .map_err(|_| Error::Encoding("test connector hub receiver dropped".into()))?;
+            hub_tx.send(hub).map_err(|_| {
+                Error::Transport(std::io::Error::other("test connector hub receiver dropped"))
+            })?;
             Ok(client)
         })
     }
@@ -147,9 +147,9 @@ fn gate_send_redial_connector(
         Box::pin(async move {
             dial_count.fetch_add(1, Ordering::SeqCst);
             let (client, hub) = GateSendWebSocket::pair(Arc::new(AtomicBool::new(false)));
-            hub_tx
-                .send(hub)
-                .map_err(|_| Error::Encoding("test connector hub receiver dropped".into()))?;
+            hub_tx.send(hub).map_err(|_| {
+                Error::Transport(std::io::Error::other("test connector hub receiver dropped"))
+            })?;
             Ok(client)
         })
     }
@@ -162,9 +162,9 @@ fn failing_loopback_connector()
 + 'static {
     move || {
         Box::pin(async {
-            Err(Error::Encoding(
-                "test primary connector intentionally fails".into(),
-            ))
+            Err(Error::Transport(std::io::Error::other(
+                "test primary connector intentionally fails",
+            )))
         })
     }
 }
@@ -263,8 +263,7 @@ async fn sc_reconnect_redials_fresh_websocket_after_socket_teardown() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 3,
-            retry_forever: false,
+            max_retries: Some(3),
         });
 
     let primary_task = tokio::spawn(async move {
@@ -382,8 +381,7 @@ async fn sc_primary_restore_connector_redials_primary_socket() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 25,
             max_delay_ms: 25,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 
@@ -477,8 +475,7 @@ async fn sc_reconnect_connector_timeout_counts_as_failed_attempt() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         });
 
     let primary_task = tokio::spawn(async move {
@@ -543,8 +540,7 @@ async fn sc_primary_restore_connector_timeout_leaves_failover_send_path_active()
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 
@@ -627,8 +623,7 @@ async fn sc_failover_reconnect_exhaustion_does_not_redial_failover_again() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         });
 
     let failover_task = tokio::spawn(async move {
@@ -691,8 +686,7 @@ async fn sc_primary_restore_publishes_before_hung_failover_disconnect_send() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 
@@ -763,8 +757,7 @@ async fn sc_drop_aborts_hung_primary_restore_failover_disconnect() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 

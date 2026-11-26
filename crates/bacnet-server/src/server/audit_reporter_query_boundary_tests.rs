@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_endpoint_core::segmented_request::{Receipt, Segment, SegmentedRequests};
 
 #[tokio::test]
 async fn audit_reporter_query_decode_validation_and_ack_encode_failures_are_silent() {
@@ -209,6 +210,17 @@ async fn audit_reporter_query_outbound_segmentation_and_divergence_are_silent() 
         assert_eq!(reads.load(Ordering::Acquire), 1);
         assert!(records(&fixture).is_empty());
         assert_idle(&fixture);
+        if segmented {
+            // The requester ends the answer it won't acknowledge: another
+            // request under its invoke ID while that answer is still sent
+            // would draw an Abort instead (#2770).
+            let abort = AbortPdu {
+                sent_by_server: false,
+                invoke_id: 77,
+                abort_reason: AbortReason::OTHER,
+            };
+            ingress_apdu(&fixture.server, Apdu::Abort(abort), None).await;
+        }
         assert!(matches!(
             dispatch(&fixture.server, SERVICE, encode(&query(None, 0))).await,
             Apdu::ComplexAck(_)
@@ -278,9 +290,9 @@ async fn audit_reporter_query_response_send_failure_keeps_admitted_record() {
 
 #[tokio::test]
 async fn audit_reporter_query_reassembled_envelope_is_not_suppressed() {
-    // The existing request_reassembly suite owns segment collection/validation.
-    // Exercise its production completion envelope at the shared dispatch seam,
-    // rather than sending raw fragments directly to the post-reassembly API.
+    // The request_reassembly suite owns segment collection and validation.
+    // Take the shared receiver's completed request (the one the dispatch loop
+    // hands on) to the shared dispatch seam.
     let mut fixture = server(read_reporter()).await;
     let (reads, _) = add_log(&fixture, 1, "real").await;
     let data = encode(&query(None, 1));
@@ -289,7 +301,28 @@ async fn audit_reporter_query_reassembled_envelope_is_not_suppressed() {
     first.more_follows = true;
     first.sequence_number = Some(0);
     first.proposed_window_size = Some(2);
-    let req = crate::server::segmented_receive::reassembled_confirmed_request(&first, data);
+    let mut last = first.clone();
+    last.more_follows = false;
+    last.sequence_number = Some(1);
+    last.service_request = data.slice(5..);
+    let mut receiver = SegmentedRequests::new(Duration::from_secs(5));
+    let route = bacnet_network::response_route::ResponseRoute::unverified();
+    let segment = |request| Segment {
+        source_mac: &[1],
+        source_network: None,
+        route: &route,
+        request,
+    };
+    let now = crate::runtime_clock::now();
+    assert!(matches!(
+        receiver.receive(segment(&first), now),
+        Receipt::Ack(_)
+    ));
+    let Receipt::Complete(done) = receiver.receive(segment(&last), now) else {
+        panic!("the last segment completes the request");
+    };
+    let req = done.request;
+    assert_eq!(req.service_request, data);
     let (tx, rx) = oneshot::channel();
     ingress(&fixture.server, req, Some(tx)).await;
     let bytes = tokio::time::timeout(Duration::from_secs(1), rx)

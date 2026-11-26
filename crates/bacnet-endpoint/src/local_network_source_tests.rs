@@ -121,7 +121,7 @@ fn record(sent: Sent, station: u8) -> BACnetAuditNotification {
 /// peer, and return the record it gave `station`.
 async fn audited_read(
     endpoint: &mut Endpoint,
-    destination: EndpointApduDestination,
+    destination: Station,
     station: u8,
 ) -> BACnetAuditNotification {
     let read = endpoint.read(destination);
@@ -190,13 +190,50 @@ async fn source_routes_refuse_an_address_on_another_network_but_audit_a_routed_r
             assert_eq!(audit.target_device, address(network, PEER));
             // The change sent nothing: the next frame is a direct read's
             // request, and its record still goes to the bound Device.
-            let direct = EndpointApduDestination::Direct {
-                destination_mac: mac(PEER),
-            };
-            audited_read(&mut endpoint, direct, SINK).await;
+            audited_read(&mut endpoint, direct_read(), SINK).await;
             endpoint.stop().await;
         }
     }
+}
+
+/// A source-audited read made with data attributes, which the node runs in
+/// a task of its own, sends its request with them (#2723); its record, the
+/// node's own notification, carries none.
+#[tokio::test(start_paused = true)]
+async fn an_audited_read_takes_its_data_attributes_along() {
+    let mut endpoint = source(SessionRole::ClientOnly, true).await;
+    let attribute = bacnet_transport::port::DataAttribute {
+        option_type: 31,
+        must_understand: false,
+        data: vec![0x01, 0x02, 0x07],
+    };
+    let client = Arc::new(endpoint.session.client().unwrap());
+    let attributes = vec![attribute.clone()];
+    let read = tokio::spawn(async move {
+        client
+            .with_data_attributes(attributes)
+            .read_property(
+                &direct_read(),
+                analog(),
+                PropertyIdentifier::PRESENT_VALUE,
+                None,
+            )
+            .await
+    });
+    let sent = endpoint.next().await;
+    assert_eq!(sent.attributes, std::slice::from_ref(&attribute));
+    let npdu = decode_npdu(sent.npdu).unwrap();
+    let Apdu::ConfirmedRequest(request) = decode_apdu(npdu.payload).unwrap() else {
+        panic!("a confirmed request")
+    };
+    endpoint
+        .deliver_apdu(ack(&request, 5), mac(PEER), None)
+        .await;
+    assert!(bounded(read).await.unwrap().is_ok());
+    let audit = endpoint.next().await;
+    assert!(audit.attributes.is_empty());
+    assert_eq!(record(audit, SINK).invoke_id, Some(request.invoke_id));
+    endpoint.stop().await;
 }
 
 #[path = "local_network_recipient_tests.rs"]
@@ -207,3 +244,9 @@ mod durable_drop;
 
 #[path = "source_pacing_tests.rs"]
 mod pacing;
+
+#[path = "source_audit_share_tests.rs"]
+mod share;
+
+#[path = "source_audit_guard_tests.rs"]
+mod guard;

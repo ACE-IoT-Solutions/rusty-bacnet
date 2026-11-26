@@ -142,18 +142,25 @@ past the end.
 
 ## PropertyReadContext
 
-Address and exact octets of a value returned in an RP or RPM ACK.
+The object, property and array index the ACK of a ReadProperty or
+ReadPropertyMultiple named, which can differ from the request (a
+wildcard Device instance names the device's own). Equality and hashing
+use the returned selectors. Copy and pickle preserve original ACK octets.
 
 Properties:
 
+- `raw: bytes | None`: Exact value bytes for an ACK, or None for a selector-only context.
 - `object_id: ObjectIdentifier`
 - `property_id: int`
 - `array_index: int | None`
-- `raw: bytes`
 
 ## PropertyDecodeResult
 
-Outcome of interpreting property octets under a caller-supplied declaration.
+What `decode_property_as` made of some octets: `value` (with
+`value_names` when names were given) when `status` is `"decoded"`,
+otherwise a `diagnostic`. `raw` is the input, kept in every case.
+A value class: equal when every field is, hashable, and it copies and
+pickles.
 
 Properties:
 
@@ -228,16 +235,25 @@ Data Input's Present\_Value (`"authentication_factor"`:
 `report_access_event_local` and `report_credential_read_local`
 take), and an Event Enrollment's Event\_Parameters
 (`"event_parameter"`: a mapping whose `kind` names the algorithm;
-see docs/python-api.md). Access\_Event\_Time and Last\_Restore\_Time read
-as `"timestamp"`, and Subordinate\_List as a list of
+see docs/python-api.md), and a Network Port's
+BBMD\_Broadcast\_Distribution\_Table (`"bdt_entry"`: a `BdtEntry`)
+and BBMD\_Foreign\_Device\_Table (`"fdt_entry"`: an `FdtEntry`, as
+`read_fdt` gives it). A whole read of those two is tagged `"bdt"`
+or `"fdt"`, not `"list"`, empty ones included (#2690);
+`PropertyValue.bdt(rows)` builds a BDT to write from rows (#2710),
+and the FDT is read-only. A Network Port's FD\_BBMD\_Address and
+BACnet\_IP\_Global\_Address read as `"host_n_port"`: the address text
+a `BdtEntry` gives its BBMD, `None` for no host (#2710). Access\_Event\_Time and
+Last\_Restore\_Time read as `"timestamp"`, and Subordinate\_List as a list of
 `"device_object_reference"`. Tags elements are `"name_value"`
 mappings with `"name": str` and `"value": None | PropertyValue`. Semantic tags
 have `None`; valued NULL is `PropertyValue.null()`. Date and Time
 are separate primitive values, not a combined pair. Whole Tags reads
 are lists, indexed reads one element, and index zero an unsigned count.
 Each element keeps its octets, so the value
-writes back unchanged. A value that isn't those elements, to the last
-octet, follows the rules below.
+writes back unchanged, and equality compares those octets: two
+encodings of the same entry are unequal. A value that isn't those
+elements, to the last octet, follows the rules below.
 - Other content with a context tag (a Lighting Output's
 Lighting\_Command, a vendor's proprietary property) is `tagged`
 (#2618): `value` is the tree of its tags, a list of `TagNode`, and
@@ -276,11 +292,11 @@ octets it was read from.
 
 Properties:
 
-- `tag: str`: Type tag: 'null', 'boolean', 'unsigned', 'signed', 'real', 'double', 'octet\_string', 'character\_string', 'bit\_string', 'enumerated', 'date', 'time', 'object\_identifier', 'list', 'application\_data', 'tagged' (a value read as its tags, `value` a list of `TagNode`), 'bdt' or 'fdt' for a whole Network Port table, or one typed constructed element: 'destination', 'port\_permission', 'read\_access\_specification', 'read\_access\_result', 'action\_list', 'device\_object\_reference', 'authentication\_factor\_format', 'stage\_limit\_value', 'access\_rule', 'device\_object\_property\_reference', 'object\_property\_reference', 'property\_access\_result', 'recipient', 'daily\_schedule', 'special\_event', 'calendar\_entry', 'date\_range', 'timestamp', 'cov\_subscription', 'value\_source', 'scale', 'prescale', 'address\_binding', 'shed\_level', 'authentication\_factor', 'event\_parameter'.
-- `value: Any`: The Python-native value (int, float, str, bytes, bool, dict, tuple, ObjectIdentifier, BitString, list, or None); `application_data` is `bytes` (except a DateTime Value's set Priority\_Array slot, `[date, time]`), `tagged` a list of `TagNode`, `bdt` a list of `NetworkPortBdtEntry`, `fdt` a list of `NetworkPortFdtEntry`, and a typed constructed element the form its typed write takes, or the form docs/python-api.md gives it. A date is `(year, month, day, day_of_week)` with the full year, or 255 for an unspecified year, as in every other date the binding reads. A bit string is a `BitString`, named when the value was read from a property of known bit-string type.
+- `tag: str`: Type tag: 'null', 'boolean', 'unsigned', 'signed', 'real', 'double', 'octet\_string', 'character\_string', 'bit\_string', 'enumerated', 'date', 'time', 'object\_identifier', 'list', 'application\_data', 'tagged' (a value read as its tags, `value` a list of `TagNode`), 'bdt' or 'fdt' (a whole Network Port BDT or FDT, `value` a list of `BdtEntry` or `FdtEntry`), or one typed constructed element: 'destination', 'port\_permission', 'read\_access\_specification', 'read\_access\_result', 'action\_list', 'device\_object\_reference', 'authentication\_factor\_format', 'stage\_limit\_value', 'access\_rule', 'device\_object\_property\_reference', 'object\_property\_reference', 'property\_access\_result', 'recipient', 'daily\_schedule', 'special\_event', 'calendar\_entry', 'date\_range', 'timestamp', 'cov\_subscription', 'value\_source', 'scale', 'prescale', 'address\_binding', 'shed\_level', 'authentication\_factor', 'event\_parameter', 'bdt\_entry', 'fdt\_entry', 'host\_n\_port'.
+- `value: Any`: The Python-native value (int, float, str, bytes, bool, dict, tuple, ObjectIdentifier, BitString, list, or None); `application_data` is `bytes` (except a DateTime Value's set Priority\_Array slot, `[date, time]`), `tagged` a list of `TagNode`, `bdt` a list of `BdtEntry`, `fdt` a list of `FdtEntry`, `host_n_port` the address text (`"ip:port"`, `"[v6]:port"` or `"name:port"`, `None` for no host), and a typed constructed element the form its typed write takes, or the form docs/python-api.md gives it. A date is `(year, month, day, day_of_week)` with the full year, or 255 for an unspecified year, as in every other date the binding reads. A bit string is a `BitString`, named when the value was read from a property of known bit-string type.
 - `name: str | None`: The name of an enumerated value read from a property whose enumeration is known (`"HIGH_LIMIT"` for an Event\_State of 3), else None. `value` stays the number. Values built with the constructors carry no property, so their name is None; copies and pickles of a read value keep it.
-- `read_context: PropertyReadContext | None`: Returned object, numeric property, optional index and exact wire bytes for an RP or RPM value.
-- `octets: bytes`: The value's octets as a write of it carries them: a typed constructed element's are the octets it was read from, a whole typed collection's its elements' back to back, and any other value its application-tagged encoding. Raises ValueError for a value that doesn't encode.
+- `read_context: PropertyReadContext | None`: The object, property and array index the ACK named, for a value a network `read_property` or `read_property_multiple` returned; None for any other value (local reads, COV values, Group members, values you build). It takes no part in equality, hashing or `repr`; copies and pickles keep it.
+- `octets: bytes`: The value's octets as a write of it carries them. For a read value, a `tagged` or `application_data` value and a typed constructed element hold the octets exactly as received, and a whole typed collection its elements' back to back. A primitive (or a list of them) is re-encoded from its decoded value in the shortest form, so it decodes to the same value but can differ from what the device sent (an integer with leading zero octets, a character string in UCS-2 or ISO 8859-1 comes back as UTF-8). Raises ValueError for a value that doesn't encode.
 
 ### PropertyValue.null
 
@@ -420,6 +436,43 @@ a closing tag that closes nothing, opening tags nested past 32, more
 than 10,000 elements), or hold an application value this type has no
 form for, raise ValueError. A `list` of tagged values keeps its
 items tagged.
+
+### PropertyValue.bdt
+
+```python
+@staticmethod
+def bdt(rows: Iterable[BdtEntry]) -> PropertyValue
+```
+
+A Network Port's BBMD\_Broadcast\_Distribution\_Table to write,
+built from rows in the form a whole read of it gives (#2710): each
+a `BdtEntry` mapping, `address` as `"ip:port"`,
+`"[v6]:port"` or `"name:port"` and `broadcast_mask` dotted
+text, `None` or left out. Each row is encoded with the stack's BDT
+entry codec; the value is tagged `"bdt"` and `.value` gives the
+rows back, so `PropertyValue.bdt(read.value)` equals a read the
+stack could have encoded.
+
+The entry form gives a B/IP BBMD a mask and a B/IPv6 one none; the
+builder encodes each row's mask as given, whatever its address, and
+leaves the rule to the device the table is written to. This stack's
+own B/IP BBMD refuses, when the table is written (WriteProperty
+VALUE\_OUT\_OF\_RANGE), a row that names its BBMD by host name or IPv6
+address, or that has no mask.
+
+A row the entry can't hold raises ValueError naming it
+(`rows[2]: ...`): an `address` that is `None` or missing (the
+list holds no entry without a host), a port that isn't plain decimal
+from 0 to 65535 (no sign, no leading zero), an IPv6 address without
+brackets or with a zone, a host that is neither an IPv4 address nor
+a host name (RFC 1123 labels, at most 253 octets, not digits and
+dots alone, the rule `ForeignDevice` targets follow), a mask that
+isn't four dotted octets, or another key. A row of the wrong type
+raises TypeError. A read can show a name that rule refuses (one with
+a colon, say): write such a table back as the read value itself.
+A 2020 BBMD takes its BDT this way, through WriteProperty and an
+ACTIVATE\_CHANGES reinitialize; `BACnetClient.write_bdt` stays the
+path for an older one.
 
 ## TagNode
 
@@ -647,6 +700,342 @@ The `Value` of `property` of the Device object
 (`"vendor-name"`, `PropertyIdentifier.MODEL_NAME`); None when
 the summary doesn't read it or the device gave none.
 
+## Point
+
+One object of a device as `Device.inventory` and `Device.points`
+read it (#2561): where it is, what it is called, its units or state
+texts, whether it takes commands, and what else the options read.
+
+A field is None when the object's type has no such property, the
+object lacks an optional one, the options didn't ask for it, or its
+read failed, which `problems` then lists. Text the device supplied
+(`name`, `description`, `device_type`, `profile_name`,
+`active_text`, `inactive_text`, `state_texts`) is exactly as it
+sent it: clean it before showing it. Frozen; compares by identity and
+refuses `copy` and `pickle`, as the other read results do; its
+`Value`s copy and pickle.
+
+Properties:
+
+- `address: str`: Where the device answers, as text `BACnetClient.device` reads back.
+- `device_instance: int`: The device's instance.
+- `object_id: ObjectIdentifier`: The object.
+- `name: Optional[str]`: Its Object\_Name. Text the device supplied, exactly as sent.
+- `description: Optional[str]`: Its Description. Text the device supplied, exactly as sent.
+- `device_type: Optional[str]`: Its Device\_Type, read with `details`. Text the device supplied.
+- `profile_name: Optional[str]`: Its Profile\_Name, read with `details`. Text the device supplied.
+- `units: Optional[EngineeringUnits]`: Its Units, for the types that have them.
+- `units_text: Optional[str]`: Its Units as the `bacnet` tool writes them (`"degrees-celsius"`); a unit without a name as its number.
+- `active_text: Optional[str]`: A binary object's Active\_Text. Text the device supplied.
+- `inactive_text: Optional[str]`: A binary object's Inactive\_Text. Text the device supplied.
+- `state_texts: tuple[str, ...]`: A multi-state object's State\_Text, state 1 first; empty for other types. Text the device supplied; an entry that wasn't a string is `""` and a problem.
+- `number_of_states: Optional[int]`: A multi-state object's Number\_Of\_States.
+- `commandable: bool`: Whether its Present\_Value takes command priorities: always for an output, and for a value object when it has a Priority\_Array. False beside a Priority\_Array problem means the device wouldn't say.
+- `relinquish_default: Optional[Value]`: Its Relinquish\_Default, read with `settings`.
+- `cov_increment: Optional[Value]`: Its COV\_Increment, read with `settings`.
+- `min_present_value: Optional[Value]`: Its Min\_Pres\_Value, read with `settings`.
+- `max_present_value: Optional[Value]`: Its Max\_Pres\_Value, read with `settings`.
+- `polarity: Optional[Value]`: A Binary Input's or Output's Polarity, read with `settings`.
+- `present_value: Optional[Value]`: Its Present\_Value, read with `values`; its text names the units or the state (`"72.5 °F"`).
+- `command_priority: Optional[Value]`: The priority in control of a commandable object's Present\_Value, read with `values`: 1 to 16, or NULL when Relinquish\_Default applies.
+- `status_flags: Optional[Value]`: Its Status\_Flags, read with `values`.
+- `event_state: Optional[Value]`: Its Event\_State, read with `values`.
+- `reliability: Optional[Value]`: Its Reliability, read with `values`.
+- `problems: tuple[tuple[PropertyIdentifier, BacnetError], ...]`: The properties asked for that gave no usable value, in the order asked, as `(property, error)` pairs: the exception a typed read of it would raise (a `BacnetProtocolError` with `error_code`), or a `BacnetError` saying what was wrong with the value the device gave; never raised. An optional property the object lacks is no problem.
+
+### Point.problem
+
+```python
+def problem(self, property: PropertyIdentifier | str) -> Optional[BacnetError]
+```
+
+The problem with `property`, None when it had none.
+
+## Inventory
+
+What `Device.inventory` read (#2561): the device's summary and a
+`Point` for each object of the types asked for, in Object\_List
+order; when the device went silent part way, why (`stopped`) and
+which objects weren't read (`unread`). Iterating it gives the
+points; `len` and an index work on it. Frozen; compares by identity
+and refuses `copy` and `pickle`, as a `Point` does.
+
+Properties:
+
+- `address: str`: Where the device answers, as text `BACnetClient.device` reads back.
+- `summary: DeviceSummary`: The device's summary, as `Device.summary()` reads it. Its `name` is cleaned for display, where the Device object's `Point.name` is the device's text exactly as sent.
+- `cov_support: Literal["unknown", "not-offered", "offered", "accepted", "refused"]`: What is known of the device's COV support, as `Device.cov_support()` says it: from the services the summary lists, or from what this client's subscriptions met.
+- `points: tuple[Point, ...]`: The points read, in Object\_List order.
+- `unread: tuple[ObjectIdentifier, ...]`: The objects of the types asked for that weren't read because the device stopped answering, in Object\_List order; empty when it didn't.
+- `stopped: Optional[BacnetError]`: Set when the device went silent, or the way to it failed, while its objects were being read: the `BacnetTimeoutError` or other error a single read would have raised, unraised. `points` holds what was read before it.
+
+### Inventory.point
+
+```python
+def point(self, object: ObjectIdentifier | str) -> Optional[Point]
+```
+
+The point of `object`, None when it wasn't read.
+
+### Inventory.__len__
+
+```python
+def __len__(self) -> int
+```
+
+### Inventory.__iter__
+
+```python
+def __iter__(self) -> Iterator[Point]
+```
+
+### Inventory.__getitem__
+
+```python
+def __getitem__(self, index: int) -> Point
+```
+
+## PointIterator
+
+A device's points, read as they are iterated: what `await device.points(...)` returns (#2561). Each `__anext__` gives the
+next `Point`, reading the next batch of objects (one request while
+the device takes ReadPropertyMultiple) once the last batch's points
+are out. A device that stops answering raises from `__anext__` once
+the points read before it are out, and iterating again tries the first
+object not read again. A cancel that lands while a point is on its way
+puts it back: the next `__anext__` returns it first. Concurrent
+`__anext__` calls complete one at a time, each with the next point.
+After the client's `stop()`, the points already read come out first,
+then `__anext__` raises `RuntimeError`. Frozen; compares by
+identity and refuses `copy` and `pickle`, as a `Point` does.
+
+Properties:
+
+- `objects: tuple[ObjectIdentifier, ...]`: The objects it reads, in order: the Object\_List's of the types asked for, or those named, each once.
+
+### PointIterator.__len__
+
+```python
+def __len__(self) -> int
+```
+
+### PointIterator.__aiter__
+
+```python
+def __aiter__(self) -> PointIterator
+```
+
+### PointIterator.__anext__
+
+```python
+def __anext__(self) -> Awaitable[Point]
+```
+
+## Watch
+
+A watch of a device's points: what `await device.watch(points)`
+returns (#2561). An async iterator of `WatchUpdate`s, each point's
+latest value and how its watch goes; `async with` closes it on the
+way out.
+
+The watch runs on one of its client's watch hubs, which every watch of
+the same settings (`lifetime`, `poll_interval`, `subscribe`)
+shares (#2603): a point two of them hold is one subscription. Each
+point is read, then subscribed for COV for `lifetime` seconds at a
+time and renewed before each lifetime ends; a point the device won't
+subscribe, or every point when `subscribe` is False, is polled with
+the device's other polled points. An update comes with each value read
+or notified and each change of a point's state. A consumer that falls
+behind gets one update a point, with its latest value and state, never
+a queue of old ones (`folded` counts the changes folded away). A
+cancel that lands while an update is on its way puts it back: the next
+`__anext__` returns it first. Concurrent `__anext__` calls complete
+one at a time, each with the next update. `add` and `remove`
+change the points while another task iterates. The watch never ends on
+its own, even when a point is given up or every point removed.
+
+A watch of a handle made from an instance (`follows`) follows its
+device (#2795): once the watch's own reads find the device at another
+address and its old one no longer answering as it, the points move
+there, each update saying so (`WatchUpdate.moved`) and where it is
+watched (`WatchUpdate.address`). An announcement alone moves nothing.
+A watch of a handle made from an address stays there.
+
+It ends on `close()`, when the object goes away, or on its client's
+`stop()`, whichever comes first: `__anext__` raises
+`StopAsyncIteration` then and ever after, saying why, and the
+subscriptions no other watch holds are cancelled, the device's answers
+waited for up to 5 s; any not answered by then lapse with their
+lifetime. It holds the client only through its hub, which a stop shuts
+before it stops the client: a stop with live watches waits for their
+cancels, all at once, up to 5 s for a device that doesn't answer, and
+up to 2 s more for the hubs to let go of the client. A client started
+again doesn't revive it: watch again. A client runs at most 256 hubs
+at once, one for each set of watch settings in use (each with a range
+of subscriber process identifiers of its own): a watch of a 257th
+raises `RuntimeError` until one ends. Frozen; compares by identity
+and refuses `copy` and `pickle`.
+
+Properties:
+
+- `address: str`: Where the device answered when the watch was made, as text `BACnetClient.device` reads back. A watch of a handle made from an address keeps every point there; one of a handle made from an instance follows the device, and each update's `address` says where it answers now.
+- `follows: bool`: True when the watch follows its device's instance from address to address (a handle made from an instance), False when it watches one address.
+- `points: tuple[tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]], ...]`: The points watched, in the order named, added ones last, each once, as `(object, property, array_index)`: Present\_Value for a point named by its object alone.
+- `lifetime: int`: Each subscription's lifetime, in seconds.
+- `poll_interval: float`: The least time between two polls of the device, in seconds.
+- `subscribe: bool`: Whether points are subscribed for COV where the device takes it; False polls every point.
+- `folded: int`: Changes folded into a later update of the same point because the watch hadn't handed the earlier one out yet, as of the last update handed out.
+- `closed: bool`: True once the watch has ended: closed, or its client stopped.
+
+### Watch.add
+
+```python
+def add(
+    self,
+    points: Iterable[str | ObjectIdentifier | tuple[ObjectIdentifier | str, PropertyIdentifier | str] | tuple[ObjectIdentifier | str, PropertyIdentifier | str, int]],
+) -> Awaitable[int]
+```
+
+Watch `points` too, of the watch's device (at its address, or
+following it, as the watch does), each in what `read_many` takes;
+those watched already are left as they are.
+Resolves to the count newly watched. Each new point is read, then
+subscribed (or polled) under the watch's settings; one another
+watch of the same settings holds joins its subscription. Raised:
+`TypeError` or `ValueError` for a bad argument (one str, bytes
+or bytearray, no points, more than 4096, ALL, REQUIRED or OPTIONAL)
+before the awaitable is made; on await `BacnetStateError`
+(`state` `"closed"`, also a `RuntimeError`) once the watch has
+ended, or `RuntimeError` when the points would take the watch's hub
+past 4096 (nothing is added then).
+
+### Watch.remove
+
+```python
+def remove(
+    self,
+    points: Iterable[str | ObjectIdentifier | tuple[ObjectIdentifier | str, PropertyIdentifier | str] | tuple[ObjectIdentifier | str, PropertyIdentifier | str, int]],
+) -> Awaitable[int]
+```
+
+Stop watching `points` in this watch, each in what
+`read_many` takes. Done before this returns: no `__anext__`
+begun after hands out one of them, an update already waiting
+included; one already waiting may still get an update it had
+taken. Resolves to the count removed. A point no other watch holds
+is cancelled on the wire afterwards, best effort, without delaying
+this. Raised: `TypeError` or `ValueError` for a bad argument,
+`BacnetStateError` (`state` `"closed"`, also a
+`RuntimeError`) once the watch has ended.
+
+### Watch.close
+
+```python
+def close(self) -> Awaitable[None]
+```
+
+End the watch: the iterator ends at once, then its subscriptions
+are cancelled. The await waits up to 5 s for the cancels; any the
+device hasn't answered by then lapse with their lifetime. A
+cancelled await leaves the cancels running. Closing again does
+nothing.
+
+### Watch.__len__
+
+```python
+def __len__(self) -> int
+```
+
+### Watch.__aiter__
+
+```python
+def __aiter__(self) -> Watch
+```
+
+### Watch.__anext__
+
+```python
+def __anext__(self) -> Awaitable[WatchUpdate]
+```
+
+### Watch.__aenter__
+
+```python
+def __aenter__(self) -> Awaitable[Watch]
+```
+
+### Watch.__aexit__
+
+```python
+def __aexit__(
+    self,
+    _exc_type: Optional[type[BaseException]] = None,
+    _exc_val: Optional[BaseException] = None,
+    _exc_tb: Optional[Any] = None,
+) -> Awaitable[None]
+```
+
+Close the watch, as `close()`.
+
+## WatchUpdate
+
+One change of a watched point, as a `Watch` hands it out (#2561):
+the point, its latest value, and how its watch goes. Frozen; refuses
+`copy` and `pickle`, as the other read results do, and its
+`Value` copies and pickles.
+
+`value` and `error` together say where the value stands: `value`
+alone is the value as last read or notified; both, a value read
+earlier while the latest read failed; `error` alone, no value yet or
+the device answers the property with an error; neither, no value
+yet.
+
+Properties:
+
+- `address: str`: Where the point is watched now, as text `BACnetClient.device` reads back: the watch's address, or, for a watch that follows its device, where the device answers now.
+- `instance: Optional[int]`: The device's instance, when known: the one a following watch follows, else the one the device at the address named, or the discovery table's.
+- `moved: Optional[WatchMove]`: For a watch that follows its device: the latest move the watch took (it watches the point at `moved.to`, which is `address`, since `moved.timestamp`); None before any move, and always for a watch of one address. A consumer that falls behind sees the latest move only: compare its `count` to tell a new one. The update a move makes is `"starting"`, with the value read before; values from the new address follow.
+- `object_id: ObjectIdentifier`: The object.
+- `property_id: PropertyIdentifier`: The property whose value `value` is: Present\_Value for a point named by its object alone.
+- `array_index: Optional[int]`: The array element watched, None for the whole property.
+- `state: Literal["starting", "subscribed", "polled", "unreachable", "gone", "other"]`: How the point's watch goes: `"starting"` (its first read and subscription haven't finished), `"subscribed"` (values come as COV notifications), `"polled"` (read with the device's other polled points; `why` says why), `"unreachable"` (the device didn't answer the last request, polled again after a backoff; or, for a watch that follows its device, another device answers at its address, `why.kind == "replaced"`, while the watch looks for it) or `"gone"` (a watch of one address only: given up, nothing more is sent for it and nothing its address sends is taken as its own; `why` says whether the device moved or another device took its address). `"other"` for a state this version doesn't name.
+- `why: Optional[WatchReason]`: Why the point isn't subscribed; None while it is subscribed or starting.
+- `value: Optional[Value]`: The value as last read or notified, its text naming the object's units or state; None before any. With `error` set too, it is a value read earlier while the latest read failed.
+- `error: Optional[BacnetError]`: Why the latest read gave no value, as the exception a typed read of the property would raise, never raised here: the device's error for the property or the object, or a `BacnetError` for an answer that left it out. None once a value was read or notified since.
+- `status_flags: Optional[Value]`: The object's Status\_Flags as last read or notified with the value, a `Value` as an inventory's `Point.status_flags` is: its `value` a `PropertyValue` whose bit string names the set flags (`"IN_ALARM"`, `"FAULT"`, `"OVERRIDDEN"`, `"OUT_OF_SERVICE"`); None before any.
+- `via: Optional[Literal["read", "cov", "poll"]]`: How the value came: `"read"` (the watch's first read, or the read before a retried subscription), `"cov"` (a COV notification) or `"poll"`; None before any value.
+- `timestamp: Optional[float]`: When the value came, as POSIX seconds by the wall clock, as `time.time()`; None before any.
+- `cov_support: Literal["unknown", "not-offered", "offered", "accepted", "refused"]`: What is known of the point's COV subscription: `"unknown"`, `"not-offered"` or `"offered"` (from the device's services, before it was asked), `"accepted"` or `"refused"`.
+
+## WatchReason
+
+Why a watched point isn't subscribed: polled, unreachable or given
+up (#2561). `kind` names it; the fields that kind carries are set,
+the others None; `str()` says it in a line. Frozen; refuses `copy`
+and `pickle`.
+
+Properties:
+
+- `kind: Literal['refused', 'poll-only', 'no-answer', 'full', 'lapsed', 'missing', 'moved', 'replaced', 'foreign-sender', 'unconfirmed', 'other']`: The reason: `"refused"` (the device refused the subscription; not asked again), `"poll-only"` (the watch polls every point, `subscribe=False`), `"no-answer"` (the first read or the subscription went unanswered), `"full"` (the device's subscription table was full) or `"lapsed"` (a renewal failed), each subscribed again after a backoff; `"missing"` (no router to a remote device's network is known); `"moved"` (the device answers at `to` now) or `"replaced"` (device `found` answers at the address now, not `watched`), either of which gives up a point of a watch of one address (a following watch is unreachable for `"replaced"` while it looks for its device, and follows a move); `"foreign-sender"` (its notifications name device `sender`, which can't be told from another device there, so it is polled); `"unconfirmed"` (a following watch's device refuses the read that names it at its address, so nothing it answers is taken: watch it by its address). `"other"` for a reason this version doesn't name.
+- `error: Optional[str]`: The device's error, or the client's, as text, for `"refused"`, `"no-answer"`, `"full"` and `"lapsed"`; else None.
+- `to: Optional[str]`: For `"moved"`: where the device answers now, as text `BACnetClient.device` reads back; else None.
+- `watched: Optional[int]`: For `"replaced"`: the instance an earlier answer named for the point; else None.
+- `found: Optional[int]`: For `"replaced"`: the instance the device at the address answers for now; else None.
+- `sender: Optional[int]`: For `"foreign-sender"`: the instance the notifications name; else None.
+
+## WatchMove
+
+Where a followed device moved, as a watch took it (#2795): its own
+reads named the device at `to`, and its old address no longer
+answered as it. Frozen; refuses `copy` and `pickle`.
+
+Properties:
+
+- `from_: str`: Where the device answered before, as text `BACnetClient.device` reads back. `from_`, as `from` is a keyword.
+- `to: str`: Where it answers now, as text `BACnetClient.device` reads back.
+- `count: int`: How many moves the watch has taken for the point, this one included: compare it to tell a new move.
+- `timestamp: float`: When the watch took the move, as POSIX seconds by the wall clock, as `time.time()`.
+
 ## Discovered
 
 One device that answered a `BACnetClient.discover()` (#2561). A
@@ -823,7 +1212,8 @@ have, never raises: its `Reading.error` is set and the rest
 stand. A device that stops answering part way ends the read with
 what was read, and `Readings.stopped` says so; so does a later
 request the client's own link fails (a route lost, a send
-refused). A read raises only when nothing could be read: a bad item
+refused). A read raises only when nothing could be read:
+`properties` as one str, bytes or bytearray, or a bad item,
 TypeError or ValueError when the call is made; on await a device
 that can't be placed `BacnetLookupError`, and a link that fails
 the first request what a single read raises for it (a
@@ -842,7 +1232,8 @@ def read_object(
 Read one object's properties in one ReadPropertyMultiple (or by
 ReadProperty each once the device has refused that): every property
 when `properties` is left out, else those listed, whole
-properties only. A property the device refused has its
+properties only (one str, bytes or bytearray raises TypeError when
+the call is made). A property the device refused has its
 `Reading.error` set. A device that stops answering raises
 `BacnetTimeoutError` and keeps nothing, since an object's rows go
 together: `stopped` is always None.
@@ -966,6 +1357,140 @@ def summary(self) -> Awaitable[DeviceSummary]
 The device's summary: its name, vendor, model, firmware,
 protocol revision and what it supports, in one request. A handle
 that doesn't know its instance reads that first.
+
+### Device.inventory
+
+```python
+def inventory(
+    self,
+    *,
+    types: Optional[Iterable[ObjectType | str]] = None,
+    values: bool = False,
+    settings: bool = False,
+    details: bool = False,
+) -> Awaitable[Inventory]
+```
+
+The device's objects as point records, as an `Inventory`: the
+device's summary, its Object\_List, then the objects of `types`
+(all by default; `ObjectType` or text such as `"ai"`) in
+batches of ReadPropertyMultiple, up to 16 objects or 32 properties
+a request (ReadProperty each once the device has refused that).
+Each `Point` holds the object's name, description, units or state
+texts and whether it takes commands; `values` adds its
+Present\_Value, Status\_Flags, Event\_State, Reliability and priority
+in control, `settings` its COV\_Increment, range,
+Relinquish\_Default and Polarity, `details` its Device\_Type and
+Profile\_Name.
+
+The whole read is one call: it holds the client throughout, so a
+`stop()` waits for it, and nothing comes back until every object
+is read. For a large device, `points` hands the same records out
+a batch at a time.
+
+A property the device can't give is a problem on its record, never
+raised. A device that goes silent while its objects are read ends
+the read with the records read so far: `Inventory.stopped` says
+why and `Inventory.unread` lists the rest. Raised: TypeError or
+ValueError for a bad argument when the call is made (`types` as
+one str, an empty `types`, a flag that isn't a bool); on await
+`BacnetLookupError` for a device that can't be placed, and what a
+single read raises for a device that doesn't answer the summary or
+the Object\_List, or refuses the list (a list read element by
+element that fails at one element names it).
+
+### Device.points
+
+```python
+def points(
+    self,
+    objects: Optional[Iterable[ObjectIdentifier | str]] = None,
+    *,
+    types: Optional[Iterable[ObjectType | str]] = None,
+    values: bool = False,
+    settings: bool = False,
+    details: bool = False,
+) -> Awaitable[PointIterator]
+```
+
+The device's points as an async iterator, read as they are
+iterated: a `PointIterator` of the `Point` records `inventory`
+reads, for a large device or a screen that fills as it goes. The
+await reads the Object\_List (whole, or element by element) and
+keeps the objects of `types`, each once; with `objects` it takes
+those of `types`, each once, in order, and reads nothing.
+Iterating reads the next batch of objects whenever the last batch's
+points are out, one ReadPropertyMultiple while the device takes
+them: a large device's first points come at once, and an `async for` broken off reads no more. Each batch holds the client for its
+read alone; `inventory` reads the whole device in one call.
+
+A device that stops answering raises from `__anext__` (a
+`BacnetTimeoutError`, say) once the points read before it are
+out; iterating again tries the first object not read again. A
+cancelled `__anext__` stops its request, and the next reads that
+batch again: no point is lost or repeated. After the client's
+`stop()`, the points already read come out first, then
+`__anext__` raises `RuntimeError`. Raised: TypeError or
+ValueError for a bad argument when the call is made; on await what
+`inventory` raises for the Object\_List.
+
+### Device.watch
+
+```python
+def watch(
+    self,
+    points: Iterable[str | ObjectIdentifier | tuple[ObjectIdentifier | str, PropertyIdentifier | str] | tuple[ObjectIdentifier | str, PropertyIdentifier | str, int]],
+    *,
+    lifetime: Optional[int] = None,
+    poll_interval: Optional[float] = None,
+    subscribe: Optional[bool] = None,
+) -> Awaitable[Watch]
+```
+
+Watch `points` of the device, as a `Watch`: an async
+iterator of `WatchUpdate`s, each point's latest value and how its
+watch goes.
+
+Each item of `points` is what `read_many` takes: text
+(`"ai:1"`, `"ao:2 priority-array[8]"`), an `ObjectIdentifier`
+(its Present\_Value), or an `(object, property)` or `(object, property, index)` tuple; each point once. A Present\_Value is
+watched by SubscribeCOV on its object, any other property or element
+by SubscribeCOVProperty. Each point is read once, then subscribed
+for `lifetime` seconds at a time (1 to 28800), renewed before
+each lifetime ends; a point the device won't subscribe, or every
+point with `subscribe=False`, is polled, with the device's other
+polled points, every `poll_interval` seconds (1 to 3600). A
+keyword left None takes the client's (`watch_lifetime`,
+`watch_poll_interval`, `watch_subscribe`); watches with equal
+settings share their subscriptions (#2603).
+
+A handle made from an instance (`follows`) watches its device
+wherever it answers (#2795): once the watch's own reads find the
+device at another address and its old one no longer answering as
+it, the points move there, each update saying so (`moved`, a
+`WatchMove`) and where it is watched (`address`); while another
+device answers at its address the points are `"unreachable"`
+(`why.kind == "replaced"`), never taken for it. A handle made from
+an address watches that address: a device that moves away is
+reported (`"gone"`, `why.kind == "moved"`), another device there
+too (`"replaced"`). An announcement alone moves nothing.
+
+The watch runs on its own until it ends: `close()` (or leaving
+`async with`), the object going away, or the client's `stop()`.
+Its iterator then raises `StopAsyncIteration`, and its
+subscriptions are cancelled, waiting up to 5 s for the device's
+answers. Raised: TypeError or ValueError for a bad argument when
+the call is made (one str, no points, more than 4096, ALL, REQUIRED
+or OPTIONAL, a lifetime outside 1 to 28800, a `poll_interval`
+outside 1 to 3600; a bool for either, and anything but a bool for
+`subscribe`); on await what any call raises on a stopped client,
+and `BacnetLookupError` for a following handle whose device can't
+be placed, and `RuntimeError` when the client already runs
+watches of 256 different settings. Nothing is sent until the watch
+starts. Each renewal leaves room for two requests with every retry
+on the client's own timers (its `apdu_timeout_ms`; for a client
+from `endpoint.client()`, the endpoint's `apdu_timeout_ms` and
+`apdu_retries`).
 
 ### Device.resolve_instance
 
@@ -1415,8 +1940,8 @@ A station on another BACnet network (#2612), where `BACnetClient`'s
 `subscribe_cov_property`, `unsubscribe_cov_property` and
 `subscribe_cov_property_multiple` take an `address` (#2617, #2613,
 \#2588); the other typed calls take a local address only:
-`RoutedTarget(network, address, router=None)`, in that order. A
-`str` address always names a station on the local link.
+`RoutedTarget(network, address, router=None, *, one_station=False)`,
+in that order. A `str` address always names a station on the local link.
 
 `network` is the station's network number, an `int` from 1 to 65534
 (ValueError outside it, OverflowError outside 0 to 65535, TypeError for
@@ -1428,8 +1953,22 @@ any B/IP network, local or not), `"bip6:N"` or `"bip6:0x..."` (a
 B/IPv6 VMAC), two or more hex octets `"aa:bb:..."`, or one octet in
 decimal as `"N"` or `"mstp:N"` (0 to 254), so
 `RoutedTarget(5, "10") == RoutedTarget(5, b"\x0a")`. The string forms
-refuse 255 (MS/TP's broadcast); `b"\xff"` is taken, a station on an
-ARCNET network, whose broadcast is 0. A `router` that is a broadcast
+refuse 255 (MS/TP's broadcast). A call raises BacnetError, before
+anything is sent or looked up, for an `address` that is a broadcast or
+a group on its network (#2709): `b"\xff"` (MS/TP's broadcast), two
+octets beginning `0x00` or `0xFF` (a LonTalk broadcast or group),
+three octets of `0xFF` (no device's VMAC), or six beginning with four
+(the B/IP limited broadcast at any port, an Ethernet group, BACnet/SC's
+broadcast). `one_station=True` marks the address one station on its
+network (#2738), for the forms that are a station on some links: a call
+then goes to `b"\xff"` (station 255 on ARCNET) and to two octets
+beginning `0x00` or `0xFF` (a gateway's virtual network numbering
+its stations in two octets), but not to `b"\x00\x00"` or
+`b"\xff\xff"`; three and six octets are checked as unmarked. The
+mark only lifts, never refuses: `b"\x00"` goes marked or not, so an
+ARCNET network's broadcast there is not caught.
+With no `router`, a marked station at one of those forms is reached
+through its discovery-table row alone. A `router` that is a broadcast
 or group address on the local link raises BacnetError when a call is
 made, before anything is sent.
 
@@ -1439,25 +1978,29 @@ forms or as `bytes`, such as a routed `DiscoveredDevice`'s
 request goes through it. Without one, the client uses the route it
 knows: the router its discovery table names for the station, after
 one Who-Is addressed to that station when it has none, as
-`BACnetClient.device()` does. A station that doesn't answer raises
+`BACnetClient.device()` does, and with no answer one Who-Is to its
+network that only the station's own address answers (an MS/TP slave
+behind a slave proxy is found that way, and asked on its network first
+from then on). A station that answers neither raises
 `BacnetLookupError`, and for 30 seconds a call to it with no router
 raises at once without asking again, unless an I-Am from it arrives
-first; calls made together for one station share one Who-Is. To scan
-stations that never announce themselves, such as MS/TP slaves, pass
-`router` from `BACnetClient.discover_routers()`: without it each
-costs one 3-second Who-Is wait. A station on the client's own network,
+first; calls made together for one station share one lookup. To scan
+stations that never announce themselves, such as MS/TP slaves with no
+proxy, pass `router` from `BACnetClient.discover_routers()`: without
+it each costs two 3-second Who-Is waits. A station on the client's own network,
 once it knows the number, is sent to directly either way. Other values raise ValueError, a type
 other than `str` or `bytes` TypeError, and so does a call in another
 order, since `network` takes an `int`.
 
-Frozen; compares and hashes by its network and octets, however they were
-written; copies and pickles.
+Frozen; compares and hashes by its network, octets and one-station mark,
+however they were written; copies and pickles.
 
 Properties:
 
 - `network: int`
 - `address: bytes`: The station's MAC on its network.
 - `router: bytes | None`: The router's MAC on the local link, or None for the route the client knows.
+- `one_station: bool`: Whether the address is marked one station: `b"\xff"` and two octets beginning `0x00` or `0xFF` (but `b"\x00\x00"` and `b"\xff\xff"`) are a station.
 
 ### RoutedTarget.__init__
 
@@ -1467,6 +2010,8 @@ def __init__(
     network: int,
     address: str | bytes,
     router: str | bytes | None = None,
+    *,
+    one_station: bool = False,
 ) -> None
 ```
 
@@ -2057,8 +2602,9 @@ None while a host name hasn't resolved yet, when `waiting_for_bbmd` is
 true. `bbmd_name` is the host name the BBMD is known by,
 `"host:port"` (configured, or written to FD\_BBMD\_Address), or None for
 a BBMD known by address; a waiting device waits for it. While waiting,
-nothing is registered, broadcasts are refused (counted in
-`broadcasts_refused`), and the name is tried again 30 seconds after
+nothing is registered, broadcasts are refused with BacnetStateError
+(`state` `"not_connected"`) and counted in `broadcasts_refused`,
+and the name is tried again 30 seconds after
 each failure. `bbmd_lookups`, `bbmd_lookup_failures` and
 `last_bbmd_lookup_failure` are as in `ForeignRegistrationStatus`,
 with `"no_ipv6_address"` for a name with no IPv6 address. The
@@ -2097,37 +2643,33 @@ Keys:
 - `refused: int`
 - `unanswered: int`
 
-## NetworkPortBdtEntry
+## BdtEntry
 
-`class NetworkPortBdtEntry(TypedDict)`
+`class BdtEntry(TypedDict)`
 
-One BBMD\_Broadcast\_Distribution\_Table property entry.
+One entry of a Network Port's BBMD\_Broadcast\_Distribution\_Table, as
+a read of the property gives it (#2690). `address` is the BBMD in
+the `"ip:port"` text `read_bdt()` uses for IPv4, `"[v6]:port"`
+for IPv6 and `"name:port"` for a host name; `None` when the entry
+names no host. `broadcast_mask` is dotted text, `None` when the
+entry has none. The value's `.octets` are the exact form.
+`PropertyValue.bdt(rows)` builds a table to write from these rows
+(#2710); a row whose `address` is `None`, or names a host the
+host-name rule refuses, doesn't build. Rows aren't accepted as
+`Bbmd(bdt=)` input, which configures this device's own BBMD.
 
 Keys:
 
-- `address_kind: Literal["ip", "name", "none"]`
 - `address: str | None`
-- `port: int`
 - `broadcast_mask: str | None`
-
-## NetworkPortFdtEntry
-
-`class NetworkPortFdtEntry(TypedDict)`
-
-One BBMD\_Foreign\_Device\_Table property entry.
-
-Keys:
-
-- `address: str`
-- `port: int`
-- `ttl: int`
-- `seconds_remaining: int`
 
 ## FdtEntry
 
 `class FdtEntry(TypedDict)`
 
-A Foreign Device Table entry, as `read_fdt()` returns it.
+A Foreign Device Table entry, as `read_fdt()` returns it, and as
+a read of a Network Port's BBMD\_Foreign\_Device\_Table gives each entry
+(`address` then `"[v6]:port"` for an IPv6 registrant).
 `seconds_remaining` is what the BBMD reports, its grace period
 included.
 

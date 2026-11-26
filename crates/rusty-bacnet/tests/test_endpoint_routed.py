@@ -33,7 +33,7 @@ O = rb.ObjectType
 P = rb.PropertyIdentifier
 AI_1 = rb.ObjectIdentifier(O.ANALOG_INPUT, 1)
 CALLS = ("read_property", "read_property_multiple", "read_range", "read_log_page",
-         "write_property")
+         "write_property", "write_property_multiple")
 NEAR = 2612
 FAR = 2613
 SINK = 2614
@@ -60,7 +60,9 @@ class RoutedTargetTests(unittest.TestCase):
         self.assertEqual(positional.router, bytes([10, 0, 0, 1, 0xBA, 0xC0]))
         self.assertIsNone(rb.RoutedTarget(5, b"\x0a").router)
         self.assertEqual(list(inspect.signature(rb.RoutedTarget).parameters),
-                         ["network", "address", "router"])
+                         ["network", "address", "router", "one_station"])
+        self.assertIs(inspect.signature(rb.RoutedTarget).parameters["one_station"].kind,
+                      inspect.Parameter.KEYWORD_ONLY)
 
     def test_each_address_form_is_the_mac_it_names(self):
         forms = {
@@ -90,7 +92,7 @@ class RoutedTargetTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 rb.RoutedTarget(*args)
         # The string forms spell an MS/TP station, so 255, its broadcast, is
-        # refused; as bytes it may be an ARCNET station (whose broadcast is 0).
+        # refused; as bytes it may be an ARCNET station, marked one station.
         for args in ((5, "255"), (5, b"\x0a", "mstp:255")):
             with self.subTest(args=args), self.assertRaisesRegex(ValueError, "broadcast"):
                 rb.RoutedTarget(*args)
@@ -125,6 +127,32 @@ class RoutedTargetTests(unittest.TestCase):
         self.assertNotEqual(target, rb.RoutedTarget(5, "127.0.0.1:47808"))
         self.assertNotEqual(target, rb.RoutedTarget(6, "127.0.0.1:47808", router=b"\x0a"))
         self.assertNotEqual(target, "127.0.0.1:47808")
+
+    def test_the_one_station_mark_copies_pickles_and_takes_any_address(self):
+        target = rb.RoutedTarget(5, b"\xff", router=b"\x0a", one_station=True)
+        self.assertTrue(target.one_station)
+        self.assertFalse(rb.RoutedTarget(5, b"\xff").one_station)
+        self.assertEqual(
+            repr(target),
+            r"RoutedTarget(network=5, address=b'\xff', router=b'\n', one_station=True)")
+        self.assertEqual(eval(repr(target), {"RoutedTarget": rb.RoutedTarget}), target)
+        self.assertNotEqual(target, rb.RoutedTarget(5, b"\xff", router=b"\x0a"))
+        copies = [copy.copy(target), copy.deepcopy(target)] + [
+            pickle.loads(pickle.dumps(target, protocol))
+            for protocol in range(pickle.HIGHEST_PROTOCOL + 1)]
+        for copied in copies:
+            self.assertIs(type(copied), rb.RoutedTarget)
+            self.assertEqual(copied, target)
+            self.assertTrue(copied.one_station)
+        # Any address takes the mark: it changes only the one- and two-octet
+        # forms. The mark is keyword-only, and the old name is gone.
+        for address in (b"\x00\x05", b"\xff\x07", "127.0.0.1:47808", b"\x0a"):
+            with self.subTest(address=address):
+                self.assertTrue(rb.RoutedTarget(5, address, one_station=True).one_station)
+        with self.assertRaises(TypeError):
+            rb.RoutedTarget(5, b"\xff", None, True)
+        with self.assertRaises(TypeError):
+            rb.RoutedTarget(5, b"\xff", arcnet=True)
 
     def test_stub_matches_runtime(self):
         classes = stub_classes(installed_stub())
@@ -204,6 +232,8 @@ def calls(client, to):
         "read_log_page": lambda: client.read_log_page(to, LOG),
         "write_property": lambda: client.write_property(
             to, AI_1, P.DESCRIPTION, rb.PropertyValue.character_string("routed")),
+        "write_property_multiple": lambda: client.write_property_multiple(
+            to, [(AI_1, [(P.DESCRIPTION, rb.PropertyValue.character_string("routed"), None, None)])]),
     }
 
 
@@ -247,7 +277,8 @@ class RoutedWireTests(unittest.IsolatedAsyncioTestCase):
         self.router.handler = replies
         async with async_timeout(10):
             arrivals = await self.role.i_am_arrivals()
-            found = await self.role.discover(scope=self.target, low=FAR, high=FAR)
+            # The router answers at once on loopback: a short window is enough.
+            found = await self.role.discover(scope=self.target, low=FAR, high=FAR, wait=0.5)
             [row] = found
             self.assertEqual((row.network, bytes(row.entry.source_address), row.instance,
                               row.duplicate), (5, self.STATION, FAR, True))
@@ -311,10 +342,8 @@ class RoutedWireTests(unittest.IsolatedAsyncioTestCase):
             self.target, AI_1, P.DESCRIPTION, rb.PropertyValue.character_string("x")), 5))
         self.assert_routed(self.requests, {15})
 
-    async def test_write_property_multiple_through_the_router(self):
-        client = await self.endpoint.client()
-        specs = [(AI_1, [(P.DESCRIPTION, rb.PropertyValue.character_string("routed"), None, None)])]
-        self.assertIsNone(await asyncio.wait_for(client.write_property_multiple(self.target, specs), 5))
+        self.requests.clear()
+        self.assertIsNone(await asyncio.wait_for(calls(client, self.target)["write_property_multiple"](), 5))
         self.assert_routed(self.requests, {16})
 
     async def test_every_call_names_the_station_behind_the_router(self):
@@ -340,6 +369,79 @@ class RoutedWireTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await asyncio.wait_for(self.role.read_property("5:0a", AI_1, P.PRESENT_VALUE), 5)
         self.assertEqual(self.requests, [])
+
+    async def test_a_remote_broadcast_address_is_refused_and_a_marked_station_goes(self):
+        # A station address that is its network's broadcast: refused on
+        # every call, with a router named or not, before anything is sent or
+        # looked up (#2709). Where the one-station mark would let it
+        # through, the error says so (#2738).
+        lifted = (b"\xff", b"\x00\x05", b"\xff\x07")
+        for address in lifted + (b"\xff" * 3, b"\xff" * 6, b"\xff\xff\xff\xff\xba\xc0"):
+            for router in (self.router.address, None):
+                target = rb.RoutedTarget(5, address, router=router)
+                for name, call in calls(self.role, target).items():
+                    with self.subTest(address=address, router=router, method=name), \
+                            self.assertRaisesRegex(rb.BacnetError,
+                                                   "carries only an unconfirmed request") as raised:
+                        await asyncio.wait_for(call(), 5)
+                    self.assertEqual("mark it one station (one_station)" in str(raised.exception),
+                                     address in lifted)
+        self.assertEqual(self.requests, [])
+        # Marked one station, 255 and the two-octet forms are a station
+        # there; the mark only lifts, so 0 goes marked as it does unmarked.
+        for address in lifted + (b"\x00\x01", b"\xff\xfe", b"\x00"):
+            self.requests.clear()
+            marked = rb.RoutedTarget(5, address, router=self.router.address, one_station=True)
+            with self.subTest(address=address):
+                value = await asyncio.wait_for(
+                    self.role.read_property(marked, AI_1, P.PRESENT_VALUE), 5)
+                self.assertEqual(value, rb.PropertyValue.unsigned(0))
+                [request] = self.requests
+                self.assertEqual((request["dnet"], request["dadr"]), (5, address))
+        # Marked, 0x0000 and 0xFFFF stay refused.
+        self.requests.clear()
+        for address, form in ((b"\x00\x00", "whole domain"), (b"\xff\xff", "group 255"),
+                              (b"\xff" * 3, "VMAC 0xFFFFFF")):
+            with self.subTest(address=address), \
+                    self.assertRaisesRegex(rb.BacnetError, f"{form}.*even marked one station"):
+                await asyncio.wait_for(self.role.read_property(
+                    rb.RoutedTarget(5, address, router=self.router.address, one_station=True),
+                    AI_1, P.PRESENT_VALUE), 5)
+        # With no router, a marked station at such a form is reached through
+        # its row alone: none here, so a lookup error that says to name the
+        # router.
+        for address in (b"\xff", b"\x00\x05"):
+            with self.subTest(address=address), \
+                    self.assertRaisesRegex(rb.BacnetLookupError, "name its router"):
+                await asyncio.wait_for(self.role.read_property(
+                    rb.RoutedTarget(5, address, one_station=True), AI_1, P.PRESENT_VALUE), 5)
+        self.assertEqual(self.requests, [])
+
+    async def test_a_marked_station_with_no_router_is_reached_through_its_row(self):
+        # An I-Am the router relays from each station gives the client its
+        # row, and so its router: a marked target with no router then goes
+        # there, naming the station (#2738).
+        ip, port = (await self.endpoint.local_address()).rsplit(":", 1)
+        stations = {b"\xff": FAR + 2, b"\x00\x05": FAR + 3}
+        for address, instance in stations.items():
+            self.router.send(i_am(5, address, instance), (ip, int(port)))
+        async with async_timeout(5):
+            while not set(stations.values()) <= {row.object_identifier.instance
+                                                 for row in await self.role.discovered_devices()}:
+                await asyncio.sleep(0.01)
+        for address in stations:
+            self.requests.clear()
+            with self.subTest(address=address):
+                value = await asyncio.wait_for(self.role.read_property(
+                    rb.RoutedTarget(5, address, one_station=True), AI_1, P.PRESENT_VALUE), 5)
+                self.assertEqual(value, rb.PropertyValue.unsigned(0))
+                [request] = self.requests
+                self.assertEqual((request["control"], request["dnet"], request["dadr"]),
+                                 (0x24, 5, address))
+        # Unmarked, the same row doesn't make the address one station.
+        with self.assertRaisesRegex(rb.BacnetError, "carries only an unconfirmed request"):
+            await asyncio.wait_for(self.role.read_property(
+                rb.RoutedTarget(5, b"\xff"), AI_1, P.PRESENT_VALUE), 5)
 
     async def test_a_wrong_address_type_raises_at_the_call(self):
         made = calls(self.role, 7)
@@ -464,12 +566,13 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         started = loop.time()
         with self.assertRaises(rb.BacnetLookupError) as caught:
-            await asyncio.wait_for(self.role.read_property(silent, AI_1, P.PRESENT_VALUE), 10)
-        self.assertGreaterEqual(loop.time() - started, 2.5)  # the Who-Is's wait
+            await asyncio.wait_for(self.role.read_property(silent, AI_1, P.PRESENT_VALUE), 15)
+        # Both waits: the Who-Is addressed to the station, then the one to its network.
+        self.assertGreaterEqual(loop.time() - started, 5.5)
         text = str(caught.exception)
-        for words in ("5:0x0B", "station-directed Who-Is", "router=", "discover_routers()"):
+        for words in ("5:0x0B", "a Who-Is addressed to it", "router=", "discover_routers()"):
             self.assertIn(words, text)
-        self.assertEqual(len(self.who_is), 1)
+        self.assertEqual(len(self.who_is), 2)
         # Asked again soon: it raises at once, and no second Who-Is goes.
         started = loop.time()
         for name, call in calls(self.role, silent).items():
@@ -477,7 +580,7 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(call(), 1)
         self.assertLess(loop.time() - started, 1)
         self.assertIn("in the last 30 s", str(again.exception))
-        self.assertEqual(len(self.who_is), 1)
+        self.assertEqual(len(self.who_is), 2)
         self.assertEqual([d for d, _ in self.bbmd.received if d[:2] == b"\x81\x0a"], [])
         # Naming the router works at once.
         through = rb.RoutedTarget(5, b"\x0b", router=self.bbmd.address)
@@ -492,15 +595,16 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.01)
         self.assertEqual(await asyncio.wait_for(
             self.role.read_property(silent, AI_1, P.PRESENT_VALUE), 1), rb.PropertyValue.unsigned(0))
-        self.assertEqual(len(self.who_is), 1)
+        self.assertEqual(len(self.who_is), 2)
 
 
     async def test_calls_made_together_share_one_who_is(self):
         silent = rb.RoutedTarget(5, b"\x0c")
         results = await asyncio.wait_for(asyncio.gather(
             *[self.role.read_property(silent, AI_1, P.PRESENT_VALUE) for _ in range(20)],
-            return_exceptions=True), 10)
-        self.assertEqual(len(self.who_is), 1)
+            return_exceptions=True), 15)
+        # One lookup: the Who-Is addressed to the station, then one to its network.
+        self.assertEqual(len(self.who_is), 2)
         self.assertTrue(all(isinstance(result, rb.BacnetLookupError) for result in results), results)
         self.assertEqual(len({str(result) for result in results}), 1)
 
@@ -514,9 +618,11 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
                 for _ in range(5)]
         await asyncio.sleep(0.05)
         first.cancel()
-        results = await asyncio.wait_for(asyncio.gather(*rest, return_exceptions=True), 10)
+        results = await asyncio.wait_for(asyncio.gather(*rest, return_exceptions=True), 15)
         self.assertTrue(all(isinstance(result, rb.BacnetLookupError) for result in results), results)
-        self.assertIn(len(self.who_is), (1, 2))  # a cancelled asker may hand the asking on
+        # The cancelled asker sent one; the call it handed the asking to sends
+        # both forms (or the asker sent both first).
+        self.assertIn(len(self.who_is), (2, 3))
         await asyncio.gather(first, return_exceptions=True)
 
 
@@ -620,16 +726,19 @@ class RoutedRouterTests(unittest.IsolatedAsyncioTestCase):
         async with endpoint:
             await accepted_registration(endpoint)
             role = await endpoint.client()
-            # Through the router: no answer, so the request times out, as a
-            # typed call's does (an abort for the transaction's timeout).
+            # Through the router: it has no route to network 9, and its
+            # reject (reason 1) ends the request at once (#2724).
             nowhere = rb.RoutedTarget(9, self.far_address, router=self.router_address)
-            with self.assertRaises(rb.BacnetAbortError):
+            with self.assertRaises(rb.BacnetNetworkRejectError) as caught:
                 await asyncio.wait_for(role.read_property(nowhere, AI_1, P.PRESENT_VALUE), 10)
+            rejected = caught.exception
+            self.assertEqual((rejected.reason, rejected.network), (1, 9))
+            self.assertEqual(rejected.router, self.router_address)
             # With no router: nobody answers the Who-Is to network 9.
             with self.assertRaises(rb.BacnetLookupError):
                 await asyncio.wait_for(
                     role.read_property(rb.RoutedTarget(9, self.far_address), AI_1,
-                                       P.PRESENT_VALUE), 10)
+                                       P.PRESENT_VALUE), 15)
             self.assertEqual((await endpoint.status())["active_leases"], 0)
 
     async def test_routed_reads_and_writes_are_audited_naming_the_station(self):

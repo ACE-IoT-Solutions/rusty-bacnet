@@ -26,7 +26,10 @@ use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 
-use crate::client::{Scope, timed_out as is_timed_out, unreachable as is_unreachable};
+use crate::client::{
+    Scope, failed_locally as is_failed_locally, timed_out as is_timed_out,
+    unreachable as is_unreachable,
+};
 use crate::device::DeviceAddress;
 use crate::format::PropertyError;
 use crate::label::kebab;
@@ -35,8 +38,9 @@ use crate::write::{WriteDenied, Written};
 
 /// Why a high-level call failed as a whole.
 ///
-/// A timeout and a failure of the link are both [`Unreachable`]: the device
-/// didn't answer, so it may not have seen the request. [`Refused`] is the
+/// A timeout, a failure of the link and a router's network-layer refusal
+/// are all [`Unreachable`]: the device didn't answer, so it may not have
+/// seen the request. [`Refused`] is the
 /// device's own Error, Reject or Abort PDU, and a request that timed out is
 /// never one, even when the low-level client reports the timeout as an
 /// abort. Not `Clone`: a link failure holds the operating system's error.
@@ -56,7 +60,11 @@ pub enum OpsError {
         /// What the text was meant to be: `"target"`, `"address"`,
         /// `"object"` or `"property"`; for a discovery's scope or range,
         /// `"network"` or `"range"`; for an MS/TP connect builder's
-        /// settings, `"MS/TP settings"`.
+        /// settings, `"MS/TP settings"`; for a routed path (#2667),
+        /// `"routed path"` (a router MAC or network that names none, with
+        /// `"address"` and `"network"` from
+        /// [`Client::routed_path_at`](crate::Client::routed_path_at)) or
+        /// `"routed path limit"` (a limit the client refuses for it).
         what: &'static str,
         /// The text as given.
         input: String,
@@ -71,9 +79,10 @@ pub enum OpsError {
         /// The device as it was named: an instance (`1234`, `2:1234`) or an
         /// address (`2:0x05`).
         target: String,
-        /// Where the one Who-Is for it went unanswered: the named station
-        /// or network, or for a bare instance the client's
-        /// [`crate::ResolveScope`]; `None` when none was sent. For
+        /// Where the last Who-Is for it went unanswered: the named network,
+        /// for a bare instance the client's [`crate::ResolveScope`], and for
+        /// a remote address its network (asked after a Who-Is addressed to
+        /// the station drew nothing); `None` when none was sent. For
         /// `Some(Scope::Local)`, a bare instance asked on this
         /// network alone (the default), the text says how to reach
         /// further.
@@ -88,9 +97,29 @@ pub enum OpsError {
         /// Every address claiming it, ordered by network and then MAC.
         candidates: Vec<DeviceAddress>,
     },
+    /// A write (or relinquish) through a handle following an instance was
+    /// refused before anything was sent (#2795): the device isn't taken for
+    /// the instance at the address the handle holds (its table row names
+    /// another device there, and asked, the device there is silent or
+    /// another; or no route to it is known), and a write never goes to
+    /// another address on its own. A read through the handle looks for the
+    /// device, asking its address first; a write after it goes where the
+    /// read moved the handle.
+    NotConfirmed {
+        /// The instance the handle follows.
+        instance: u32,
+        /// The address the handle holds.
+        at: DeviceAddress,
+        /// The one other address the discovery table has the instance at,
+        /// if one: an unconfirmed hint (the table takes I-Ams nobody asked
+        /// for), not asked.
+        candidate: Option<DeviceAddress>,
+    },
     /// The device, or the way to it, didn't answer: the request timed out
     /// (the client's own timeout, or the transaction state machine giving
-    /// up on its retries), or the link failed.
+    /// up on its retries), the link failed, or a router on the way refused
+    /// it, its Reject-Message-To-Network ending it ([`Error::NetworkRejected`],
+    /// #2724), whose text names the router, the network and the reason.
     Unreachable {
         /// Where the request went.
         device: DeviceAddress,
@@ -113,9 +142,10 @@ pub enum OpsError {
     /// what was read or never end. What was read stays unreported: the
     /// call fails.
     Paging(PagingFault),
-    /// A watch couldn't take its points: the client's hub watches as many
-    /// as it may ([`MAX_WATCHED`](crate::watch::MAX_WATCHED)). Nothing was
-    /// watched.
+    /// A watch couldn't be made or changed ([`WatchError`] says why: its hub
+    /// watches as many points as it may, its settings are refused, every
+    /// range of subscriber process identifiers is held, or it has ended).
+    /// Nothing was watched or changed.
     Watch(WatchError),
     /// TLS material a BACnet/SC configuration refused, as its constructor
     /// reported it: a file that can't be read, PEM that doesn't decode, a
@@ -203,8 +233,9 @@ impl OpsError {
         }
     }
 
-    /// True when the device, or the way to it, isn't answering: a timeout
-    /// or a link failure. Reading on would only fail the same way. Also
+    /// True when the device, or the way to it, isn't answering: a timeout,
+    /// a link failure or a router's network reject. Reading on would only
+    /// fail the same way. Also
     /// true for a [`Client`](Self::Client) error of that kind, which a
     /// conversion that names no device ([`From<Error>`]) leaves there. False
     /// for a [`ReadBack`](Self::ReadBack), whose write went through.
@@ -213,6 +244,23 @@ impl OpsError {
             Self::Unreachable { .. } => true,
             Self::Client(error) => is_unreachable(error),
             Self::ObjectList { source, .. } => source.unreachable(),
+            _ => false,
+        }
+    }
+
+    /// True when the client or its own link failed the request on this
+    /// side, with no word from the device (#1833): a transport that isn't
+    /// started or has stopped, a client that stopped, and the client's
+    /// other refusals ([`failed_locally`](crate::raw::failed_locally) lists
+    /// them). The next request fails the same way, so a caller reading
+    /// several properties stops on it, as on [`unreachable`](Self::unreachable),
+    /// rather than taking it as one property's answer. It is never also
+    /// unreachable: a stopped local link is not a device that stopped
+    /// answering.
+    pub fn failed_locally(&self) -> bool {
+        match self {
+            Self::Client(error) => is_failed_locally(error),
+            Self::ObjectList { source, .. } => source.failed_locally(),
             _ => false,
         }
     }
@@ -357,6 +405,22 @@ impl fmt::Display for OpsError {
                     write!(f, "{address}")?;
                 }
                 f.write_str("; name one by its address")
+            }
+            Self::NotConfirmed {
+                instance,
+                at,
+                candidate,
+            } => {
+                write!(
+                    f,
+                    "device {instance} isn't confirmed at {at}, where the handle reaches it \
+                     (another device or none answers there, or no route to it is known), \
+                     and a write never goes elsewhere on its own"
+                )?;
+                if let Some(candidate) = candidate {
+                    write!(f, "; the discovery table has it at {candidate}")?;
+                }
+                f.write_str(": read through the handle first, which looks for the device")
             }
             Self::Unreachable { source, .. } => write!(f, "{source}"),
             Self::Refused {

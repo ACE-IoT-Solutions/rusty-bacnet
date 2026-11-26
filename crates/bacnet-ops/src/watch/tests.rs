@@ -63,11 +63,23 @@ async fn two_leases_share_one_subscription_until_the_last_goes() {
 }
 
 /// No lifetime-0 subscription can be built: the type refuses zero (the
-/// `bacnet` tool's class table calls zero a write, `bacnet_tool::class`).
+/// `bacnet` tool's class table calls zero a write, `bacnet_tool::class`),
+/// and nothing past eight hours, the longest every device takes (#2603).
 #[test]
-fn no_lifetime_is_indefinite() {
-    assert!(Lifetime::new(0).is_none());
+fn no_lifetime_is_indefinite_or_past_eight_hours() {
+    assert!(matches!(Lifetime::new(0), Err(WatchError::Settings(_))));
     assert_eq!(Lifetime::new(1).unwrap().secs(), 1);
+    assert_eq!(Lifetime::new(28_800).unwrap(), Lifetime::MAX);
+    for secs in [28_801, 86_400, u32::MAX] {
+        let refused = Lifetime::new(secs).unwrap_err();
+        assert!(matches!(refused, WatchError::Settings(_)), "{refused:?}");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the watch settings are refused: a COV lifetime is 1 to 28800 seconds, not {secs}"
+            )
+        );
+    }
     let fast = WatchOptions {
         poll_every: Duration::from_secs(9),
         ..WatchOptions::default()
@@ -184,7 +196,7 @@ async fn a_silent_device_is_reported() {
 async fn a_property_watch_subscribes_to_the_property() {
     let lab = Lab::start(WatchOptions::default()).await;
     let point = Point {
-        device: lab_at(),
+        device: Binding::At(lab_at()),
         object: ai(3),
         watched: Watched::Property {
             property: PropertyIdentifier::PRESENT_VALUE,
@@ -349,7 +361,7 @@ fn notifications_cannot_grow_the_rows() {
     assert!(rows.len() <= MAX_ROWS);
 
     let element = Point {
-        device: lab_at(),
+        device: Binding::At(lab_at()),
         object: oid(ObjectType::ANALOG_OUTPUT, 1),
         watched: Watched::Property {
             property: PropertyIdentifier::PRIORITY_ARRAY,
@@ -429,7 +441,7 @@ fn notifications_cannot_grow_the_rows() {
 #[test]
 fn a_property_watch_takes_its_property_whatever_the_order() {
     let point = Point {
-        device: lab_at(),
+        device: Binding::At(lab_at()),
         object: ai(1),
         watched: Watched::Property {
             property: PropertyIdentifier::PRESENT_VALUE,
@@ -497,7 +509,12 @@ async fn cov_multiple_notifications_are_counted_and_left_alone() {
         POINT_PROPERTIES.to_vec(),
         false,
     ));
-    let shared = Arc::new(super::shared::Shared::new(object(ai(1)), PROCESS_BASE, 4));
+    let shared = Arc::new(super::shared::Shared::new(
+        object(ai(1)),
+        PROCESS_BASE,
+        4,
+        lab_at(),
+    ));
     registry
         .table()
         .by_process
@@ -559,7 +576,7 @@ async fn cov_multiple_notifications_are_counted_and_left_alone() {
 async fn a_route_that_appears_later_is_used() {
     let lab = Lab::start(WatchOptions::default()).await;
     let point = Point {
-        device: routed_at(),
+        device: Binding::At(routed_at()),
         ..object(ai(1))
     };
     let lease = lab.hub.watch(point).unwrap();
@@ -590,7 +607,12 @@ async fn a_notified_value_clears_the_whole_objects_error() {
         POINT_PROPERTIES.to_vec(),
         false,
     ));
-    let shared = Arc::new(super::shared::Shared::new(object(ai(1)), PROCESS_BASE, 4));
+    let shared = Arc::new(super::shared::Shared::new(
+        object(ai(1)),
+        PROCESS_BASE,
+        4,
+        lab_at(),
+    ));
     registry
         .table()
         .by_process
@@ -623,7 +645,7 @@ async fn a_first_read_never_sent_fails_both_kinds_of_watch_alike() {
     // values a read couldn't: the point stays as its first read left it.
     lab.quirks.refuse_cov.store(true, Ordering::Relaxed);
     let property = Point {
-        device: lab_at(),
+        device: Binding::At(lab_at()),
         object: ai(2),
         watched: Watched::Property {
             property: PropertyIdentifier::PRESENT_VALUE,

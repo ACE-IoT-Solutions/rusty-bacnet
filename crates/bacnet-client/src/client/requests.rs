@@ -4,6 +4,9 @@ use super::*;
 use crate::tsm::{CoordinatedRegistrationError, TransactionRegistration};
 use bacnet_encoding::apdu::MINIMUM_MESSAGE_SIZE;
 
+#[path = "request_wait.rs"]
+mod wait;
+
 /// Which term of Clause 5.2.1.2's minimum bound the transmittable length down.
 ///
 /// Named separately so the error blames the right one. The checked value is a
@@ -31,16 +34,32 @@ impl core::fmt::Display for LengthBoundedBy {
     }
 }
 
+/// The limits a confirmed request is sent within (`size_request`).
+struct RequestSize<'a> {
+    /// The largest APDU the request may be.
+    remote_max_apdu: u16,
+    /// The most segments the peer takes, when its row gives a bound.
+    remote_max_segments: Option<u32>,
+    /// What the peer's row says of its segmentation, when it has a row.
+    peer_segmentation: Option<crate::discovery::PeerSegmentation>,
+    /// The network and MAC of the row that sized the request, if one did.
+    sized_by: Option<(u16, &'a [u8])>,
+}
+
 /// Whether `response` is the device's own answer to a confirmed request: an
-/// acknowledgment, or its Error, Reject or Abort. Any of them shows that the
-/// request reached the device (Clause 19.4). A router's refusal, a reason 4
-/// ending the request as [`TsmResponse::NetworkPathTooLong`], is no answer
-/// from the device.
+/// acknowledgment, of the right kind or not (#2721), or its Error, Reject
+/// or Abort. Any of them shows that the request reached the device (Clause
+/// 19.4). A router's refusal, a reason 4 ending the request as
+/// [`Error::RoutedPathTooLong`] or another reason as
+/// [`Error::NetworkRejected`], is no answer from the device.
 pub(super) fn answered_by_peer(response: &Result<TsmResponse, Error>) -> bool {
-    matches!(
-        response,
-        Ok(TsmResponse::SimpleAck | TsmResponse::ComplexAck { .. } | TsmResponse::Remote { .. })
-    )
+    match response {
+        Ok(
+            TsmResponse::SimpleAck | TsmResponse::ComplexAck { .. } | TsmResponse::Remote { .. },
+        ) => true,
+        Ok(TsmResponse::Failed(error)) => matches!(**error, Error::UnexpectedAck { .. }),
+        _ => false,
+    }
 }
 
 /// Reject a maximum transmittable length no conformant device could accept.
@@ -76,11 +95,62 @@ fn check_transmittable_length(peer_or_local: LengthBoundedBy, transport: u16) ->
     } else {
         peer_or_local
     };
-    Err(Error::Encoding(format!(
+    Err(below_minimum(combined, binding))
+}
+
+/// [`check_transmittable_length`]'s refusal, out of line from the request
+/// path. The limits are values the client keeps: its own setting, the
+/// link's, or the peer's row in its device table (#1833).
+#[cold]
+#[inline(never)]
+fn below_minimum(combined: u16, binding: LengthBoundedBy) -> Error {
+    Error::InvalidConfig(Refusal::text(format!(
         "maximum transmittable length {combined} is below the {MINIMUM_MESSAGE_SIZE}-octet \
          MinimumMessageSize every BACnet device accepts (Clause 5.2.1.2); the binding limit is \
          {binding}"
     )))
+}
+
+/// A routed request whose path authorization went to another request,
+/// refused out of line from the request path (#1833).
+#[cold]
+#[inline(never)]
+fn lost_path_authorization() -> Error {
+    Error::limit_reached("routed send lost its active path authorization")
+}
+
+/// [`Error::RequestCutOff`], built out of line: the request paths that
+/// end with it are hot, and the branch to it is the unlikely one (#1833).
+#[cold]
+#[inline(never)]
+pub(super) fn cut_off(sent: bool) -> Error {
+    Error::RequestCutOff { sent }
+}
+
+/// The error a request ends with when a send after its first one (a retry,
+/// or a segment once an earlier one left) failed with `error` (#1833). A
+/// link that stopped under the request refuses it for its state; the
+/// request may already have reached the device, so it is cut off as sent,
+/// not that refusal, which says nothing was done. Any other failure, a
+/// link's I/O error say, is the request's own end as it is.
+#[cold]
+#[inline(never)]
+pub(super) fn retry_refused(error: Error) -> Error {
+    match error {
+        Error::State(..) => cut_off(true),
+        other => other,
+    }
+}
+
+/// A confirmed request to a group address on this link, refused out of
+/// line from the hot request path (#1833).
+#[cold]
+#[inline(never)]
+fn group_destination() -> Error {
+    Error::invalid_argument(
+        "a confirmed request goes to one device, not to a broadcast or group address (a local \
+         broadcast carries only an UNCONFIRMED_REQUEST APDU, Clause 6.3)",
+    )
 }
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
@@ -96,17 +166,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// discovery table's row at it names (Clause 6.2.2), with its network
     /// and MAC as the NPDU's DNET and DADR. Once the client has learned its
     /// own network's number, a station on it is sent to at its MAC on this
-    /// link, with no DNET and not through any router (#1358); an answer from
-    /// it with no SNET completes the request, and so does one a router
-    /// relays back with that network and MAC as its SNET and SADR (#1465),
-    /// since both name the same station. The row at the station's address,
+    /// link, with no DNET and not through any router (#1358); only an answer
+    /// from that MAC with no SNET completes the request, not one relayed
+    /// back with that network and MAC as its SNET and SADR, which any
+    /// station could send (#2831). The row at the station's address,
     /// when the table has one, bounds the request by the device's Max APDU
     /// Length Accepted and segmentation, and an answer from it starts the
     /// row's age again; with no row the client's configured limits apply.
     ///
     /// # Errors
     ///
-    /// Before any request state is taken: [`Error::Encoding`] for a station
+    /// Before any request state is taken: [`Error::InvalidArgument`] for a station
     /// a confirmed request can't go to. That is a MAC that reaches a group
     /// of nodes on this link ([`TransportPort::is_group_destination`]: the
     /// link's broadcast MAC, or on B/IP the limited broadcast, the
@@ -114,10 +184,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// would make it a local broadcast (Clause 6.3, #1479); an empty MAC in
     /// an address; and on another network a network of 0 or 65535 or a MAC
     /// longer than [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) octets, which
-    /// no router carries to one station. [`Error::UnknownDevice`] for a
-    /// remote address with no named router and no row in the discovery
-    /// table, since the row is the route. Then the errors of the request
-    /// itself.
+    /// no router carries to one station, a MAC that is a broadcast or a
+    /// group on that network ([`RemoteBroadcast`], #2709), or a
+    /// named router that is a broadcast or group address on this link
+    /// (#2722). [`Error::UnknownDevice`] for a remote address with no named
+    /// router and no row in the discovery table, since the row is the route.
+    /// Then the errors of the request itself; a request the client's stop,
+    /// or its link stopping or losing its connection after the request went
+    /// out, cuts off fails with [`Error::RequestCutOff`]: `sent: false`
+    /// while it waited for its turn, `sent: true` once it was open.
     ///
     /// [`BACnetAddress`]: bacnet_types::constructed::BACnetAddress
     pub async fn confirmed_request(
@@ -126,7 +201,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         service_choice: ConfirmedServiceChoice,
         service_data: &[u8],
     ) -> Result<Bytes, Error> {
-        to.confirmed(self, service_choice, service_data).await
+        to.confirmed(self, service_choice, service_data, None).await
     }
 
     /// Register a confirmed request with the TSM, its lock held for the
@@ -151,19 +226,220 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             )
     }
 
+    /// The one request path: `attributes` are the data attributes each
+    /// frame carries (#2723), `None` for none.
+    ///
+    /// The checks and endings it calls are its own code moved out (#2558),
+    /// and their attributes were measured on the ReadProperty, WriteProperty
+    /// and ReadPropertyMultiple round trips, on both runtimes, in local
+    /// `scripts/perf/perf_counts.py` runs against e5061ee1b with the
+    /// hash-map keys fixed (#2591). `send_target` and `size_request` are
+    /// `#[inline(always)]`: without it, the pace guard's drop costs 15
+    /// instructions more, and each request 5.5 to 8.8 more.
+    /// `check_segmented_send` and `abandon_unsent`, which a request that
+    /// goes unsegmented and is sent never reaches, are `#[cold]
+    /// #[inline(never)]`: without all four attributes,
+    /// `cap_max_apdu_to_transport` is no longer inlined here, and each
+    /// request costs 26.6 to 30.6 more.
     pub(super) async fn confirmed_request_inner(
         &self,
         target: ConfirmedTarget<'_>,
         service_choice: ConfirmedServiceChoice,
         service_data: &[u8],
+        attributes: Attributes<'_>,
     ) -> Result<Bytes, Error> {
-        // A destination that is not one device (#1278), or a DADR or local
-        // source MAC that no router could carry (#1267), fails here, before
-        // the path gate is reserved or awaited and before TSM registration.
-        // A routed target on this client's own network is then sent as the
-        // local target it is (#1358); the peer's limits still come from the
-        // device-table row of the target as named.
+        // The target is checked and localized first (`send_target`); the
+        // peer's limits still come from the device-table row of the target
+        // as named.
         let named = target;
+        let (target, routed_forwarded_npci_len) = self.send_target(named)?;
+        // Pace before the path lease, so the wait holds up no other request
+        // through the same router. The guard lives until this request
+        // returns, by any path or by being dropped, and then starts the
+        // interval for the next request to this destination. A request still
+        // waiting when the client's tasks end (its stop, or its node's stop
+        // or drop) ends then, as the open requests do, and claims no turn
+        // (#2720). A client with no interval names no destination and
+        // waits for nothing, and neither here does one whose node audits
+        // its requests: the node takes the turn once it admits the request
+        // (#2652).
+        let _pace = if self.pacer.paces_in_request_path() {
+            let key = pacing::PaceKey::of(target);
+            match self.pacer.wait(key, &self.routing_query.ended).await {
+                Some(pace) => pace,
+                // Still waiting for its turn: nothing has gone out.
+                None => return Err(cut_off(false)),
+            }
+        } else {
+            pacing::PaceGuard::unpaced()
+        };
+        // The lease serializes one active request per (immediate router, DNET)
+        // and remains live through every return path, including cancellation.
+        // A request by local broadcast names no router, so it takes none.
+        let mut path_lease = match target.routed_path() {
+            None => None,
+            Some((router_mac, dest_network)) => Some(
+                self.routed_path_limits
+                    .acquire(router_mac, dest_network)
+                    .await?,
+            ),
+        };
+        let transaction_peer = target.transaction_peer();
+        let tsm_mac = transaction_peer.tsm_mac;
+        // Opened before the TSM holds the request, so that an answer can be
+        // told by the path it came through from the first (#2831).
+        let routed_path_max_apdu = path_lease
+            .as_ref()
+            .zip(routed_forwarded_npci_len)
+            .map(|(lease, npci_len)| lease.open(&tsm_mac, npci_len));
+        let unsegmented_apdu_size = 4 + service_data.len();
+        let RequestSize {
+            remote_max_apdu,
+            remote_max_segments,
+            peer_segmentation,
+            sized_by,
+        } = self.size_request(named, target, routed_path_max_apdu)?;
+        if unsegmented_apdu_size > remote_max_apdu as usize {
+            self.check_segmented_send(peer_segmentation)?;
+            let mut limits = SegmentedRequestLimits {
+                named: &named,
+                remote_max_apdu,
+                remote_max_segments,
+                routed_forwarded_npci_len,
+                routed_path_lease: &mut path_lease,
+                sized_by,
+                attributes,
+            };
+            return self
+                .segmented_confirmed_request(target, service_choice, service_data, &mut limits)
+                .await;
+        }
+
+        let advertised_max_apdu = self.advertised_max_apdu_length_for_target(target)?;
+        // The TSM keys below copy `tsm_mac` with `from_slice`, which copies
+        // it at once; `clone` copies a `MacAddr` a byte at a time (#1978).
+        let registered = self.register_transaction(
+            MacAddr::from_slice(&tsm_mac),
+            transaction_peer.canonical,
+            service_choice,
+            false,
+        );
+        // A refusal is a closed seat, the node's DeviceCommunicationControl,
+        // or a request the node audits (#2617).
+        let (invoke_id, registration) = match registered {
+            Ok(registered) => registered,
+            Err(refused) => match self.on_refused(refused, target, service_choice, false)? {
+                Refused::Registered(registered) => registered,
+                Refused::Audited(auditor) => {
+                    // The runner takes the routed path again.
+                    drop(path_lease);
+                    let request = self.audited_request(
+                        auditor,
+                        named,
+                        service_choice,
+                        service_data,
+                        attributes,
+                    );
+                    return request.await;
+                }
+            },
+        };
+
+        let owner = registration.owner.clone();
+        // The transaction keeps the request's data attributes, so its sends
+        // carry them from there (#2723).
+        owner.set_data_attributes(attributes);
+        let mut guard = TransactionGuard::new(
+            Arc::clone(&self.tsm),
+            self.cleanup_tx.clone(),
+            MacAddr::from_slice(&tsm_mac),
+            invoke_id,
+            owner.clone(),
+            None,
+        );
+
+        let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
+            segmented: false,
+            more_follows: false,
+            segmented_response_accepted: self.config.receives_segments(),
+            max_segments: self.config.max_segments,
+            max_apdu_length: advertised_max_apdu,
+            invoke_id,
+            sequence_number: None,
+            proposed_window_size: None,
+            service_choice,
+            service_request: Bytes::copy_from_slice(service_data),
+        });
+
+        let mut buf = BytesMut::with_capacity(6 + service_data.len());
+        encode_apdu(&mut buf, &pdu)?;
+
+        if let Some(forwarded_npci_len) = routed_forwarded_npci_len {
+            self.routed_path_limits.install_active(
+                target,
+                &tsm_mac,
+                invoke_id,
+                owner.clone(),
+                forwarded_npci_len,
+                self.network.network_control_ingress_sequence(),
+            );
+        }
+        if !self.routed_path_limits.authorize_attempt(
+            target,
+            &tsm_mac,
+            invoke_id,
+            &owner,
+            buf.len(),
+        ) {
+            guard.mark_completed();
+            self.abandon_unsent(&tsm_mac, invoke_id, &owner);
+            // The path's one active request is no longer this one.
+            return Err(lost_path_authorization());
+        }
+
+        if let Err(e) = self.send_confirmed_target_apdu(target, &buf, &owner).await {
+            guard.mark_completed();
+            self.abandon_unsent(&tsm_mac, invoke_id, &owner);
+            return Err(e);
+        }
+
+        let mut response = self
+            .wait_for_confirmed_response(
+                ConfirmedWait {
+                    target,
+                    tsm_mac: &tsm_mac,
+                    invoke_id,
+                    owner: &owner,
+                    retry_apdu: Some(&buf),
+                },
+                registration.response,
+                registration.progress,
+            )
+            .await;
+        // Checked here too, so a request no row sized makes no call.
+        if sized_by.is_some() {
+            self.note_answer(sized_by, &response);
+        }
+        if let Some(lease) = path_lease.as_ref() {
+            self.settle_routed(lease, (&tsm_mac, invoke_id, &owner), &mut response);
+        }
+        guard.mark_completed();
+        response.and_then(Self::confirmed_response_result)
+    }
+
+    /// Check a request's target and localize it, before anything is taken
+    /// for the request. A destination that is not one device (#1278), or a
+    /// DADR or local source MAC that no router could carry (#1267), fails
+    /// here, before the path gate is reserved or awaited and before TSM
+    /// registration. A routed target on this client's own network is then
+    /// sent as the local target it is (#1358). Returns the target to send
+    /// to and, for one still routed, the length of the NPCI its router
+    /// forwards.
+    #[inline(always)]
+    fn send_target<'a>(
+        &self,
+        named: ConfirmedTarget<'a>,
+    ) -> Result<(ConfirmedTarget<'a>, Option<u16>), Error> {
         if let ConfirmedTarget::Routed {
             dest_network,
             dest_mac,
@@ -173,19 +449,32 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             check_routed_unicast(dest_network, dest_mac.len())?;
         }
         let target = named.localized(self.network.local_network_number().get());
-        if let ConfirmedTarget::Local { mac } = target {
-            // An empty MAC names no one station: refused as an address on
-            // network 0 with no MAC is, whichever form named it (#2588).
-            Self::station_of(0, mac)?;
-            // With no DNET, a group destination is a local broadcast, which
-            // carries no confirmed request (Clause 6.3, #1479).
-            if self.network.transport().is_group_destination(mac) {
-                return Err(Error::Encoding(
-                    "a confirmed request goes to one device, not to a broadcast or group \
-                     address (a local broadcast carries only an UNCONFIRMED_REQUEST APDU, \
-                     Clause 6.3)"
-                        .into(),
-                ));
+        match target {
+            ConfirmedTarget::Local { mac } => {
+                // An empty MAC names no one station: refused as an address
+                // on network 0 with no MAC is, whichever form named it
+                // (#2588).
+                Self::station_of(0, mac)?;
+                // With no DNET, a group destination is a local broadcast,
+                // which carries no confirmed request (Clause 6.3, #1479).
+                if self.network.transport().is_group_destination(mac) {
+                    return Err(group_destination());
+                }
+            }
+            // Still routed, so on another network: its MAC there must not
+            // spell that network's broadcast (#2709), as the station's
+            // one-station mark has it (#2738), and the router it goes
+            // through must be one station on this link (#2722). The local
+            // broadcast form names no router; its DNET and DADR name the
+            // one station, so they are all it is checked by.
+            ConfirmedTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
+                one_station,
+            } => {
+                send_checks::check_remote_station(dest_network, dest_mac, one_station)?;
+                send_checks::check_router(self.network.transport(), dest_network, router_mac)?;
             }
         }
         let routed_forwarded_npci_len = match target {
@@ -194,32 +483,21 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 Some(forwarded_npci_len(dest_mac.len(), self.local_mac.len())?)
             }
         };
-        // Pace before the path lease, so the wait holds up no other request
-        // through the same router. The guard lives until this request
-        // returns, by any path or by being dropped, and then starts the
-        // interval for the next request to this destination.
-        let mut _pace = self.pacer.wait(pacing::PaceKey::of(target)).await;
-        // The lease serializes one active request per (immediate router, DNET)
-        // and remains live through every return path, including cancellation.
-        let mut path_lease = match target {
-            ConfirmedTarget::Local { .. } => None,
-            ConfirmedTarget::Routed {
-                router_mac,
-                dest_network,
-                ..
-            } => Some(
-                self.routed_path_limits
-                    .acquire(router_mac, dest_network)
-                    .await?,
-            ),
-        };
-        let routed_path_max_apdu = path_lease
-            .as_ref()
-            .zip(routed_forwarded_npci_len)
-            .map(|(lease, npci_len)| lease.max_apdu(npci_len));
-        let transaction_peer = target.transaction_peer();
-        let tsm_mac = transaction_peer.tsm_mac;
-        let unsegmented_apdu_size = 4 + service_data.len();
+        Ok((target, routed_forwarded_npci_len))
+    }
+
+    /// How large a request to `target` may be: the smallest of the peer's
+    /// Max APDU Length Accepted (from the discovery-table row of the target
+    /// as `named`, or this client's own maximum with no row), the link's
+    /// limit and a routed path's, `routed_path_max_apdu`. Fails when that
+    /// is below what any device accepts.
+    #[inline(always)]
+    fn size_request<'a>(
+        &self,
+        named: ConfirmedTarget<'a>,
+        target: ConfirmedTarget<'a>,
+        routed_path_max_apdu: Option<u16>,
+    ) -> Result<RequestSize<'a>, Error> {
         let target_transport_max_apdu = self.target_transport_max_apdu_length(target);
 
         let (peer_max_apdu, remote_max_segments, advertised, peer_segmentation, sized_by) = {
@@ -266,158 +544,55 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let remote_max_apdu = peer_max_apdu
             .min(target_transport_max_apdu)
             .min(routed_path_max_apdu.unwrap_or(u16::MAX));
-        if unsegmented_apdu_size > remote_max_apdu as usize {
-            // Clause 12.11: a NO_SEGMENTATION or SEGMENTED_TRANSMIT peer
-            // accepts exactly one segment — only unsegmented requests — and
-            // Clause 18's SEGMENTATION_NOT_SUPPORTED abort is the certain
-            // outcome of sending anyway. Refuse locally when the capability
-            // is authoritative (I-Am or explicit configuration); a legacy
-            // placeholder row stays unknown and keeps today's behavior.
-            if let Some(crate::discovery::PeerSegmentation::Authoritative(capability)) =
-                peer_segmentation
-                && matches!(
-                    capability,
-                    bacnet_types::enums::Segmentation::NO_SEGMENTATION
-                        | bacnet_types::enums::Segmentation::SEGMENTED_TRANSMIT
-                )
-            {
-                return Err(bacnet_types::error::SegmentationError::PeerCannotReceive {
-                    capability,
-                }
-                .into());
-            }
-            let mut limits = SegmentedRequestLimits {
-                named: &named,
-                remote_max_apdu,
-                remote_max_segments,
-                routed_forwarded_npci_len,
-                routed_path_lease: &mut path_lease,
-                pace: &mut _pace,
-                sized_by,
-            };
-            return self
-                .segmented_confirmed_request(target, service_choice, service_data, &mut limits)
-                .await;
-        }
+        Ok(RequestSize {
+            remote_max_apdu,
+            remote_max_segments,
+            peer_segmentation,
+            sized_by,
+        })
+    }
 
-        let advertised_max_apdu = self.advertised_max_apdu_length_for_target(target)?;
-        // The TSM keys below copy `tsm_mac` with `from_slice`, which copies
-        // it at once; `clone` copies a `MacAddr` a byte at a time (#1978).
-        let registered = {
-            let mut tsm = self.tsm.lock();
-            tsm.register_coordinated_transaction_with_progress(
-                MacAddr::from_slice(&tsm_mac),
-                transaction_peer.canonical,
-                service_choice,
-                false,
+    /// A request too long for one APDU goes segmented, unless this client
+    /// sends no segments or the peer, by its own account, takes none.
+    #[cold]
+    #[inline(never)]
+    fn check_segmented_send(
+        &self,
+        peer_segmentation: Option<crate::discovery::PeerSegmentation>,
+    ) -> Result<(), Error> {
+        // A client that sends no segments (a node whose Device says so,
+        // #2617) refuses first, whatever the peer takes.
+        self.config.check_segmented_request()?;
+        // Clause 12.11: a NO_SEGMENTATION or SEGMENTED_TRANSMIT peer
+        // accepts exactly one segment — only unsegmented requests — and
+        // Clause 18's SEGMENTATION_NOT_SUPPORTED abort is the certain
+        // outcome of sending anyway. Refuse locally when the capability
+        // is authoritative (I-Am or explicit configuration); a legacy
+        // placeholder row stays unknown and keeps today's behavior.
+        if let Some(crate::discovery::PeerSegmentation::Authoritative(capability)) =
+            peer_segmentation
+            && matches!(
+                capability,
+                bacnet_types::enums::Segmentation::NO_SEGMENTATION
+                    | bacnet_types::enums::Segmentation::SEGMENTED_TRANSMIT
             )
-        };
-        // A refusal is a closed seat, the node's DeviceCommunicationControl,
-        // or a request the node audits (#2617).
-        let (invoke_id, registration) = match registered {
-            Ok(registered) => registered,
-            Err(refused) => match self.on_refused(refused, target, service_choice, false)? {
-                Refused::Registered(registered) => registered,
-                Refused::Audited(auditor) => {
-                    let request = self.audited_request(
-                        auditor,
-                        named,
-                        service_choice,
-                        service_data,
-                        _pace,
-                        path_lease,
-                    );
-                    return request.await;
-                }
-            },
-        };
-
-        let owner = registration.owner.clone();
-        let mut guard = TransactionGuard::new(
-            Arc::clone(&self.tsm),
-            self.cleanup_tx.clone(),
-            MacAddr::from_slice(&tsm_mac),
-            invoke_id,
-            owner.clone(),
-            None,
-        );
-
-        let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
-            segmented: false,
-            more_follows: false,
-            segmented_response_accepted: self.config.segmented_response_accepted,
-            max_segments: self.config.max_segments,
-            max_apdu_length: advertised_max_apdu,
-            invoke_id,
-            sequence_number: None,
-            proposed_window_size: None,
-            service_choice,
-            service_request: Bytes::copy_from_slice(service_data),
-        });
-
-        let mut buf = BytesMut::with_capacity(6 + service_data.len());
-        encode_apdu(&mut buf, &pdu)?;
-
-        if let Some(forwarded_npci_len) = routed_forwarded_npci_len {
-            self.routed_path_limits.install_active(
-                target,
-                MacAddr::from_slice(&tsm_mac),
-                invoke_id,
-                owner.clone(),
-                forwarded_npci_len,
-                self.network.network_control_ingress_sequence(),
+        {
+            return Err(
+                bacnet_types::error::SegmentationError::PeerCannotReceive { capability }.into(),
             );
         }
-        if !self.routed_path_limits.authorize_attempt(
-            target,
-            &tsm_mac,
-            invoke_id,
-            &owner,
-            buf.len(),
-        ) {
-            guard.mark_completed();
-            self.tsm
-                .lock()
-                .cancel_transaction_for_owner(&tsm_mac, invoke_id, &owner);
-            self.enqueue_transaction_cleanup(&tsm_mac, invoke_id, &owner, false, None);
-            return Err(Error::Encoding(
-                "routed send lost its active path authorization".into(),
-            ));
-        }
+        Ok(())
+    }
 
-        if let Err(e) = self.send_confirmed_target_apdu(target, &buf).await {
-            guard.mark_completed();
-            let mut tsm = self.tsm.lock();
-            tsm.cancel_transaction_for_owner(&tsm_mac, invoke_id, &owner);
-            drop(tsm);
-            self.enqueue_transaction_cleanup(&tsm_mac, invoke_id, &owner, false, None);
-            return Err(e);
-        }
-
-        let response = self
-            .wait_for_confirmed_response(
-                ConfirmedWait {
-                    target,
-                    tsm_mac: &tsm_mac,
-                    invoke_id,
-                    owner: &owner,
-                    retry_apdu: Some(&buf),
-                },
-                registration.response,
-                registration.progress,
-            )
-            .await;
-        // Checked here too, so a request no row sized makes no call.
-        if sized_by.is_some() {
-            self.note_answer(sized_by, &response);
-        }
-        if let Some(lease) = path_lease.as_ref()
-            && answered_by_peer(&response)
-        {
-            lease.mark_answered();
-        }
-        guard.mark_completed();
-        response.and_then(Self::confirmed_response_result)
+    /// A request that could not be sent ends here: its transaction leaves
+    /// the TSM, and the dispatch task drops what it holds for it.
+    #[cold]
+    #[inline(never)]
+    fn abandon_unsent(&self, tsm_mac: &MacAddr, invoke_id: u8, owner: &TransactionOwner) {
+        self.tsm
+            .lock()
+            .cancel_transaction_for_owner(tsm_mac, invoke_id, owner);
+        self.enqueue_transaction_cleanup(tsm_mac, invoke_id, owner, false, None);
     }
 
     /// An answer from the device ([`answered_by_peer`]) starts the age of
@@ -433,201 +608,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             && answered_by_peer(response)
         {
             self.device_table.lock().answered(network, mac);
-        }
-    }
-
-    /// Wait through AWAIT_CONFIRMATION and SEGMENTED_CONF without allowing
-    /// their timers to cancel each other's phase.
-    pub(super) async fn wait_for_confirmed_response(
-        &self,
-        wait_for: ConfirmedWait<'_>,
-        mut response_rx: oneshot::Receiver<TsmResponse>,
-        mut progress_rx: ProgressReceiver,
-    ) -> Result<TsmResponse, Error> {
-        let ConfirmedWait {
-            target,
-            tsm_mac,
-            invoke_id,
-            owner,
-            retry_apdu,
-        } = wait_for;
-        let (request_timeout, segment_timeout, max_retries) = {
-            let tsm = self.tsm.lock();
-            let config = tsm.config();
-            (
-                Duration::from_millis(config.apdu_timeout_ms),
-                Duration::from_millis(config.apdu_segment_timeout_ms.saturating_mul(4)),
-                config.apdu_retries,
-            )
-        };
-        let mut retries_sent = 0u16;
-        let mut progress = progress_rx.borrow_and_update();
-
-        loop {
-            let wait = match progress {
-                TransactionProgress::AwaitingResponse => request_timeout,
-                TransactionProgress::SegmentedResponse { .. } => segment_timeout,
-            };
-            let timer = tokio::time::sleep(wait);
-            tokio::pin!(timer);
-
-            tokio::select! {
-                response = &mut response_rx => {
-                    return response.map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                }
-                // Progress is never published after the transaction leaves
-                // the TSM; the response arm above resolves then instead.
-                () = progress_rx.changed() => {
-                    progress = progress_rx.borrow_and_update();
-                }
-                _ = &mut timer => {
-                    match progress {
-                        TransactionProgress::AwaitingResponse => {
-                            let retry = retry_apdu.is_some()
-                                && retries_sent < u16::from(max_retries);
-                            // The expiry and, for a retry with nothing to resend,
-                            // the cancel are one step under the TSM lock.
-                            let expiration = {
-                                let mut tsm = self.tsm.lock();
-                                let expiration =
-                                    tsm.expire_request_timer(tsm_mac, invoke_id, owner, !retry);
-                                if matches!(expiration, RequestTimerExpiration::Retry)
-                                    && retry_apdu.is_none()
-                                {
-                                    tsm.cancel_transaction_for_owner(tsm_mac, invoke_id, owner);
-                                }
-                                expiration
-                            };
-                            match expiration {
-                                RequestTimerExpiration::Retry => {
-                                    // Authorization and segment admission use the TSM lock,
-                                    // but transport I/O must not. Once authorized, this retry
-                                    // may finish even if segment zero is admitted meanwhile.
-                                    let Some(retry_apdu) = retry_apdu else {
-                                        self.enqueue_transaction_cleanup(
-                                            tsm_mac,
-                                            invoke_id,
-                                            owner,
-                                            false,
-                                            None,
-                                        );
-                                        return Err(Error::Timeout(request_timeout));
-                                    };
-                                    retries_sent += 1;
-                                    if !self.routed_path_limits.authorize_attempt(
-                                        target,
-                                        tsm_mac,
-                                        invoke_id,
-                                        owner,
-                                        retry_apdu.len(),
-                                    ) {
-                                        return (&mut response_rx).await.map_err(|_| {
-                                            Error::Encoding("TSM response channel closed".into())
-                                        });
-                                    }
-                                    let send_result = self
-                                        .send_confirmed_target_apdu(target, retry_apdu)
-                                        .await;
-                                    if let Err(error) = send_result {
-                                        let expiration = self
-                                            .tsm
-                                            .lock()
-                                            .expire_request_timer(tsm_mac, invoke_id, owner, true);
-                                        match expiration {
-                                            RequestTimerExpiration::SegmentedResponse { generation } => {
-                                                progress = TransactionProgress::SegmentedResponse { generation };
-                                                continue;
-                                            }
-                                            RequestTimerExpiration::NoTransaction => {
-                                                return (&mut response_rx)
-                                                    .await
-                                                    .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                                            }
-                                            RequestTimerExpiration::TimedOut => {
-                                                self.enqueue_transaction_cleanup(
-                                                    tsm_mac,
-                                                    invoke_id,
-                                                    owner,
-                                                    false,
-                                                    None,
-                                                );
-                                                return Err(error);
-                                            }
-                                            RequestTimerExpiration::Retry
-                                            | RequestTimerExpiration::Withdrawn => unreachable!(
-                                                "final retry-send failure disposition cannot authorize another retry"
-                                            ),
-                                        }
-                                    }
-                                    debug!(
-                                        invoke_id,
-                                        attempt = retries_sent,
-                                        max_retries,
-                                        "APDU timeout, retrying confirmed request"
-                                    );
-                                }
-                                RequestTimerExpiration::SegmentedResponse { generation } => {
-                                    progress = TransactionProgress::SegmentedResponse { generation };
-                                }
-                                // DeviceCommunicationControl restricts the
-                                // node: no retry goes out (#2617).
-                                RequestTimerExpiration::Withdrawn => {
-                                    self.enqueue_transaction_cleanup(
-                                        tsm_mac, invoke_id, owner, false, None,
-                                    );
-                                    return Err(Error::InitiationDisabled { sent: true });
-                                }
-                                RequestTimerExpiration::TimedOut => {
-                                    self.enqueue_transaction_cleanup(
-                                        tsm_mac,
-                                        invoke_id,
-                                        owner,
-                                        false,
-                                        None,
-                                    );
-                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
-                                }
-                                RequestTimerExpiration::NoTransaction => {
-                                    return (&mut response_rx)
-                                        .await
-                                        .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                                }
-                            }
-                        }
-                        TransactionProgress::SegmentedResponse { generation } => {
-                            let expiration = self
-                                .tsm
-                                .lock()
-                                .expire_segment_timer(tsm_mac, invoke_id, owner, generation);
-                            match expiration {
-                                SegmentTimerExpiration::Activity { generation } => {
-                                    progress = TransactionProgress::SegmentedResponse { generation };
-                                }
-                                SegmentTimerExpiration::AwaitingResponse => {
-                                    progress = TransactionProgress::AwaitingResponse;
-                                }
-                                SegmentTimerExpiration::TimedOut => {
-                                    #[cfg(test)]
-                                    self.segmented_cleanup.pause_if_enabled().await;
-                                    self.enqueue_transaction_cleanup(
-                                        tsm_mac,
-                                        invoke_id,
-                                        owner,
-                                        false,
-                                        None,
-                                    );
-                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
-                                }
-                                SegmentTimerExpiration::NoTransaction => {
-                                    return (&mut response_rx)
-                                        .await
-                                        .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -649,34 +629,58 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     }
 
     pub(super) fn confirmed_response_result(response: TsmResponse) -> Result<Bytes, Error> {
-        super::confirmed_response_result(response)
+        response.into_result()
     }
 
+    /// Send one frame of a confirmed request (its first, a retry or a
+    /// segment) with the data attributes it was made with
+    /// ([`BACnetClient::with_data_attributes`]), which its transaction's
+    /// `owner` keeps, none by default: to the station's MAC, to its router,
+    /// or by one broadcast on this link for the form that names no router.
     pub(super) async fn send_confirmed_target_apdu(
         &self,
         target: ConfirmedTarget<'_>,
         apdu: &[u8],
+        owner: &TransactionOwner,
     ) -> Result<(), Error> {
+        let priority = NetworkPriority::Normal;
+        let attributes = owner.data_attributes();
         match target {
             ConfirmedTarget::Local { mac } => {
                 self.network
-                    .send_apdu(apdu, mac, true, NetworkPriority::Normal)
+                    .send_apdu_with_data_attributes(apdu, mac, true, priority, attributes)
                     .await
             }
             ConfirmedTarget::Routed {
                 router_mac,
                 dest_network,
                 dest_mac,
-            } => {
+                ..
+            } if router_mac == station::VIA_LOCAL_BROADCAST => {
                 self.network
-                    .send_apdu_routed(
+                    .send_apdu_routed_via_local_broadcast_with_data_attributes(
                         apdu,
                         dest_network,
                         dest_mac,
-                        router_mac,
                         true,
-                        NetworkPriority::Normal,
+                        priority,
+                        attributes,
                     )
+                    .await
+            }
+            ConfirmedTarget::Routed {
+                router_mac,
+                dest_network,
+                dest_mac,
+                ..
+            } => {
+                let to = bacnet_network::layer::RoutedTarget {
+                    network: dest_network,
+                    mac: dest_mac,
+                    router_mac,
+                };
+                self.network
+                    .send_apdu_routed_with_data_attributes(apdu, to, true, priority, attributes)
                     .await
             }
         }
@@ -845,3 +849,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 #[cfg(test)]
 #[path = "requests_tests.rs"]
 mod transmittable_length_tests;
+
+#[cfg(test)]
+#[path = "request_send_tests.rs"]
+mod send_tests;

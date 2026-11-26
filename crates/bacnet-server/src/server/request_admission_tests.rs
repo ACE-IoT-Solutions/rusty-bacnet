@@ -525,17 +525,23 @@ async fn admission_invalid_direct_generic_bip_before_transport_start() {
             never_start(&started),
         )
         .await
+        .map_err(Error::from)
         .err()
         .unwrap();
-        assert!(matches!(error, Error::Encoding(m) if m.contains("max_confirmed_in_flight")));
+        assert!(
+            matches!(error, Error::InvalidConfig(m) if m.to_string().contains("max_confirmed_in_flight"))
+        );
         let error = BACnetServer::generic_builder()
             .transport(never_start(&started))
             .request_admission_policy(policy)
             .build()
             .await
+            .map_err(Error::from)
             .err()
             .unwrap();
-        assert!(matches!(error, Error::Encoding(m) if m.contains("max_confirmed_in_flight")));
+        assert!(
+            matches!(error, Error::InvalidConfig(m) if m.to_string().contains("max_confirmed_in_flight"))
+        );
         assert!(!started.load(Ordering::Acquire));
         let error = BACnetServer::bip_builder()
             .interface(Ipv4Addr::LOCALHOST)
@@ -543,9 +549,12 @@ async fn admission_invalid_direct_generic_bip_before_transport_start() {
             .request_admission_policy(policy)
             .build()
             .await
+            .map_err(Error::from)
             .err()
             .unwrap();
-        assert!(matches!(error, Error::Encoding(m) if m.contains("max_confirmed_in_flight")));
+        assert!(
+            matches!(error, Error::InvalidConfig(m) if m.to_string().contains("max_confirmed_in_flight"))
+        );
     }
 }
 

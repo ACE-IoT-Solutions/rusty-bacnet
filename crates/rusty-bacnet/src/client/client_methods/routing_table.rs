@@ -76,8 +76,8 @@ impl BACnetClient {
     ///
     /// For a local router, pass its address as `bytes`, such as a `DiscoveredRouter`'s `mac`, or a string in the
     /// binding's address forms (`"ip:port"`, `"bip6:N"`, hex octets, an
-    /// MS/TP station). For a remote router, use a `RoutedTarget`. An empty
-    /// or broadcast link address raises `ValueError`.
+    /// MS/TP station). For a remote router, use a `RoutedTarget`. An empty,
+    /// broadcast or group link address raises `ValueError`.
     ///
     /// A long table comes as several acknowledgements with nothing to mark
     /// the last, so the call returns once `quiet` seconds pass after the
@@ -96,9 +96,11 @@ impl BACnetClient {
     /// address or port), and neither is an empty table. A router that
     /// refuses with a Reject-Message-To-Network before any acknowledgement
     /// raises `BacnetNetworkRejectError` with its `reason` and `network`.
-    /// Local queries ignore DNET reject reasons 1, 2 and 4. A reject from
-    /// the selected next hop naming the queried DNET before the first ack
-    /// ends a routed query. A concurrent request on that path can produce
+    /// Local queries ignore DNET reject reasons 1, 2 and 4. A reject that
+    /// comes through the selected next hop naming the queried DNET before
+    /// the first ack ends a routed query, whether the hop sent it or relayed
+    /// it from a router further on (reason 4, message too long, is ignored:
+    /// the query is too short to draw it). A concurrent request on that path can produce
     /// the same reject because these messages have no invoke ID. The
     /// bounds are 0 to 3600 seconds, and `wait` may not exceed `total`
     /// (`ValueError` otherwise). A client stopped mid-call raises
@@ -108,7 +110,13 @@ impl BACnetClient {
     /// for a single local next hop advertising the network. Zero or multiple
     /// candidates, or reports lost during discovery, raise `BacnetError`.
     /// The router need not advertise a Device. A routed answer must arrive through that hop and carry the queried
-    /// source network and address. A router replying only locally may time out.
+    /// source network and address. An older router that answers a table query
+    /// only on its own link never answers this client: the call raises
+    /// `BacnetTimeoutError`, whose text for a routed query says so. A router
+    /// that refuses table queries from other networks (a hardened hosted
+    /// router with no authorizer, or a host that refuses the query class)
+    /// drops a routed query silently, and the call raises
+    /// `BacnetTimeoutError` too (#2715).
     /// One query runs at a time. The call holds the started client through
     /// resolution, sending and collection, so `stop()` waits for it.
     #[pyo3(signature = (router, *, wait=3.0, quiet=0.5, total=10.0, max_entries=4096))]

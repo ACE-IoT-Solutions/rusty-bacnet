@@ -91,14 +91,34 @@ fn a_failed_requests_result() {
         );
     }
     let communication = |code| (ErrorClass::COMMUNICATION, code);
-    assert_eq!(
-        audit_result(&Error::abort(AbortReason::from_raw(64))),
-        communication(ErrorCode::ABORT_PROPRIETARY)
-    );
-    assert_eq!(
-        audit_result(&Error::reject(RejectReason::from_raw(64))),
-        communication(ErrorCode::REJECT_PROPRIETARY)
-    );
+    // Reasons the standard leaves unassigned below the proprietary range
+    // are OTHER; the proprietary range keeps its own codes, to its top.
+    for reason in [12, 63] {
+        assert_eq!(
+            audit_result(&Error::abort(AbortReason::from_raw(reason))),
+            communication(ErrorCode::OTHER),
+            "abort {reason}"
+        );
+    }
+    for reason in [10, 11, 63] {
+        assert_eq!(
+            audit_result(&Error::reject(RejectReason::from_raw(reason))),
+            communication(ErrorCode::OTHER),
+            "reject {reason}"
+        );
+    }
+    for reason in [64, 255] {
+        assert_eq!(
+            audit_result(&Error::abort(AbortReason::from_raw(reason))),
+            communication(ErrorCode::ABORT_PROPRIETARY),
+            "abort {reason}"
+        );
+        assert_eq!(
+            audit_result(&Error::reject(RejectReason::from_raw(reason))),
+            communication(ErrorCode::REJECT_PROPRIETARY),
+            "reject {reason}"
+        );
+    }
     assert_eq!(
         audit_result(&Error::Timeout(Duration::from_secs(1))),
         communication(ErrorCode::TIMEOUT)
@@ -107,10 +127,20 @@ fn a_failed_requests_result() {
         audit_result(&Error::RoutedPathTooLong { dnet: 5 }),
         communication(ErrorCode::MESSAGE_TOO_LONG)
     );
-    assert_eq!(
-        audit_result(&Error::Encoding("local".into())),
-        communication(ErrorCode::OTHER)
-    );
+    // The client's own refusals record OTHER, as their untyped text did
+    // (#1833); a request cut off after it may have gone out is recorded
+    // with OTHER too, its outcome unknown.
+    for local in [
+        Error::RequestCutOff { sent: false },
+        Error::RequestCutOff { sent: true },
+        Error::invalid_config("local"),
+        Error::invalid_argument("local"),
+        Error::unsupported("local"),
+        Error::limit_reached("local"),
+        Error::range("local"),
+    ] {
+        assert_eq!(audit_result(&local), communication(ErrorCode::OTHER));
+    }
     let refused = (ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED);
     assert_eq!(
         audit_result(&Error::with_detail(
@@ -126,11 +156,18 @@ fn a_failed_requests_result() {
         audit_result(&Error::protocol(refused.0, refused.1)),
         refused
     );
+    // A class or code outside the standard's lists passes through as sent.
+    let unknown = (ErrorClass::from_raw(512), ErrorCode::from_raw(513));
+    assert_eq!(
+        audit_result(&Error::protocol(unknown.0, unknown.1)),
+        unknown
+    );
 }
 
 /// A request reached its target when the device answered, the wait ran
-/// out, or the transport failed while sending; not when it was refused
-/// before sending, or its transaction was ended by a stop.
+/// out, the transport failed while sending, or a stop cut it off after it
+/// may have gone out; not when it was refused before sending, its
+/// transport not started or stopped, or a stop cut it off before it went.
 #[test]
 fn which_requests_reached_their_target() {
     assert!(attempted(&Ok(Bytes::new())));
@@ -139,11 +176,26 @@ fn which_requests_reached_their_target() {
         Error::Timeout(Duration::from_secs(1)),
         Error::Transport(std::io::Error::other("send failed")),
         Error::RoutedPathTooLong { dnet: 5 },
+        // As a request whose retry DeviceCommunicationControl withheld
+        // (#1833).
+        Error::RequestCutOff { sent: true },
     ] {
         assert!(attempted(&Err(reached)));
     }
+    // The client's own refusals, typed (#1833), count as the untyped text
+    // they replace did: not attempted. So does a send its transport refused
+    // as not started or stopped, which went nowhere (#1833).
     for refused in [
-        Error::Encoding("TSM response channel closed".into()),
+        Error::RequestCutOff { sent: false },
+        bacnet_transport::port::stopped(),
+        bacnet_transport::port::stopped_for_good(),
+        super::seat::seat_closed(),
+        Error::state(Lifecycle::Stopping, "the seat's node is stopping"),
+        Error::invalid_config("transport not set on ClientBuilder"),
+        Error::invalid_argument("routed DNET must be in 1..=65534"),
+        Error::unsupported("the node's source Audit carries out this request"),
+        Error::limit_reached("routed send lost its active path authorization"),
+        Error::range("log counts exceed the log's sequence range"),
         Error::SendTooLong {
             length: 2000,
             limit: 1497,

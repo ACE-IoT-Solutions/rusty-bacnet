@@ -39,7 +39,8 @@ use bacnet_bip_codec::{BdtEntries, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_bip_core::node::{Cast, Link, Mode};
 use bacnet_npdu::NpduLimits;
 use bacnet_types::bip_port::{BbmdTables, BipPortMode, ForeignRegistration};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
+use bacnet_types::sync::MutexExt;
 
 mod bbmd_receive;
 mod bbmd_start;
@@ -68,7 +69,7 @@ pub use foreign_device::{ForeignBbmd, ForeignDeviceConfig};
 pub use mode::{BbmdOptions, BipMode};
 mod fanout;
 mod groups;
-pub use groups::is_router_station;
+pub use groups::is_unicast_station;
 pub(crate) mod listener_error;
 mod multicast;
 pub use multicast::BipMulticast;
@@ -105,6 +106,8 @@ use rate_limit::ManagementRateLimiter;
 pub use receive_counters::ReceiveCounters;
 use receive_counters::ReceiveDrops;
 pub use send_counters::SendCounters;
+mod loopback_guard;
+pub use loopback_guard::LoopbackBroadcastRefused;
 use send_counters::SendRefusals;
 #[cfg(test)]
 use test_support::{Delivery, admitted_delivery, handle_bvll_message};
@@ -353,9 +356,7 @@ impl BipTransport {
     /// Set the broadcast forwarding fanout policy and rate limits.
     pub fn set_fanout_policy(&mut self, policy: FanoutPolicy) {
         let policy = policy.sanitized();
-        if let Ok(mut limiter) = self.fanout_limiter.lock() {
-            limiter.set_policy(policy.clone());
-        }
+        self.fanout_limiter.locked().set_policy(policy.clone());
         self.fanout_policy = policy;
     }
 
@@ -393,7 +394,8 @@ impl BipTransport {
     /// socket, so every later send fails, and a call still running (the
     /// receive loop, the driver, a request given up) counts nothing more, so
     /// the status cleared next stays clear. Then the tasks are aborted, in
-    /// place: a stop joins them, an abort lets go of them.
+    /// place: a stop joins them, and after an abort they stay for a later
+    /// stop to join, or go with the transport.
     fn stop_at_once(&self) {
         if let Some(node) = &self.node {
             node.stop();
@@ -423,18 +425,24 @@ impl BipTransport {
         self.node.as_ref().ok_or_else(not_started)
     }
 
+    /// Let go of a registered Network Port's lease, as a stop or an abort
+    /// does.
+    fn release_network_port_lease(&self) {
+        self.network_port_lease.locked().take();
+    }
+
     /// Whether the transport is running: started, and not stopped since.
     fn is_running(&self) -> bool {
         self.node.as_ref().is_some_and(|node| !node.is_stopped())
     }
 }
 
-/// The error for a transport that isn't started.
+/// The error for a transport that isn't started (#1833): it can start, so
+/// [`Lifecycle::NotRunning`], as after a stop ([`crate::port::stopped`]).
+/// Out of line but not `#[cold]`, as that one is: the send path names it.
+#[inline(never)]
 fn not_started() -> Error {
-    Error::Transport(std::io::Error::new(
-        std::io::ErrorKind::NotConnected,
-        "Transport not started",
-    ))
+    Error::state(Lifecycle::NotRunning, "Transport not started")
 }
 
 impl TransportPort for BipTransport {
@@ -447,25 +455,20 @@ impl TransportPort for BipTransport {
     }
 
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
-        let held = self
-            .network_port_lease
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
-        if self.registration_closed
-            || self.node.is_some()
-            || self.tasks.is_running()
-            || held
-            || self.bip_port().is_none()
-        {
-            return Err(Error::Encoding(
-                "registered B/IP lease requires an unstarted transport in one B/IP mode".into(),
-            ));
+        // One text, the variant by cause: started (or a start tried), the
+        // lease held already, or no single B/IP mode to lend.
+        const REFUSED: &str =
+            "registered B/IP lease requires an unstarted transport in one B/IP mode";
+        if self.registration_closed || self.node.is_some() || self.tasks.is_running() {
+            return Err(Error::state(Lifecycle::AlreadyStarted, REFUSED));
         }
-        *self
-            .network_port_lease
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(lease);
+        if self.network_port_lease.get_mut_locked().is_some() {
+            return Err(Error::limit_reached(REFUSED));
+        }
+        if self.bip_port().is_none() {
+            return Err(Error::invalid_config(REFUSED));
+        }
+        *self.network_port_lease.get_mut_locked() = Some(lease);
         Ok(())
     }
     /// A foreign device's registration after a loss (#2572), counted
@@ -526,10 +529,11 @@ impl TransportPort for BipTransport {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.registration_closed = true;
         if self.tasks.is_running() {
-            return Err(Error::Transport(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
+            return Err(crate::stopping::start_refused(
+                &self.stop_gate,
                 "BIP transport already started",
-            )));
+                "BIP transport aborted: stop it before starting again",
+            ));
         }
 
         // Validate what the configuration alone decides before probing
@@ -538,10 +542,9 @@ impl TransportPort for BipTransport {
         // own address, so they run after the bind. A node is in one B/IP mode: a BBMD distributes its own broadcasts,
         // and a foreign device hands them to its BBMD (#938).
         if self.foreign_device.is_some() && (self.bbmd_config.is_some() || self.bbmd.is_some()) {
-            return Err(Error::Encoding(
+            return Err(Error::invalid_config(
                 "a B/IP transport can't start as a BBMD that also registers as a foreign \
-                 device; run the two on separate transports"
-                    .into(),
+                 device; run the two on separate transports",
             ));
         }
         let foreign_config = self.foreign_device_config();
@@ -563,11 +566,8 @@ impl TransportPort for BipTransport {
         let plan = self.bind_plan_for_start().await;
         let listener_interface = plan.local.and_then(|local| local.index);
         let bound = socket::bind(plan).map_err(Error::Transport)?;
-        let lease = self
-            .network_port_lease
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        loopback_guard::warn_at_start(&plan, multicast.is_some(), foreign_config.is_some());
+        let lease = self.network_port_lease.get_mut_locked().clone();
         let listeners = Listeners::open(bound, lease, &self.frame_tap).map_err(Error::Transport)?;
         let socket = Arc::clone(listeners.primary());
 
@@ -680,7 +680,7 @@ impl TransportPort for BipTransport {
             NodeHandle::new(
                 link,
                 Arc::clone(&socket),
-                plan.interface.is_loopback() && !plan.per_address(),
+                plan.loopback_on_wildcard(),
                 Arc::clone(&self.client_record),
                 Arc::clone(&self.send_refusals),
             )
@@ -781,19 +781,22 @@ impl TransportPort for BipTransport {
         };
         self.stop_at_once();
         self.tasks.stop().await;
-        self.network_port_lease
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.release_network_port_lease();
         stopping.finish();
         Ok(())
     }
 
-    fn abort(&mut self) {
+    /// Abort through `&self` (#2617): what a stop does at once, so the node
+    /// lets go of the socket and every later send fails with
+    /// [`crate::port::stopped`]'s error, and the tasks are aborted; and a
+    /// registered Network Port's lease is let go of. The socket closes as
+    /// the runtime drops the aborted tasks, which still hold it. A start is
+    /// refused until a stop has joined them; then the transport starts
+    /// again, as after any stop.
+    fn abort(&self) {
+        self.stop_gate.abort();
         self.stop_at_once();
-        self.tasks.abort_and_forget();
-        self.own_broadcast = None;
-        self.node = None;
+        self.release_network_port_lease();
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {

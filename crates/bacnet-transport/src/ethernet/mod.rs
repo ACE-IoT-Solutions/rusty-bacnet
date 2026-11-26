@@ -277,6 +277,8 @@ pub fn decode_ethernet_frame(data: &[u8]) -> Result<EthernetFrame, Error> {
 mod transport {
     use super::*;
     use bacnet_types::data_link::DataLink;
+    use bacnet_types::error::{Lifecycle, Refusal};
+    use bacnet_types::sync::RwLockExt;
     use nix::ifaddrs::getifaddrs;
     use nix::net::if_::if_nametoindex;
     use nix::sys::socket::LinkAddr;
@@ -284,7 +286,7 @@ mod transport {
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, PoisonError, RwLock};
+    use std::sync::{Arc, RwLock};
     use tokio::sync::mpsc;
     use tracing::{debug, warn};
 
@@ -303,6 +305,19 @@ mod transport {
         MAX_ETHERNET_NPDU == bacnet_npdu::MAX_NPDU,
         "an Ethernet frame carries the longest NPDU any data link carries"
     );
+
+    /// Refuse an NPDU longer than an Ethernet frame carries as
+    /// [`Error::SendTooLong`], as MS/TP and B/IP do (#1833): a router answers
+    /// it with reject reason 4, and a client can try a smaller request.
+    pub(super) fn fits(npdu: &[u8]) -> Result<(), Error> {
+        if npdu.len() > MAX_ETHERNET_NPDU {
+            return Err(Error::SendTooLong {
+                length: npdu.len(),
+                limit: MAX_ETHERNET_NPDU,
+            });
+        }
+        Ok(())
+    }
 
     /// `ETH_P_ALL` in network byte order: the socket's protocol, so it sees
     /// every frame on the interface, whatever its length or EtherType field.
@@ -374,6 +389,19 @@ mod transport {
         pub fn reply_send_failures(&self) -> u64 {
             self.reply_failures.count()
         }
+    }
+
+    /// What a send gets while the transport isn't running (#1833): the
+    /// error for a stopped transport once `stopped`, else the one before
+    /// start. The transport starts again after a stop, so both are
+    /// [`Lifecycle::NotRunning`].
+    #[cold]
+    #[inline(never)]
+    fn not_running(stopped: bool) -> Error {
+        if stopped {
+            return crate::port::stopped();
+        }
+        Error::state(Lifecycle::NotRunning, "Transport not started")
     }
 
     /// An error about the interface `name`, of `kind`.
@@ -533,22 +561,24 @@ mod transport {
             true
         }
 
-        fn abort(&mut self) {
-            // The handle stays, as before: a start after an abort alone
-            // refuses, and a stop still joins the task.
+        /// Abort through `&self` (#2617): the socket comes out, so every
+        /// later send fails with [`crate::port::stopped`]'s error, and the
+        /// task is aborted. The handle stays, as before: a start after an
+        /// abort alone refuses, and a stop still joins the task.
+        fn abort(&self) {
+            self.stop_gate.abort();
             self.tasks.abort();
-            *self
-                .socket
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner) = None;
+            let socket = self.socket.write_locked().take();
+            drop(socket);
         }
 
         async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
             if self.tasks.is_running() {
-                return Err(Error::Transport(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
+                return Err(crate::stopping::start_refused(
+                    &self.stop_gate,
                     "Ethernet transport already started",
-                )));
+                    "Ethernet transport aborted: stop it before starting again",
+                ));
             }
 
             let link = interface_link(&self.interface_name)?;
@@ -588,10 +618,7 @@ mod transport {
             }
 
             let socket = Arc::new(socket);
-            *self
-                .socket
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&socket));
+            *self.socket.get_mut_locked() = Some(Arc::clone(&socket));
 
             /// NPDU receive channel capacity for high-throughput raw socket transports.
             const NPDU_CHANNEL_CAPACITY: usize = 256;
@@ -691,11 +718,7 @@ mod transport {
             let Some(stopping) = self.stop_gate.enter().await else {
                 return Ok(());
             };
-            let socket = self
-                .socket
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let socket = self.socket.write_locked().take();
             drop(socket);
             self.tasks.stop().await;
             debug!("Ethernet transport stopped");
@@ -705,31 +728,19 @@ mod transport {
 
         async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
             // Held over the synchronous send only: there is no await here.
-            let socket = self.socket.read().unwrap_or_else(PoisonError::into_inner);
-            let socket = socket.as_ref().ok_or_else(|| {
-                if self.stop_gate.is_stopped() {
-                    return crate::port::stopped();
-                }
-                Error::Transport(std::io::Error::new(
-                    std::io::ErrorKind::NotConnected,
-                    "Transport not started",
-                ))
-            })?;
+            let socket = self.socket.read_locked();
+            let socket = socket
+                .as_ref()
+                .ok_or_else(|| not_running(self.stop_gate.is_stopped()))?;
 
             if mac.len() != 6 {
-                return Err(Error::Encoding(format!(
-                    "Ethernet MAC must be 6 bytes, got {}",
-                    mac.len()
-                )));
+                return Err(Error::InvalidArgument(
+                    Refusal::new("Ethernet MAC must be 6 bytes, got {}")
+                        .with_value(mac.len() as u64),
+                ));
             }
 
-            if npdu.len() > MAX_ETHERNET_NPDU {
-                return Err(Error::Encoding(format!(
-                    "NPDU too large for Ethernet: {} bytes (max {})",
-                    npdu.len(),
-                    MAX_ETHERNET_NPDU
-                )));
-            }
+            fits(npdu)?;
 
             let mut dst = [0u8; 6];
             dst.copy_from_slice(mac);

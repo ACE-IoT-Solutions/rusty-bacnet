@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    PendingObject, build_database, build_identity, build_pending_boxes, not_running, owner_error,
     parse_device_uuid, parse_segmentation, pending_group, with_sc_port,
 };
 use crate::endpoint::lifecycle::Lifecycle;
@@ -67,7 +67,7 @@ impl ScEndpointConfig {
         )
         .map_err(|e| PyRuntimeError::new_err(format!("TLS config error: {e}")))?;
         let boxes = build_pending_boxes(&objects)?;
-        let mut db = build_database(&config.identity, boxes)?;
+        let mut db = build_database(&config.identity, boxes, config.server.device_storage())?;
         if let Some(source) = &config.source_audit {
             source.provision(&config.identity, &mut db)?;
         }
@@ -88,11 +88,12 @@ impl ScEndpointConfig {
         if let Some(reconnect) = config.reconnect.clone() {
             builder = builder.reconnect(reconnect);
         }
+        // The next start builds the objects again (#2766).
         let session = Box::pin(
             builder.connect_hub_session_wrapped(hubs, crate::app_transport::AppTransport::from),
         )
         .await
-        .map_err(to_py_err)?;
+        .map_err(|refused| to_py_err(refused.into()))?;
         // Subscribed before the lifecycle starts the session, so the first
         // connection_events() call sees the first connected (#1908).
         if let Some(link) = session.sc_link() {
@@ -131,9 +132,7 @@ async fn sc_link(session: &tokio::sync::RwLock<Option<Running>>) -> PyResult<ScL
         .await
         .as_ref()
         .and_then(|session| session.sc_link())
-        .ok_or_else(|| {
-            PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
-        })
+        .ok_or_else(|| not_running("endpoint not started — use 'async with' or await start()"))
 }
 
 impl PyScEndpoint {
@@ -142,12 +141,7 @@ impl PyScEndpoint {
     }
 
     fn vmac_hex(&self) -> String {
-        self.config
-            .vmac
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(":")
+        bacnet_ops::octets::hex_sep(&self.config.vmac, ":")
     }
 }
 
@@ -170,9 +164,10 @@ impl PyScEndpoint {
     ///         (defaults 30000/60000; interval 3000..=300000, timeout>interval).
     ///     network_number / network_port_instance: SC port entry (instance 2
     ///         by convention, VIRTUAL type).
-    ///     max_apdu / segmentation / device name: Identity knobs (same
-    ///         defaults as BIP). The raw receive ceiling resolves against the
-    ///         SC link before Device construction or dialing.
+    ///     max_apdu / segmentation / apdu_segment_timeout_ms / device name:
+    ///         Identity knobs (same defaults as BIP). The raw receive ceiling
+    ///         resolves against the SC link before Device construction or
+    ///         dialing.
     ///     queue_capacity: Bounded queue capacity (must be >0, default 256;
     ///         a full queue drops and counts, see `status()`'s
     ///         `*_full_drops`). The APDU timeout and retries stay at
@@ -190,11 +185,13 @@ impl PyScEndpoint {
     ///         (default None), as on `BipEndpoint` (#2617): without
     ///         `mutation_policy` the server is read-only, and without
     ///         `time_sync_policy` time synchronization is off.
+    ///     device_storage_path: Keyword-only (default None), as on
+    ///         `BipEndpoint` (#2730).
     ///     source_audit_reporter / audit_recipient / audit_device_bindings:
     ///         Keyword-only, as on `BipEndpoint` (#2348, #2357), each binding
     ///         address a VMAC as `local_address()` gives it
     ///         (`"xx:xx:xx:xx:xx:xx"`) or as twelve hex digits, or a routed
-    ///         `"network:0xMAC"` (#2371). An address
+    ///         `"network:0xMAC[:one-station]"` or `RoutedTarget` (#2371, #2738). An address
     ///         `audit_recipient` takes another node's VMAC: never the
     ///         broadcast or all-zero VMAC or this endpoint's own.
     ///     reconnect / sc_failover_hub / sc_connect_timeout_ms: Keyword-only
@@ -220,6 +217,7 @@ impl PyScEndpoint {
         network_port_instance=2,
         max_apdu=1476,
         segmentation=None,
+        apdu_segment_timeout_ms=5000,
         queue_capacity=256,
         read_work_limit=256,
         min_request_interval_ms=0,
@@ -229,6 +227,7 @@ impl PyScEndpoint {
         mutation_policy=None,
         cov_policy=None,
         time_sync_policy=None,
+        device_storage_path=None,
         source_audit_reporter=None,
         audit_recipient=None,
         audit_device_bindings=None,
@@ -252,6 +251,7 @@ impl PyScEndpoint {
         network_port_instance: u32,
         max_apdu: u16,
         segmentation: Option<PySegmentation>,
+        apdu_segment_timeout_ms: u64,
         queue_capacity: usize,
         read_work_limit: usize,
         min_request_interval_ms: u64,
@@ -261,9 +261,15 @@ impl PyScEndpoint {
         mutation_policy: Option<&Bound<'_, PyAny>>,
         cov_policy: Option<&Bound<'_, PyDict>>,
         time_sync_policy: Option<&Bound<'_, PyDict>>,
+        device_storage_path: Option<String>,
         source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
         audit_recipient: Option<&Bound<'_, PyAny>>,
-        audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
+        audit_device_bindings: Option<
+            Vec<(
+                crate::types::PyObjectIdentifier,
+                super::source_audit::BindingAddress,
+            )>,
+        >,
         reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
         sc_failover_hub: Option<String>,
         sc_connect_timeout_ms: Option<u64>,
@@ -276,7 +282,8 @@ impl PyScEndpoint {
             on_reinitialize,
             after_reinitialize,
             reinit_password,
-        )?;
+        )?
+        .with_device_storage_path(device_storage_path)?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -327,6 +334,7 @@ impl PyScEndpoint {
             vendor_id,
             max_apdu,
             segmentation,
+            apdu_segment_timeout_ms,
             uuid,
         )?
         .resolve(
@@ -406,7 +414,7 @@ impl PyScEndpoint {
             lifecycle
                 .start(false, |objects| config.prepare(objects, first_events))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -415,7 +423,7 @@ impl PyScEndpoint {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         crate::py_async::future_into_py(py, async move {
-            lifecycle.close().await.map_err(lifecycle_error)?;
+            lifecycle.close().await.map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -437,7 +445,7 @@ impl PyScEndpoint {
             lifecycle
                 .start(true, |objects| config.prepare(objects, first_events))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             Ok(self_ref)
         })
     }
@@ -531,8 +539,8 @@ impl PyScEndpoint {
                 let guard = inner.read().await;
                 let session = guard
                     .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-                let counters = session.policy_counters().await;
+                    .ok_or_else(|| not_running("endpoint not started"))?;
+                let counters = session.policy_counters();
                 let leases = session.active_leases();
                 let running = session.is_running();
                 (counters, leases, running, session.seat_counts())
@@ -546,12 +554,7 @@ impl PyScEndpoint {
                 dict.set_item("transport", "sc")?;
                 dict.set_item(
                     "local_address",
-                    config
-                        .vmac
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(":"),
+                    bacnet_ops::octets::hex_sep(&config.vmac, ":"),
                 )?;
                 dict.set_item("active_leases", snapshot.1)?;
                 dict.set_item("ingress_policy", snapshot.0.ingress_policy)?;
@@ -603,7 +606,7 @@ impl PyScEndpoint {
         let future = async move {
             let guard = inner.read().await;
             let session = guard.as_ref().ok_or_else(|| {
-                PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+                not_running("endpoint not started — use 'async with' or await start()")
             })?;
             session.broadcast_i_am().await.map_err(to_py_err)?;
             Ok(())

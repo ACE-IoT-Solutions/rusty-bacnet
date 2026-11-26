@@ -54,7 +54,7 @@ async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
         })
         .await;
     assert_eq!(postponed.destination, PEER_MAC);
-    let counters = h.session.policy_counters().await;
+    let counters = h.session.policy_counters();
     assert!(
         counters.no_server_role >= 1,
         "lost inbound must be policy-owned: {counters:?}"
@@ -237,8 +237,14 @@ async fn mstp_queue_and_admission_bounds_release() {
         .await
         .unwrap_err();
     assert!(
-        big.to_string().contains("exceeds standard-frame maximum"),
-        "oversized NPDU must be rejected: {big}"
+        matches!(
+            big,
+            bacnet_types::error::Error::SendTooLong {
+                length: 502,
+                limit: 501
+            }
+        ),
+        "oversized NPDU must be refused as too long: {big}"
     );
     transport.stop().await.expect("transport must stop");
 
@@ -346,7 +352,7 @@ async fn mstp_queue_and_admission_bounds_release() {
 
 async fn cancel_impl(mode: MstpExecutionMode, frames: Frames) {
     let h = Harness::new(mode, SessionRole::Both, frames).await;
-    let client = h.session.cloned_client_handle().expect("client role");
+    let client = h.session.client().expect("the session's client");
     let pending = tokio::spawn(async move {
         client
             .read_property(
@@ -394,7 +400,7 @@ async fn mstp_cancel_releases_lease_extended_dedicated() {
 
 async fn stop_outstanding_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut h = Harness::new(mode, SessionRole::Both, frames).await;
-    let client = h.session.cloned_client_handle().expect("client role");
+    let client = h.session.client().expect("the session's client");
     let pending = tokio::spawn(async move {
         client
             .read_property(

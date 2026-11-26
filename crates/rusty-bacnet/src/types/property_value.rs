@@ -7,7 +7,6 @@ mod pickle;
 
 use super::constructed_read::{Element, TypedElement};
 use super::date::{date_from_value, date_value};
-use super::network_port_value::NetworkPortTable;
 use super::timestamp::time_value;
 use super::*;
 
@@ -40,13 +39,16 @@ use super::*;
 pub struct PyPropertyValue {
     /// The value as it travels: what a write of this value encodes.
     pub(crate) inner: primitives::PropertyValue,
-    /// Provenance of an actual network read, independent of the value and its write encoding.
+    /// The object, property and array index the ACK of a network RP or RPM
+    /// named (#2618). Not part of the value: it takes no part in equality,
+    /// hashing, `repr` or what a write encodes, but copies and pickles keep it.
     pub(super) context: Option<PyPropertyReadContext>,
     /// How `tag` and `value` read `inner`'s application data.
     pub(crate) form: Form,
     /// The property a read took the value from (#2080), which names its
     /// enumerated value (`name`) and its bit string's bits (`value`). Not part
-    /// of the value: it doesn't take part in equality, hashing or pickling.
+    /// of the value: it takes no part in equality or hashing, but copies and
+    /// pickles keep it (through `_read_from`).
     pub(crate) property: Option<bacnet_types::enums::PropertyIdentifier>,
 }
 
@@ -62,8 +64,6 @@ pub(crate) enum Form {
     Typed(Element),
     /// A value with no typed form read as its tags (#2618; see `tag_tree`).
     Tagged,
-    /// A whole Network Port BDT or FDT, retaining its exact value bytes.
-    NetworkPortTable(NetworkPortTable),
 }
 
 impl Form {
@@ -71,7 +71,6 @@ impl Form {
     fn octets_to_py(self, py: Python<'_>, octets: &[u8]) -> PyResult<Py<PyAny>> {
         match self {
             Self::Typed(element) => element.to_py(py, octets),
-            Self::NetworkPortTable(table) => table.to_py(py, octets),
             Self::Tagged => super::tag_tree::nodes_to_py(py, octets),
             Self::Plain => Ok(PyBytes::new(py, octets).into_any().unbind()),
         }
@@ -360,16 +359,16 @@ impl PyPropertyValue {
 
     /// The BACnet type tag (e.g. "real", "unsigned", "boolean"). One element
     /// of a typed constructed read is named by its production
-    /// ("destination", "port_permission", ...); a whole one is a "list".
-    /// A whole Network Port table is tagged "bdt" or "fdt".
+    /// ("destination", "port_permission", ...); a whole one is a "list",
+    /// except a Network Port's tables, "bdt" and "fdt" (#2690), even empty.
     #[getter]
     fn tag(&self) -> &str {
         match (&self.inner, self.form) {
             (primitives::PropertyValue::ApplicationData(_), Form::Tagged) => TAGGED,
-            (primitives::PropertyValue::ApplicationData(_), Form::NetworkPortTable(table)) => {
-                table.tag()
-            }
             (primitives::PropertyValue::ApplicationData(_), Form::Typed(element)) => element.tag(),
+            (primitives::PropertyValue::List(_), Form::Typed(element)) => {
+                element.collection_tag().unwrap_or("list")
+            }
             (inner, _) => tag(inner),
         }
     }
@@ -382,7 +381,7 @@ impl PyPropertyValue {
         match (&self.inner, self.form) {
             (
                 primitives::PropertyValue::ApplicationData(octets),
-                form @ (Form::Typed(_) | Form::Tagged | Form::NetworkPortTable(_)),
+                form @ (Form::Typed(_) | Form::Tagged),
             ) => form.octets_to_py(py, octets),
             (primitives::PropertyValue::List(items), form @ (Form::Typed(_) | Form::Tagged)) => {
                 let list = pyo3::types::PyList::empty(py);
@@ -414,10 +413,12 @@ impl PyPropertyValue {
     }
 
     /// The value's octets as a WriteProperty of it carries them (#1499): a
-    /// typed constructed element's are the octets it was read from, a whole
-    /// typed collection's its elements' back to back, and a primitive's its
-    /// application-tagged encoding. A value that doesn't encode raises
-    /// ValueError.
+    /// typed constructed element's, a `tagged` value's and an
+    /// `application_data` value's are the octets as read, a whole typed
+    /// collection's its elements' back to back, and a primitive's its
+    /// shortest application-tagged encoding, re-encoded from the decoded
+    /// value (so not always the octets a device sent, #2618). A value that
+    /// doesn't encode raises ValueError.
     #[getter]
     fn octets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let mut encoded = BytesMut::new();
@@ -428,15 +429,15 @@ impl PyPropertyValue {
 
     fn __repr__(&self) -> String {
         match (&self.inner, self.form) {
-            (primitives::PropertyValue::ApplicationData(octets), Form::NetworkPortTable(table)) => {
-                format!("PropertyValue.{}(<{} bytes>)", table.tag(), octets.len())
-            }
             (primitives::PropertyValue::ApplicationData(octets), Form::Tagged) => {
                 format!("PropertyValue.{TAGGED}(<{} bytes>)", octets.len())
             }
             (primitives::PropertyValue::ApplicationData(octets), Form::Typed(element)) => {
                 format!("PropertyValue.{}(<{} bytes>)", element.tag(), octets.len())
             }
+            // Every typed collection shows as a list of its elements: a
+            // collection with its own tag (`bdt`, `fdt`) has no constructor
+            // of that name to show.
             (primitives::PropertyValue::List(items), Form::Typed(element)) => format!(
                 "PropertyValue.list(<{} {} elements>)",
                 items.len(),
@@ -449,7 +450,8 @@ impl PyPropertyValue {
     /// Equal when both carry the same value and, for a typed constructed
     /// read, the same element production. Numbers compare as numbers, so
     /// `real(0.0) == real(-0.0)` and a NaN equals nothing; a list compares
-    /// item by item, and a typed element by its octets.
+    /// item by item, and a typed element by its octets, so two encodings of
+    /// one entry (a TTL in one octet or two) are unequal.
     fn __eq__(&self, other: &Self) -> bool {
         self == other
     }
@@ -475,6 +477,15 @@ impl PyPropertyValue {
             ));
         }
         Ok(Self::tree(octets))
+    }
+
+    /// A Network Port's BBMD_Broadcast_Distribution_Table built from rows
+    /// in the form a whole read of it gives (#2710), each encoded with the
+    /// stack's BDT entry codec: the `bdt` value a write sends. A row the
+    /// entry can't hold raises ValueError naming it (see `bdt_rows`).
+    #[staticmethod]
+    fn bdt(rows: &Bound<'_, PyAny>) -> PyResult<Self> {
+        super::bdt_rows::bdt(rows)
     }
 
     /// One typed constructed element, tagged `tag`, from the octets a read

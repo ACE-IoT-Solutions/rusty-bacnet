@@ -25,15 +25,18 @@ impl Default for ReadRangeBudget {
 impl ReadRangeBudget {
     /// Reject zero configuration before startup or SC dialing.
     pub fn validate(&self) -> Result<(), Error> {
-        for (name, value) in [
-            ("read_range_max_returned_items", self.max_returned_items),
+        for (label, value) in [
             (
-                "read_range_max_service_ack_bytes",
+                "read_range_max_returned_items must be positive",
+                self.max_returned_items,
+            ),
+            (
+                "read_range_max_service_ack_bytes must be positive",
                 self.max_service_ack_bytes,
             ),
         ] {
             if value == 0 {
-                return Err(Error::Encoding(format!("{name} must be positive")));
+                return Err(Error::invalid_config(label));
             }
         }
         Ok(())
@@ -102,21 +105,26 @@ mod tests {
                 TestTransport::never_start(),
             )
             .await
+            .map_err(Error::from)
             .err();
             let generic = BACnetServer::generic_builder()
                 .transport(TestTransport::never_start())
                 .read_range_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             let bip = BACnetServer::bip_builder()
                 .port(0)
                 .read_range_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             for error in [direct, generic, bip] {
-                assert!(matches!(error, Some(Error::Encoding(m)) if m.contains("read_range_max_")));
+                assert!(
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("read_range_max_"))
+                );
             }
             #[cfg(feature = "sc-tls")]
             {
@@ -127,8 +135,11 @@ mod tests {
                     .read_range_budget(budget)
                     .build()
                     .await
+                    .map_err(Error::from)
                     .err();
-                assert!(matches!(error, Some(Error::Encoding(m)) if m.contains("read_range_max_")));
+                assert!(
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("read_range_max_"))
+                );
             }
         }
     }

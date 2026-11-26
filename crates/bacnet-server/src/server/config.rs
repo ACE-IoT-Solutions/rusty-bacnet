@@ -209,6 +209,24 @@ pub struct ServerConfig {
     /// [`ObjectTypeRegistry::register`] for which types it takes and how a
     /// constructor must behave: it runs with the database write-locked.
     pub object_types: ObjectTypeRegistry,
+    /// Whether a peer may write the Device's UTC_Offset and
+    /// Daylight_Savings_Status (#2395). Off by default: both are then
+    /// read-only on the wire, as Clause 12.11 permits. On, a write moves
+    /// the Device clock as
+    /// [`set_clock_zone`](super::BACnetServer::set_clock_zone) does, and
+    /// is audited like any other write. Off, a half a peer wrote that the
+    /// Device's Tags storage still holds is left there unapplied, with a
+    /// warning at start. A clockless server has neither property, so this
+    /// changes nothing there.
+    pub clock_zone_writable: bool,
+    /// The file that keeps what peers write to the Device a builder builds
+    /// (#2730): see [`ServerBuilder::device_storage_path`], which sets it.
+    /// Only the builders read it, when they build the Device from
+    /// [`device`](Self::device); a start that finds it still set, beside a
+    /// database the application gave, is refused, since that database's
+    /// Device brings its own storage. `None` by default: such writes then
+    /// last until the server stops.
+    pub device_storage_path: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -269,6 +287,8 @@ impl std::fmt::Debug for ServerConfig {
             .field("cov_policy", &self.cov_policy)
             .field("request_admission_policy", &self.request_admission_policy)
             .field("object_types", &self.object_types)
+            .field("clock_zone_writable", &self.clock_zone_writable)
+            .field("device_storage_path", &self.device_storage_path)
             .finish()
     }
 }
@@ -279,8 +299,8 @@ impl ServerConfig {
     /// refused.
     pub(crate) fn validate_cov_retry_timeout(&self) -> Result<(), bacnet_types::error::Error> {
         if self.cov_retry_timeout_ms == 0 {
-            return Err(bacnet_types::error::Error::Encoding(
-                "cov_retry_timeout_ms is 0; it must be at least 1 millisecond".into(),
+            return Err(bacnet_types::error::Error::invalid_config(
+                "cov_retry_timeout_ms is 0; it must be at least 1 millisecond",
             ));
         }
         Ok(())
@@ -344,6 +364,8 @@ impl Default for ServerConfig {
             cov_policy: CovPolicy::default(),
             request_admission_policy: RequestAdmissionPolicy::default(),
             object_types: ObjectTypeRegistry::default(),
+            clock_zone_writable: false,
+            device_storage_path: None,
         }
     }
 }

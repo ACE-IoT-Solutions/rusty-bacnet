@@ -6,6 +6,8 @@ use std::path::Path;
 
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::error::Error;
+#[cfg(feature = "std")]
+use bacnet_types::error::Refusal;
 use bacnet_types::primitives::ObjectIdentifier;
 
 #[cfg(feature = "std")]
@@ -31,6 +33,81 @@ pub struct TagsSnapshot {
     /// Lighting Output keep theirs here. Every other object saves `None`
     /// and refuses storage that holds one.
     pub description: Option<String>,
+    /// The halves of the Device clock's zone a peer wrote (#2395), on a
+    /// Device whose clock takes such writes; none held until then. Only a
+    /// Device keeps them here. Every other object saves none and refuses
+    /// storage that holds one.
+    pub zone: WrittenZone,
+}
+
+/// The halves of the Device clock's zone a peer wrote and storage keeps
+/// (#2395): each is `None` until a write sets it, and then wins over the
+/// zone the host gives the clock, until the Device's
+/// `clear_written_zone`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WrittenZone {
+    /// UTC_Offset: minutes west of UTC, a multiple of 15 within -1440 to
+    /// 1440.
+    pub utc_offset: Option<i16>,
+    /// Daylight_Savings_Status.
+    pub daylight_savings_status: Option<bool>,
+}
+
+impl WrittenZone {
+    /// Whether neither half is held.
+    pub fn is_empty(&self) -> bool {
+        self.utc_offset.is_none() && self.daylight_savings_status.is_none()
+    }
+
+    /// The zone `(utc_offset, daylight_savings_status)` with each held half
+    /// in place of the one given.
+    pub fn over(&self, (utc_offset, daylight_savings_status): (i16, bool)) -> (i16, bool) {
+        (
+            self.utc_offset.unwrap_or(utc_offset),
+            self.daylight_savings_status
+                .unwrap_or(daylight_savings_status),
+        )
+    }
+
+    /// Whether every held half is one a write takes: an offset that is a
+    /// multiple of 15 within -1440 to 1440.
+    pub(crate) fn is_valid(&self) -> bool {
+        self.utc_offset.is_none_or(offset_written)
+    }
+
+    /// These halves with a write of `value` to `property` held too: an
+    /// INTEGER UTC_Offset within the range [`is_valid`](Self::is_valid)
+    /// names, else VALUE_OUT_OF_RANGE, or a BOOLEAN Daylight_Savings_Status;
+    /// INVALID_DATA_TYPE for another datatype.
+    #[cfg(any(feature = "zone-writes", feature = "durable-writes"))]
+    pub(crate) fn with_write(
+        mut self,
+        property: bacnet_types::enums::PropertyIdentifier,
+        value: &bacnet_types::primitives::PropertyValue,
+    ) -> Result<Self, Error> {
+        use bacnet_types::enums::PropertyIdentifier as P;
+        use bacnet_types::primitives::PropertyValue as V;
+        match (property, value) {
+            (P::UTC_OFFSET, V::Signed(minutes)) => {
+                let minutes = i16::try_from(*minutes)
+                    .ok()
+                    .filter(|minutes| offset_written(*minutes))
+                    .ok_or_else(crate::common::value_out_of_range_error)?;
+                self.utc_offset = Some(minutes);
+            }
+            (P::DAYLIGHT_SAVINGS_STATUS, V::Boolean(summer)) => {
+                self.daylight_savings_status = Some(*summer);
+            }
+            _ => return Err(crate::common::invalid_data_type_error()),
+        }
+        Ok(self)
+    }
+}
+
+/// Whether a written UTC_Offset may hold `minutes`: a multiple of 15
+/// within a day either way.
+fn offset_written(minutes: i16) -> bool {
+    (-1440..=1440).contains(&minutes) && minutes % 15 == 0
 }
 
 /// Application-owned storage shared by all objects supporting durable Tags.
@@ -66,6 +143,16 @@ pub trait TagsPersistence: Send + Sync {
 /// The file holds what [`snapshot::tags::encode`] returns; that module
 /// documents the format.
 ///
+/// Its errors name the file's path (#2730) and keep their variant: an I/O
+/// failure is `Error::Transport`, and a file it can't load (damaged, cut
+/// short, or of a version this build doesn't read) is
+/// `Error::Persistence` with its kind (#1833), as for the other file
+/// backends. A protocol error a write would get passes through as it is.
+/// A file saved for another object is the one configuration mistake: the
+/// same path given to two objects. It is `Error::InvalidConfig`, naming the
+/// object it belongs to and the one loading it, and saying how to go on:
+/// remove or move the file, or give each object a path of its own.
+///
 /// [`snapshot::tags::encode`]: crate::snapshot::tags::encode
 #[derive(Clone, Debug)]
 #[cfg(feature = "std")]
@@ -99,19 +186,58 @@ impl FileTagsPersistence {
     pub fn path(&self) -> &Path {
         self.file.path()
     }
+
+    /// `error`, its text naming the file (#2730), its variant and kind kept:
+    /// an I/O failure keeps its I/O kind, and persisted state (a damaged
+    /// file, a version this build doesn't read, a snapshot refused as it is
+    /// saved) keeps its own (#1833). A protocol error, which a write is
+    /// answered with, is left as it is.
+    fn named(&self, error: Error) -> Error {
+        let path = self.path().display().to_string();
+        match error {
+            Error::Transport(io) => {
+                Error::Transport(std::io::Error::new(io.kind(), format!("{path}: {io}")))
+            }
+            persisted @ Error::Persistence(_) => persisted.with_context(&path),
+            other => other,
+        }
+    }
+
+    /// The refusal of `octets`, saved for another object than `object`.
+    fn other_object(&self, object: ObjectIdentifier, octets: &[u8]) -> Error {
+        let owner = octets
+            .get(8..crate::snapshot::framing::HEADER_LEN)
+            .and_then(|identifier| ObjectIdentifier::decode(identifier).ok())
+            .map_or_else(|| "another object".to_owned(), |owner| owner.to_string());
+        Error::InvalidConfig(Refusal::text(format!(
+            "{}: the Tags file belongs to {owner}, not {object}; remove or move it, or give \
+             each object a path of its own",
+            self.path().display()
+        )))
+    }
 }
 
 #[cfg(feature = "std")]
 impl TagsPersistence for FileTagsPersistence {
     fn load(&self, object: ObjectIdentifier) -> Result<Option<TagsSnapshot>, Error> {
-        let Some(octets) = self.file.read()? else {
-            return Ok(None);
+        let octets = match self.file.read_octets() {
+            Ok(Some(octets)) => octets,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(self.named(error)),
         };
-        Ok(Some(format::decode(object, &octets)?))
+        format::decode(object, &octets)
+            .map(Some)
+            .map_err(|error| match error.kind() {
+                crate::snapshot::PersistenceErrorKind::OtherObject => {
+                    self.other_object(object, &octets)
+                }
+                _ => self.named(error.into()),
+            })
     }
 
     fn save(&self, object: ObjectIdentifier, snapshot: &TagsSnapshot) -> Result<(), Error> {
-        self.file
-            .save_octets(format::encode_checked(object, snapshot)?)
+        format::encode_checked(object, snapshot)
+            .and_then(|octets| self.file.save_octets(octets))
+            .map_err(|error| self.named(error))
     }
 }

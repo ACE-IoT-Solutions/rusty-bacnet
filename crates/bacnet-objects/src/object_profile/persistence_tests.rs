@@ -93,6 +93,7 @@ fn file_snapshot_presence_identity_and_independent_bytes() {
         TagsSnapshot {
             tags: Some(vec![]),
             description: None,
+            zone: Default::default(),
         },
         snapshot("floor"),
     ] {
@@ -139,6 +140,7 @@ fn semantic_null_date_and_time_tags_round_trip_without_reinterpretation() {
             ),
         ]),
         description: None,
+        zone: Default::default(),
     };
     case.store.save(oid(), &saved).unwrap();
     // Independently authored body; absent value and explicit NULL differ.
@@ -180,6 +182,7 @@ fn nonprimitive_file_saves_leave_existing_bytes_intact() {
         let invalid = TagsSnapshot {
             tags: Some(vec![BACnetNameValue::valued("a", value)]),
             description: None,
+            zone: Default::default(),
         };
         assert_code(
             case.store.save(oid(), &invalid),
@@ -260,4 +263,56 @@ fn refused_file_save_leaves_previous_snapshot_and_memory_only_has_no_byte_cap() 
     .unwrap();
     assert!(memory.capability().is_none());
     assert!(FileTagsPersistence::new("").is_err());
+}
+
+/// The file's errors name its path (#2730) and keep their variant: a load
+/// and a save that can't reach it keep their I/O kind, and a damaged file is
+/// persisted-state damage with the path as its context (#1833). The error
+/// a write would get for a snapshot past the cap passes through as it is.
+#[test]
+fn errors_name_the_path() {
+    let case = FileCase::new();
+    let path = case.store.path().to_path_buf();
+    std::fs::write(&path, b"not a Tags file").unwrap();
+    let damaged = case.store.load(oid()).unwrap_err();
+    assert!(
+        matches!(&damaged, Error::Persistence(refused) if refused.is_damage()),
+        "{damaged:?}"
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let saved = case.store.save(oid(), &snapshot("lobby")).unwrap_err();
+    let loaded = case.store.load(oid()).unwrap_err();
+    for error in [&saved, &loaded] {
+        assert!(matches!(error, Error::Transport(_)), "{error:?}");
+    }
+    for error in [damaged, saved, loaded] {
+        let message = error.to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+    }
+    let too_many = TagsSnapshot {
+        tags: Some(vec![BACnetNameValue::semantic(""); MAX_TAGS + 1]),
+        description: None,
+        zone: Default::default(),
+    };
+    let refused = case.store.save(oid(), &too_many).unwrap_err();
+    assert!(matches!(refused, Error::Remote(_)), "{refused:?}");
+}
+
+/// A file saved for another object names both objects and the way on:
+/// remove or move it, or a path per object (#2730).
+#[test]
+fn another_objects_file_names_both_and_the_way_on() {
+    let case = FileCase::new();
+    let other = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 99).unwrap();
+    case.store.save(other, &snapshot("other")).unwrap();
+    let message = case.store.load(oid()).unwrap_err().to_string();
+    for part in [
+        case.store.path().display().to_string(),
+        format!("belongs to {other}, not {}", oid()),
+        "remove or move it".into(),
+        "a path of its own".into(),
+    ] {
+        assert!(message.contains(&part), "{part}: {message}");
+    }
 }

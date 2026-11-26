@@ -2,6 +2,7 @@
 //! TransportPort surface, configuration, queueing and the receive path.
 
 use bacnet_mstp_codec::{BROADCAST_MAC, FrameType, MAX_STANDARD_MPDU_DATA};
+use bacnet_types::error::Lifecycle;
 use tokio::time::{Duration, Instant};
 
 use super::test_support::{Bus, config, encode};
@@ -66,7 +67,7 @@ fn configuration_is_validated_by_the_core_rules() {
     for (config, message) in cases {
         let error = config.validate().unwrap_err();
         assert!(
-            matches!(&error, Error::Encoding(text) if text.contains(message)),
+            matches!(&error, Error::InvalidConfig(text) if text.to_string().contains(message)),
             "{config:?}: {error}"
         );
     }
@@ -131,32 +132,65 @@ async fn transport_start_stop_and_sends_outside_a_run() {
     transport.send_broadcast(&[1, 0]).await.unwrap();
     transport.send_unicast(&[1, 0], &[5]).await.unwrap();
     let error = transport.send_unicast(&[1], &[1, 2, 3, 4, 5, 6]).await;
-    assert!(matches!(error, Err(Error::Encoding(_))));
-    assert!(transport.start().await.is_err(), "a second start");
+    assert!(matches!(error, Err(Error::InvalidArgument(_))));
+    assert!(
+        matches!(
+            transport.start().await,
+            Err(Error::State(
+                bacnet_types::error::Lifecycle::AlreadyStarted,
+                _
+            ))
+        ),
+        "a second start"
+    );
     transport.stop().await.unwrap();
     assert!(transport.send_broadcast(&[1, 0]).await.is_err());
+    // After the stop a start finds it closed, as its sends do (#1833).
+    assert!(
+        matches!(
+            transport.start().await,
+            Err(Error::State(Lifecycle::Closed, _))
+        ),
+        "a start after the stop"
+    );
 }
 
 /// A stop through a shared reference, with another holder alive (#2617):
 /// stops beside each other both return, every later send fails as one to a
-/// transport no longer running, and the receiver ends.
+/// transport no longer running, and the receiver ends. A send before start
+/// finds it not running yet, and one after the stop closed for good, as it
+/// doesn't start again (#1833), even for an NPDU longer than its frames
+/// carry: the state comes first, so a router draws no too-long reject from
+/// a stopped port.
 #[tokio::test]
 async fn a_stop_with_another_holder_alive_refuses_every_later_send() {
     let (serial_a, _serial_b) = LoopbackSerial::pair();
     let mut transport = MstpTransport::new(serial_a, config(0, 127));
+    let early = transport.send_broadcast(&[1, 0]).await;
+    assert!(
+        matches!(&early, Err(Error::State(Lifecycle::NotRunning, _))),
+        "{early:?}"
+    );
     let mut rx = transport.start().await.unwrap();
     let transport = std::sync::Arc::new(transport);
     let other = std::sync::Arc::clone(&transport);
     other.send_broadcast(&[1, 0]).await.unwrap();
+    let oversize = vec![1; MAX_STANDARD_MPDU_DATA + 1];
+    let running = other.send_unicast(&oversize, &[5]).await;
+    assert!(
+        matches!(&running, Err(Error::SendTooLong { .. })),
+        "{running:?}"
+    );
     let (first, second) = tokio::join!(transport.stop(), other.stop());
     first.unwrap();
     second.unwrap();
     for sent in [
         other.send_broadcast(&[1, 0]).await,
         other.send_unicast(&[1, 0], &[5]).await,
+        other.send_unicast(&oversize, &[5]).await,
     ] {
         assert!(
-            matches!(&sent, Err(Error::Transport(io)) if io.kind() == std::io::ErrorKind::NotConnected),
+            matches!(&sent, Err(Error::State(Lifecycle::Closed, _))),
             "{sent:?}"
         );
     }
@@ -170,10 +204,10 @@ async fn a_failed_read_ends_the_task_and_later_sends() {
     struct FailingSerial;
     impl SerialPort for FailingSerial {
         async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-            Err(Error::Encoding("no port".into()))
+            Err(Error::Transport(std::io::Error::other("no port")))
         }
         async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
-            Err(Error::Encoding("no port".into()))
+            Err(Error::Transport(std::io::Error::other("no port")))
         }
     }
     let mut transport = MstpTransport::new(FailingSerial, config(0, 127));
@@ -182,9 +216,12 @@ async fn a_failed_read_ends_the_task_and_later_sends() {
     assert!(npdus.recv().await.is_none(), "the task ended");
     assert_eq!(diagnostics.snapshot().serial_read_errors, 1);
     let error = transport.send_broadcast(&[1, 0]).await.unwrap_err();
-    assert!(
-        matches!(error, Error::Transport(ref io) if io.kind() == std::io::ErrorKind::NotConnected)
-    );
+    assert!(matches!(error, Error::State(Lifecycle::Closed, _)));
+    // Its node ended with its serial port: no second start (#1833).
+    assert!(matches!(
+        transport.start().await,
+        Err(Error::State(Lifecycle::Closed, _))
+    ));
 }
 
 /// A port whose reads return nothing has reached its end of file: the third
@@ -216,9 +253,7 @@ async fn three_empty_reads_in_a_row_are_the_end_of_the_port() {
     assert_eq!(reads.load(Ordering::SeqCst), 3);
     assert_eq!(diagnostics.snapshot().serial_read_errors, 1);
     let error = transport.send_broadcast(&[1, 0]).await.unwrap_err();
-    assert!(
-        matches!(error, Error::Transport(ref io) if io.kind() == std::io::ErrorKind::NotConnected)
-    );
+    assert!(matches!(error, Error::State(Lifecycle::Closed, _)));
     tokio::time::timeout(Duration::from_secs(2), transport.stop())
         .await
         .expect("stop hung")
@@ -378,14 +413,17 @@ async fn queue_bounds_are_reported_at_once() {
     assert!(
         matches!(full, Error::Transport(ref io) if io.kind() == std::io::ErrorKind::WouldBlock)
     );
-    assert!(matches!(
+    // Too long for the link, with the length and the limit (#1833).
+    for refused in [
         bus.transport.send_broadcast(&oversize).await,
-        Err(Error::Encoding(_))
-    ));
-    assert!(matches!(
         bus.transport.send_unicast(&oversize, &[4]).await,
-        Err(Error::Encoding(_))
-    ));
+    ] {
+        assert!(
+            matches!(refused, Err(Error::SendTooLong { length, limit })
+                if length == MAX_STANDARD_MPDU_DATA + 1 && limit == MAX_STANDARD_MPDU_DATA),
+            "{refused:?}"
+        );
+    }
     bus.transport.send_unicast(&[1, 0], &[4]).await.unwrap();
     let counts = bus.transport.diagnostics().snapshot();
     assert_eq!(counts.outbound_queue_full, 1);
@@ -482,7 +520,9 @@ async fn a_zero_echo_grace_is_refused() {
     let zero = Echo::Full {
         grace: Duration::ZERO,
     };
-    assert!(matches!(zero.validate(), Err(Error::Encoding(text)) if text.contains("echo grace")));
+    assert!(
+        matches!(zero.validate(), Err(Error::InvalidConfig(text)) if text.to_string().contains("echo grace"))
+    );
     let (serial, _peer) = LoopbackSerial::pair();
     let mut transport = MstpTransport::new(serial.with_echo(zero), config(3, 127));
     assert!(transport.start().await.is_err());

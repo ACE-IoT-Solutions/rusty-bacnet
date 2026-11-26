@@ -41,7 +41,7 @@ impl Memory {
 impl TagsPersistence for Memory {
     fn load(&self, _: ObjectIdentifier) -> Result<Option<TagsSnapshot>, Error> {
         if self.fail_load.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("load refused".into()));
+            return Err(Error::from(crate::snapshot::backend_failed("load refused")));
         }
         Ok(self.saved())
     }
@@ -53,7 +53,7 @@ impl TagsPersistence for Memory {
             let _ = go.recv();
         }
         if self.fail_save.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("save refused".into()));
+            return Err(Error::from(crate::snapshot::backend_failed("save refused")));
         }
         *self.saved.lock().unwrap() = Some(snapshot.clone());
         Ok(())
@@ -76,6 +76,7 @@ pub(super) fn snapshot(name: &str) -> TagsSnapshot {
     TagsSnapshot {
         tags: Some(tags(name)),
         description: None,
+        zone: Default::default(),
     }
 }
 pub(super) fn framed(tags: &[BACnetNameValue]) -> PropertyValue {

@@ -45,6 +45,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::io_context::context;
 use crate::port::ReceivedNpdu;
 use crate::sc::npdu_admission::{
     SC_NPDU_QUEUE_CAPACITY, ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts,
@@ -282,18 +283,15 @@ impl DirectListener {
         config: DirectAcceptConfig,
         membership: Arc<DirectMembership>,
     ) -> Result<(Self, mpsc::Receiver<ReceivedNpdu>), Error> {
-        config.max_established_peers.checked_mul(2).ok_or_else(|| {
-            Error::Encoding("direct accepted-peer limit overflows physical socket capacity".into())
-        })?;
+        let refused = |label| Err(Error::invalid_config(label));
+        if config.max_established_peers.checked_mul(2).is_none() {
+            return refused("direct accepted-peer limit overflows physical socket capacity");
+        }
         if config.device_uuid == [0; 16] {
-            return Err(Error::Encoding(
-                "direct accept device UUID is all-zero".into(),
-            ));
+            return refused("direct accept device UUID is all-zero");
         }
         if config.local_vmac == [0; 6] || config.local_vmac == [0xFF; 6] {
-            return Err(Error::Encoding(
-                "direct accept VMAC is zero or broadcast".into(),
-            ));
+            return refused("direct accept VMAC is zero or broadcast");
         }
         config.npdu_admission_policy.validate()?;
         validate_timeout(
@@ -305,9 +303,9 @@ impl DirectListener {
         let npdu_admission = Arc::new(ScNpduAdmission::new(config.npdu_admission_policy));
         let listener = TcpListener::bind(config.bind_addr)
             .await
-            .map_err(|e| Error::Encoding(format!("direct accept bind failed: {e}")))?;
+            .map_err(|e| Error::Transport(context(e, "direct accept bind failed")))?;
         let local_addr = listener.local_addr().map_err(|e| {
-            Error::Encoding(format!("direct accept could not read local address: {e}"))
+            Error::Transport(context(e, "direct accept could not read local address"))
         })?;
         let (npdu_tx, npdu_rx) = mpsc::channel(DIRECT_ACCEPT_NPDU_CHANNEL_CAPACITY);
         let (shutdown, shutdown_rx) = watch::channel(false);
@@ -392,8 +390,8 @@ impl Drop for DirectListener {
 /// computed in every connection task, far from overflowing.
 fn validate_timeout(name: &str, timeout: Duration, max: Duration) -> Result<(), Error> {
     if timeout.is_zero() || timeout > max {
-        return Err(Error::Encoding(format!(
-            "direct accept {name} timeout must be above zero and at most {max:?}"
+        return Err(Error::InvalidConfig(bacnet_types::error::Refusal::text(
+            format!("direct accept {name} timeout must be above zero and at most {max:?}"),
         )));
     }
     Ok(())

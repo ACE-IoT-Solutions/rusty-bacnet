@@ -113,11 +113,25 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         initiating_device_instance: Option<u32>,
     ) -> Result<ConfirmedCovLease, Error> {
         let registry = self.cov_registry.as_ref().ok_or_else(|| {
-            Error::Encoding("confirmed COV subscription registry is disabled".into())
+            Error::invalid_config("confirmed COV subscription registry is disabled")
         })?;
         let initiator = initiating_device_instance
             .map(|id| ObjectIdentifier::new_addressable(ObjectType::DEVICE, id))
             .transpose()?;
+        // The one-station mark governs sending. It has no representation on a received notification.
+        let source = match source {
+            Station::Local { .. } => source,
+            Station::Routed {
+                router,
+                network,
+                mac,
+                ..
+            } => Station::routed(&router, network, &mac),
+            Station::Remote { network, mac, .. }
+            | Station::RoutedViaLocalBroadcast { network, mac, .. } => {
+                Station::remote(network, &mac)
+            }
+        };
         let key = Expectation {
             source,
             process,
@@ -126,13 +140,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         };
         let mut entries = registry.entries.lock();
         if entries.contains_key(&key) {
-            return Err(Error::Encoding(
-                "confirmed COV expectation already registered".into(),
+            return Err(Error::invalid_argument(
+                "confirmed COV expectation already registered",
             ));
         }
         if entries.len() == registry.limit.get() {
-            return Err(Error::Encoding(
-                "confirmed COV subscription registry is full".into(),
+            return Err(Error::limit_reached(
+                "confirmed COV subscription registry is full",
             ));
         }
         let token = Arc::new(());

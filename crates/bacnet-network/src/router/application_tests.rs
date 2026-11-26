@@ -7,7 +7,7 @@ use std::io;
 use bacnet_npdu::{Address, Mac, NpduLimits};
 use bacnet_router_core::PortId;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
 
 use super::super::application_replies::{CAPACITY, LIFETIME, Replies};
 use super::super::priority_harness::*;
@@ -152,21 +152,22 @@ async fn refusals_keep_their_reason() {
     let (mut router, apdus, mut peers) = start(2).await;
     let port = router.application_port(apdus);
 
-    // No DNET: a local send, on a link the application lacks.
+    // No DNET: a unicast to a MAC on no one of the router's networks.
     let local = [&[1, 0x04][..], &READ_PROPERTY].concat();
     assert!(matches!(
         port.send_unicast(&local, &[5]).await,
-        Err(Error::Encoding(_))
+        Err(Error::InvalidArgument(refusal)) if refusal.to_string().contains("names no one station")
     ));
-    // A network message, a router query.
+    // A network message, a router query: not what this port carries.
     assert!(matches!(
         port.send_broadcast(&[1, 0x80, 0x00]).await,
-        Err(Error::Encoding(_))
+        Err(Error::Unsupported(refusal)) if refusal.to_string().contains("APDUs only")
     ));
     // Not an NPDU at all.
     assert!(matches!(
         port.send_unicast(&[2, 0], &[5]).await,
-        Err(Error::Encoding(_))
+        Err(Error::InvalidArgument(refusal))
+            if refusal.to_string().starts_with("router application send: ")
     ));
 
     // No route: refused as the router refuses it, and searched for.
@@ -203,19 +204,22 @@ async fn refusals_keep_their_reason() {
         "{error:?}"
     );
     assert_eq!(
-        OriginateFailure::from_error(&Error::Encoding("x".into())),
+        OriginateFailure::from_error(&Error::invalid_argument("x")),
         None
     );
 
+    // Once the router stopped, a send is refused as this side's closed
+    // state, not a link's failure (#1833).
     router.stop().await.unwrap();
     let error = port
         .send_unicast(&routed_request(), &[1])
         .await
         .unwrap_err();
-    assert_eq!(
-        OriginateFailure::from_error(&error),
-        Some(OriginateFailure::Stopped)
+    assert!(
+        matches!(error, Error::State(Lifecycle::Closed, _)),
+        "{error:?}"
     );
+    assert_eq!(OriginateFailure::from_error(&error), None);
 }
 
 #[tokio::test]
@@ -274,7 +278,7 @@ async fn a_stopped_port_sends_nothing() {
         other.send_broadcast(&routed_request()).await,
     ] {
         assert!(
-            matches!(&sent, Err(Error::Transport(io)) if io.kind() == io::ErrorKind::NotConnected),
+            matches!(&sent, Err(Error::State(Lifecycle::Closed, _))),
             "{sent:?}"
         );
     }

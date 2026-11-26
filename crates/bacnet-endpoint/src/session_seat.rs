@@ -1,38 +1,30 @@
-//! A full `BACnetClient` on the session's link (#2617).
+//! The session's client: a `BACnetClient` on the session's link (#2617).
 use super::*;
 use bacnet_client::client::{BACnetClient, ClientOptions};
 use bacnet_endpoint_core::seat::{CLIENT_SEAT_QUEUE, ClientSeat, ClientSeatCounters, SeatRoles};
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
-    /// A seat for a full client on this session's link: its network layer
+    /// A seat for a client on this session's link: its network layer
     /// and invoke-ID coordinator, shared, and queues for what is the
     /// client's to receive.
     fn client_seat(&self) -> Result<ClientSeat<T>, Error> {
         if !self.is_running() {
-            return Err(Error::Encoding("endpoint session is not running".into()));
+            return Err(self.not_running());
         }
         let server = matches!(self.role, SessionRole::ServerOnly | SessionRole::Both);
-        let mut seat = self
-            .ingress
+        self.ingress
             .as_ref()
-            .ok_or_else(|| Error::Encoding("endpoint session ingress owner is missing".into()))?
+            .ok_or_else(server_seat::missing_ingress)?
             .client_seat(
                 Arc::clone(&self.coordinator),
                 SeatRoles::new(server),
                 CLIENT_SEAT_QUEUE,
-            )?;
-        seat.device_segmentation = self.identity.as_ref().map(|id| {
-            (
-                id.segmentation(),
-                std::time::Duration::from_millis(id.apdu_segment_timeout_ms()),
             )
-        });
-        Ok(seat)
     }
 
-    /// A full [`BACnetClient`] on this session's link, beside its server
-    /// role and its narrow [`client`](Self::client) role: one transport, one
-    /// address, one pool of invoke IDs.
+    /// The session's client: a [`BACnetClient`] on this session's link,
+    /// beside its server role, with one transport, one address and one pool
+    /// of invoke IDs.
     ///
     /// It is the client a transport of its own gives, with every call that
     /// one has: discovery, segmented reads, files, COV, router discovery,
@@ -41,8 +33,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// session was made with. `bacnet_ops::Client::over` takes it as it is.
     /// See [`BACnetClient::start_on_seat`] for what a seat changes.
     ///
-    /// The session must be running. One full client at a time: another is
-    /// refused until the first is dropped.
+    /// The session must be running. One client at a time: another is
+    /// refused until the first is dropped. The client is the caller's to
+    /// keep, share behind an `Arc`, or move into a task.
     ///
     /// **Source Audit.** With a source Audit Reporter
     /// ([`with_source_audit_reporter`](Self::with_source_audit_reporter)),
@@ -52,27 +45,63 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// WritePropertyMultiple, AtomicWriteFile, AddListElement and
     /// RemoveListElement. Each is admitted by the Reporter's settings and
     /// then owned by the session, so a caller that goes away loses neither
-    /// the request nor its records. At most 64 are held at once; past them
-    /// a request waits for a slot in its caller's task, and its timeout
-    /// starts once it is admitted. A write sent with a priority is a
-    /// command at that priority, which the Audit_Priority_Filter applies to;
-    /// one without a priority is not filtered by priority. An audited
+    /// the request nor its records. At most 64 are held at once, and at
+    /// most 4 by one station on the link or by the stations of another
+    /// network together (#2652). Past them a request waits for a slot in
+    /// its caller's task, one whose station or network holds its 4 behind
+    /// that one only, and its timeout starts once it is admitted. It waits
+    /// out its turn at the destination (`min_request_interval_ms`) holding
+    /// nothing and takes the turn with its slot. A waiting request takes a
+    /// slot only as it is polled, so one its caller no longer polls holds
+    /// none; an admitted one takes the node's database guard in its
+    /// caller's task only when it is free at once, and otherwise waits for
+    /// it in a task the session owns, so its caller never holds the guard
+    /// (#2755). A write sent with a priority is a command at that
+    /// priority, which the Audit_Priority_Filter applies to; one without a
+    /// priority is not filtered by priority. An audited
     /// request goes to one station, direct or behind a router, and a raw
     /// request of an audited service that doesn't decode is refused before
-    /// it is sent. Not audited yet: WriteGroup, subscriptions, object and
+    /// it is sent, a write whose value isn't whole application data among
+    /// them. An unaudited write sends its value as given, as a standalone
+    /// client does. Not audited yet: WriteGroup, subscriptions, object and
     /// device management, alarm acknowledgment and life safety. An
     /// operation cut off by a stop, of the session or of the client, is not
     /// recorded.
     ///
+    /// **Segmentation.** The client does what the session's Device says
+    /// (#2617). With an identity ([`device`](Self::device)) that receives
+    /// segments (SEGMENTED_RECEIVE, or SEGMENTED_BOTH, the default) it
+    /// accepts segmented answers and states in each request that it takes
+    /// more than 64 segments; with one that transmits them
+    /// (SEGMENTED_TRANSMIT or SEGMENTED_BOTH) it sends a request too long
+    /// for one APDU as segments, and otherwise such a request fails with
+    /// [`SegmentationError::LocalCannotTransmit`](bacnet_types::error::SegmentationError::LocalCannotTransmit)
+    /// before anything is sent. Its segment timeout is the identity's
+    /// APDU_Segment_Timeout, and it proposes a window of one segment. Its
+    /// transfers and the server's run side by side: each segment,
+    /// Segment-ACK and Abort goes to the role whose transaction it is, by
+    /// its PDU type, which side sent it and the invoke ID the role leased,
+    /// so one peer may hold a transaction with each role under the same
+    /// invoke ID. Each role keeps its own reassembly limits (the client 64
+    /// answers at once; the server 128 requests, 16 from one peer), so one
+    /// role's transfers never take the other's room. A session without an
+    /// identity leaves the client its own defaults: segmented both ways,
+    /// with its APDU timeout as its segment timeout. When the Device
+    /// receives segments, the client also reassembles a COV notification of
+    /// either form that its sender segments, acknowledging each segment as
+    /// the answering side, and then answers it as one that came whole
+    /// (#2646); otherwise it aborts the first segment
+    /// (SEGMENTATION_NOT_SUPPORTED). A requester's Abort ends such a
+    /// transfer in the client and in the server alike.
+    ///
     /// **Who answers what.** Beside a server role the client answers only
-    /// the COV notifications of its own subscriptions. Today's narrow
-    /// server role doesn't execute ConfirmedEventNotification, so the node
-    /// answers one with a Reject (unrecognized service) while the client
-    /// still publishes it to its `event_notifications()`; a notifier that
-    /// needs the acknowledgment gets it from a full server
-    /// ([`with_server`](Self::with_server)). A session with no server role
-    /// leaves the client to answer as a standalone one does, acknowledgment
-    /// included.
+    /// the COV notifications of its own subscriptions; the server answers
+    /// a ConfirmedEventNotification, and the client still publishes it to
+    /// its `event_notifications()`. One that comes in segments the server
+    /// reassembles and answers, and then hands the client whole (#2743), so
+    /// the client publishes it once per transmission either way. A session with no server
+    /// role leaves the client to answer as a standalone one does,
+    /// acknowledgment included.
     ///
     /// **One device.** A DeviceCommunicationControl DISABLE_INITIATION a
     /// full server ([`with_server`](Self::with_server)) accepts binds this client too: its
@@ -80,7 +109,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// [`Error::InitiationDisabled`]
     /// until the control ends (see [`with_server`](Self::with_server)). An
     /// operator's own tool may start its client outside the node's control
-    /// with [`full_client_with`](Self::full_client_with) and
+    /// with [`client_with`](Self::client_with) and
     /// [`ClientOptions::with_node_dcc_override`], an override of Clause 16.1
     /// the session warns about. A segmented answer no request of the node's
     /// holds comes to this client, which aborts it as an idle client does
@@ -98,14 +127,21 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// neither its COV notifications nor its answers.
     ///
     /// **Stopping.** One [`stop`](Self::stop) stops the session, whether
-    /// the client is still alive or not (#2617): it closes the session's
-    /// roles, ends the client's tasks, fails its open requests and stops
-    /// the link. From then on the client sends nothing: each request and
-    /// each Who-Is or other unconfirmed send fails at once, as its seat has
+    /// the client is still alive or not (#2617): it ends the client's
+    /// tasks, fails its open requests and stops the link. From then on the
+    /// client sends nothing: each request and each Who-Is or other
+    /// unconfirmed send fails at once, as its seat has
     /// closed, and what goes through its `transport()` itself, such as a B/IP
     /// BVLC call, fails with the transport's stopped error. Dropping the
     /// client after that changes nothing, and the client's own
     /// [`BACnetClient::stop`] is not needed.
+    ///
+    /// Dropping the session without a stop ends the client the same way
+    /// and aborts the link ([`TransportPort::abort`]), even while the client
+    /// still holds it: nothing graceful is sent (no BACnet/SC disconnect,
+    /// for one) and nothing is waited for. The link's sockets close as the
+    /// runtime drops its aborted tasks, so a B/IP port binds again shortly
+    /// after the drop.
     ///
     /// ```no_run
     /// use bacnet_client::client::Broadcast;
@@ -118,7 +154,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// let mut session =
     ///     EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())?;
     /// session.start().await?;
-    /// let client = session.full_client()?;
+    /// let client = session.client()?;
     /// client.who_is(Broadcast::Global, None).await?;
     /// session.stop().await?;
     /// // The client is still alive; its calls now fail.
@@ -126,17 +162,21 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn full_client(&self) -> Result<BACnetClient<T>, Error> {
-        self.full_client_with(ClientOptions::default())
+    pub fn client(&self) -> Result<BACnetClient<T>, Error> {
+        self.client_with(ClientOptions::default())
     }
 
-    /// [`Self::full_client`], with the client's startup `options`: its
+    /// [`Self::client`], with the client's startup `options`: its
     /// notification channel capacities, how it answers a confirmed COV
     /// notification, and whether its operator starts it outside the node's
     /// DeviceCommunicationControl ([`ClientOptions::with_node_dcc_override`]).
-    pub fn full_client_with(&self, options: ClientOptions) -> Result<BACnetClient<T>, Error> {
+    pub fn client_with(&self, options: ClientOptions) -> Result<BACnetClient<T>, Error> {
+        let mut config = self.client_config.clone();
+        // The session keeps the Device's raw ceiling; a request states the
+        // largest standard length at or below it.
+        config.max_apdu_length =
+            bacnet_encoding::apdu::max_apdu_header_at_or_below(u32::from(config.max_apdu_length))?;
         let seat = self.client_seat()?;
-        let config = self.client_config.clone();
         match &self.source_audit {
             Some(source) => {
                 let auditor = crate::source_audit::SeatAuditor(Arc::downgrade(source));
@@ -146,7 +186,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         }
     }
 
-    /// What ingress handed to the full client's seat, and what it dropped
+    /// What ingress handed to the client's seat, and what it dropped
     /// because the client had left its queue full.
     pub fn client_seat_counters(&self) -> ClientSeatCounters {
         self.ingress

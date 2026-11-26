@@ -1,15 +1,14 @@
 //! B/IP Python endpoint owner: one UDP socket above both roles.
 //!
 //! A private lifecycle owner orders preparation, session startup and joined
-//! teardown. Role handles hold cloned role values with no lifecycle.
+//! teardown. The `client()` and `server()` handles are the standalone
+//! `BACnetClient` and `BACnetServer` classes on the session's one socket;
+//! the owner stops them.
 //!
 //! Builder-time config only: the constructor validates the single
 //! `DeviceIdentity` (instance/vendor/APDU/segmentation/services/ports/UUID)
 //! plus transport addressing. No post-start configuration mutation exists.
 //! The default vendor identifier is 555 and flows through this single identity.
-
-#[path = "bip_observation.rs"]
-mod observation;
 
 use std::net::Ipv4Addr;
 
@@ -19,12 +18,12 @@ use bacnet_endpoint::session::SessionRole;
 use bacnet_transport::bip::{BipMode, BipTransport};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::data_link::DataLink;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    PendingObject, build_database, build_identity, build_pending_boxes, not_running, owner_error,
     parse_device_uuid, parse_ipv4, parse_segmentation, pending_group, with_bip_port,
 };
 use crate::endpoint::lifecycle::Lifecycle;
@@ -71,18 +70,22 @@ async fn bvlc_tables(
         .await
         .as_ref()
         .and_then(|session| session.bvlc_tables())
-        .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))
+        .ok_or_else(|| not_running("endpoint not started"))
 }
 
 /// A table read's failure. One that `close()` cut off, or that met the
-/// transport stopping, raises what a read after `close()` does (#2612).
+/// transport stopping, raises what a read after `close()` does (#2612),
+/// `BacnetStateError` with `state` `"not_running"` (#2819): the B/IP
+/// transport reports one refused before it went as not running, and one
+/// whose wait the stop dropped after it went as cut off (#1833). A read
+/// changes nothing at the BBMD, so neither has anything more to say, and
+/// one that went out still did nothing a caller must account for.
 fn table_read_error(error: bacnet_transport::bip::BvlcExchangeError) -> PyErr {
+    use bacnet_types::error::{Error, Lifecycle};
     match &error {
         bacnet_transport::bip::BvlcExchangeError::Transport(
-            bacnet_types::error::Error::Transport(io),
-        ) if io.kind() == std::io::ErrorKind::NotConnected => {
-            PyRuntimeError::new_err("endpoint not started")
-        }
+            Error::State(Lifecycle::NotRunning, _) | Error::RequestCutOff { .. },
+        ) => not_running("endpoint not started"),
         _ => crate::errors::bvlc_exchange_err(error),
     }
 }
@@ -101,7 +104,7 @@ impl BipEndpointConfig {
         probe.set_share_wildcard_port(config.share_wildcard_port);
         probe.check_bind().map_err(to_py_err)?;
         let boxes = build_pending_boxes(&objects)?;
-        let mut db = build_database(&config.identity, boxes)?;
+        let mut db = build_database(&config.identity, boxes, config.server.device_storage())?;
         if let Some(source) = &config.source_audit {
             source.provision(&config.identity, &mut db)?;
         }
@@ -127,9 +130,11 @@ impl BipEndpointConfig {
         if let Some(source) = &config.source_audit {
             builder = source.bind(builder);
         }
+        // A refusal's database goes: the next start builds the objects
+        // again from their registrations (#2766).
         let mut session = builder
             .build_session_wrapped(crate::app_transport::AppTransport::from)
-            .map_err(to_py_err)?;
+            .map_err(|refused| to_py_err(refused.into()))?;
         if let Some(source) = &config.source_audit {
             session = source.select(session);
         }
@@ -196,7 +201,12 @@ impl PyBipEndpoint {
     ///     max_apdu: Raw receive ceiling, at least 50 bytes, resolved against
     ///         the B/IP link before Device construction. Request headers use
     ///         the largest supported code that does not exceed it.
-    ///     segmentation: `Segmentation` override (default NO_SEGMENTATION, the proven value).
+    ///     segmentation: `Segmentation` override (default SEGMENTED_BOTH). The
+    ///         Device states it, and the endpoint's server and client both
+    ///         segment only as it says.
+    ///     apdu_segment_timeout_ms: Keyword-only (#2617). The Device's
+    ///         APDU_Segment_Timeout (default 5000), which the server and
+    ///         `client()` use while they segment; positive when segmenting.
     ///     device_uuid: Optional 16-byte UUID (zeros allowed for BIP-only;
     ///         stored into DEVICE_UUID, single identity source).
     ///     queue_capacity: Bounded queue capacity (must be >0, default 256).
@@ -245,6 +255,14 @@ impl PyBipEndpoint {
     ///         every valid request). Unlike `BACnetServer()`'s default,
     ///         time synchronization is off on an endpoint unless asked for,
     ///         whatever its `mutation_policy` (#2617).
+    ///     device_storage_path: Keyword-only (default None). The file the
+    ///         Device keeps what peers write to it in (#2730), as
+    ///         `BACnetServer`'s keyword of the same name: with a
+    ///         `mutation_policy` that lets peers write, a written
+    ///         Description survives a restart. A relative path is resolved
+    ///         here; an empty one raises BacnetError; a file that can't be
+    ///         read or loaded raises BacnetError at `start()`, naming the
+    ///         path.
     ///     source_audit_reporter / audit_recipient / audit_device_bindings:
     ///         Keyword-only (#2348). `source_audit_reporter` is the
     ///         `ObjectIdentifier` of an Audit Reporter added with
@@ -257,10 +275,12 @@ impl PyBipEndpoint {
     ///         writes: none (read-only), `"deny_all"` or a callable, never
     ///         `"permissive"`. `audit_device_bindings` is a list of
     ///         `(ObjectIdentifier, "ipv4:port")` routes to recipient
-    ///         Devices, or `"network:0xMAC"` for one behind a router
-    ///         (#2371). A Reporter identifier of another type, and other
-    ///         shapes construction can check, raise ValueError here; a
-    ///         Reporter that wasn't added raises BacnetError at start.
+    ///         Devices, or `"network:0xMAC[:one-station]"` for one behind a router, or a
+    ///         `RoutedTarget` with no router, which can mark the address
+    ///         `one_station=True` (#2371, #2738). A Reporter identifier of
+    ///         another type, and other shapes construction can check, raise
+    ///         ValueError here; a Reporter that wasn't added raises
+    ///         BacnetError at start.
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -279,6 +299,7 @@ impl PyBipEndpoint {
         apdu_retries=3,
         registered_network_port=None,
         *,
+        apdu_segment_timeout_ms=5000,
         read_work_limit=256,
         share_port_by_address=false,
         share_wildcard_port=false,
@@ -292,6 +313,7 @@ impl PyBipEndpoint {
         mutation_policy=None,
         cov_policy=None,
         time_sync_policy=None,
+        device_storage_path=None,
         source_audit_reporter=None,
         audit_recipient=None,
         audit_device_bindings=None
@@ -313,6 +335,7 @@ impl PyBipEndpoint {
         apdu_timeout_ms: u64,
         apdu_retries: u8,
         registered_network_port: Option<u32>,
+        apdu_segment_timeout_ms: u64,
         read_work_limit: usize,
         share_port_by_address: bool,
         share_wildcard_port: bool,
@@ -326,9 +349,15 @@ impl PyBipEndpoint {
         mutation_policy: Option<&Bound<'_, PyAny>>,
         cov_policy: Option<&Bound<'_, PyDict>>,
         time_sync_policy: Option<&Bound<'_, PyDict>>,
+        device_storage_path: Option<String>,
         source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
         audit_recipient: Option<&Bound<'_, PyAny>>,
-        audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
+        audit_device_bindings: Option<
+            Vec<(
+                crate::types::PyObjectIdentifier,
+                super::source_audit::BindingAddress,
+            )>,
+        >,
     ) -> PyResult<Self> {
         let server = super::server_role::ServerKeywords::parse(
             mutation_policy,
@@ -338,7 +367,8 @@ impl PyBipEndpoint {
             on_reinitialize,
             after_reinitialize,
             reinit_password,
-        )?;
+        )?
+        .with_device_storage_path(device_storage_path)?;
         let mode = crate::bip_options::bip_mode("bip", bbmd, foreign_device)?;
         let interface_ip = crate::bip_options::interface_ipv4(py, interface)?;
         let multicast = crate::bip_options::bip_multicast(
@@ -385,6 +415,7 @@ impl PyBipEndpoint {
             vendor_id,
             max_apdu,
             segmentation,
+            apdu_segment_timeout_ms,
             uuid,
         )?
         .resolve(BipTransport::new(interface_ip, port, broadcast).local_receive_apdu_capacity())
@@ -456,7 +487,7 @@ impl PyBipEndpoint {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -465,7 +496,7 @@ impl PyBipEndpoint {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         crate::py_async::future_into_py(py, async move {
-            lifecycle.close().await.map_err(lifecycle_error)?;
+            lifecycle.close().await.map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -483,7 +514,7 @@ impl PyBipEndpoint {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             Ok(self_ref)
         })
     }
@@ -498,6 +529,60 @@ impl PyBipEndpoint {
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.close(py)
+    }
+
+    /// Subscribe to raw frames on the endpoint's existing socket, including
+    /// malformed received datagrams. A full queue drops new frames; the next
+    /// frame queued reports the gap in `Frame.missed_before`. Close ends
+    /// every subscription, waking pending reads.
+    #[pyo3(signature = (capacity=1024))]
+    fn frames<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
+        let capacity = crate::frames::capacity(capacity)?;
+        let clock = crate::frames::Clock::get(py)?;
+        let lifecycle = self.lifecycle.clone();
+        let frames = self.frames.clone();
+        crate::py_async::future_into_py(py, async move {
+            let guard = lifecycle.session.read().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| not_running("endpoint not started"))?;
+            let receiver = session
+                .frames(capacity)
+                .ok_or_else(|| not_running("endpoint not started"))?;
+            let address = session
+                .bip_local_address()
+                .and_then(|socket| {
+                    crate::frames::local_address(DataLink::Bip, &[], Some(socket.into()))
+                })
+                .ok_or_else(|| not_running("endpoint not started"))?;
+            Ok(frames.subscribe(receiver, crate::frames::FrameContext::local(address), clock))
+        })
+    }
+
+    /// Subscribe to a record of every I-Am the endpoint's socket receives,
+    /// as `BACnetClient.i_am_arrivals` does, leaving out and counting its
+    /// own I-Am come back to it: from its own address, of its own device
+    /// instance. Close ends every subscription, waking pending reads.
+    #[pyo3(signature = (capacity=1024))]
+    fn i_am_arrivals<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
+        let capacity = crate::frames::capacity(capacity)?;
+        let clock = crate::frames::Clock::get(py)?;
+        let lifecycle = self.lifecycle.clone();
+        let frames = self.frames.clone();
+        let instance = self.config.identity.instance();
+        crate::py_async::future_into_py(py, async move {
+            let guard = lifecycle.session.read().await;
+            let not_started = || not_running("endpoint not started");
+            let session = guard.as_ref().ok_or_else(not_started)?;
+            let receiver = session.frames(capacity).ok_or_else(not_started)?;
+            let own = session.bip_local_address().ok_or_else(not_started)?;
+            Ok(crate::i_am_arrivals::subscribe(
+                &frames,
+                receiver,
+                Some((own.into(), instance)),
+                clock,
+            ))
+        })
     }
 
     /// The `BACnetClient` on this endpoint's socket (#2617): the standalone
@@ -540,6 +625,19 @@ impl PyBipEndpoint {
     }
 
     /// Actual announced IP and bound UDP port while the endpoint is active.
+    /// Raises RuntimeError before startup publication and during/after teardown.
+    fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.lifecycle.session.clone();
+        crate::py_async::future_into_py(py, async move {
+            let guard = inner.read().await;
+            guard
+                .as_ref()
+                .and_then(|session| session.bip_local_address())
+                .map(|address| address.to_string())
+                .ok_or_else(|| not_running("endpoint is not active"))
+        })
+    }
+
     /// Bounded snapshot: liveness, identity, transport, leases, policy counts.
     ///
     /// Counts and kind labels only — no keys, certs, or payloads. Raises
@@ -552,17 +650,17 @@ impl PyBipEndpoint {
                 let guard = inner.read().await;
                 let session = guard
                     .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
+                    .ok_or_else(|| not_running("endpoint not started"))?;
                 let address = session
                     .bip_local_address()
-                    .ok_or_else(|| PyRuntimeError::new_err("endpoint is not active"))?;
-                let counters = session.policy_counters().await;
+                    .ok_or_else(|| not_running("endpoint is not active"))?;
+                let counters = session.policy_counters();
                 let leases = session.active_leases();
                 let running = session.is_running();
                 let seat = session.seat_counts();
                 let health = session
                     .bip_transport_health()
-                    .ok_or_else(|| PyRuntimeError::new_err("B/IP receive health unavailable"))?;
+                    .ok_or_else(|| not_running("B/IP receive health unavailable"))?;
                 (counters, leases, running, address, seat, health)
             };
             // Lock released before touching Python.
@@ -614,7 +712,7 @@ impl PyBipEndpoint {
                 guard
                     .as_ref()
                     .and_then(|session| session.foreign_registration())
-                    .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?
+                    .ok_or_else(|| not_running("endpoint not started"))?
             };
             crate::registration_dicts::registration_dict(registration)
         })
@@ -686,7 +784,7 @@ impl PyBipEndpoint {
         let future = async move {
             let guard = inner.read().await;
             let session = guard.as_ref().ok_or_else(|| {
-                PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+                not_running("endpoint not started — use 'async with' or await start()")
             })?;
             session.broadcast_i_am().await.map_err(to_py_err)?;
             Ok(())

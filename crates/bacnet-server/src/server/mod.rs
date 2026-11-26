@@ -31,9 +31,7 @@ use bacnet_encoding::apdu::{
 use bacnet_encoding::apdu::ErrorPdu;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_encoding::primitives::encode_property_value;
-use bacnet_encoding::segmentation::{
-    SegmentReceiver, SegmentedPduType, duplicate_in_window, max_segment_payload, split_payload,
-};
+use bacnet_encoding::segmentation::{SegmentedPduType, max_segment_payload, split_payload};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_objects::database::ObjectDatabase;
@@ -88,24 +86,6 @@ use request_services::{DispatchContext, RequestOrigin, RequestServices, Unconfir
 use requests::ConfirmedRequestOwnership;
 use requests::confirmed_response::ResponseTarget;
 use segmentation::{ComplexAckParams, SegmentedSendResources};
-
-/// Maximum number of concurrent segmented reassembly sessions.
-const MAX_SEG_RECEIVERS: usize = 128;
-
-/// Hard per-request reassembly ceiling: the sequence-number space (#364).
-///
-/// A local storage bound, not a protocol one. Clause 20.1.2.7 makes the
-/// request sequence number modulo 256, so a longer request is entirely
-/// representable on the wire — this server simply keys its segment store by
-/// that `u8` and cannot tell segment 256 from segment 0. A Device object
-/// configured to receive segments does publish a tighter advertisement — its
-/// `Max_Segments_Accepted` (Clause 12.11) defaults to `Unsigned(65)` — but
-/// enforcing it here is deliberately not done: accepting more segments than
-/// advertised is permissive, not a violation, while the sequence space is the
-/// line past which acceptance silently corrupts. Exactly 256 segments
-/// reassemble correctly and must keep working; 257 is the first that would
-/// corrupt the payload.
-const MAX_REQUEST_SEGMENTS: usize = 256;
 
 /// Maximum number of concurrent segmented response send sessions.
 const MAX_SEG_SENDERS: usize = 128;
@@ -241,110 +221,13 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
         self
     }
 
-    /// Build and start the server.
-    pub async fn build(mut self) -> Result<BACnetServer<T>, Error> {
-        let transport = self
-            .transport
-            .ok_or_else(|| Error::Encoding("transport not set on ServerBuilder".into()))?;
-        let db = crate::local_device::prepare_database(
-            &mut self.config,
-            self.db,
-            transport.local_receive_apdu_capacity(),
-        )?;
-        BACnetServer::start_with_clock_mode_and_bindings(
-            self.config,
-            db,
-            transport,
-            Some(self.clock_zone),
-            self.configured_device_bindings,
-        )
-        .await
-    }
-}
-
-/// BIP-specific builder that constructs `BipTransport` from interface/port/broadcast fields.
-pub struct BipServerBuilder {
-    config: ServerConfig,
-    db: Option<ObjectDatabase>,
-    configured_device_bindings: Vec<DeviceBinding>,
-    mode: BipMode,
-    multicast: Option<BipMulticast>,
-    clock_zone: ClockConfig,
-}
-
-impl BipServerBuilder {
-    /// Set the one Device identity. With no supplied database, startup creates
-    /// a stock Device after resolving the owned transport's receive capacity.
-    pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
-        self.config.device = identity;
-        self
-    }
-
-    /// Set the object database (transfers ownership).
-    pub fn database(mut self, db: ObjectDatabase) -> Self {
-        self.db = Some(db);
-        self
-    }
-
-    /// Register one explicit unicast route for a Device recipient.
-    pub fn device_binding(mut self, binding: DeviceBinding) -> Result<Self, Error> {
-        register_configured_binding(&mut self.configured_device_bindings, binding)?;
-        Ok(self)
-    }
-
-    /// Select the only local Audit Log that receives authorized notifications.
-    pub fn audit_notification_sink(mut self, sink: ObjectIdentifier) -> Self {
-        self.config.audit_notification_sink = Some(sink);
-        self
-    }
-
-    /// Enable periodic fault detection / reliability evaluation.
-    ///
-    /// When enabled, every object's opt-in reliability hook runs every 10
-    /// seconds; the default hook is a no-op.
-    ///
-    /// Reliability evaluation only; Event Enrollment evaluation is configured
-    /// by [`enable_event_enrollment`](Self::enable_event_enrollment).
-    pub fn enable_fault_detection(mut self, enabled: bool) -> Self {
-        self.config.enable_fault_detection = enabled;
-        self
-    }
-
-    /// Enable periodic Event Enrollment evaluation (default `true`).
-    pub fn enable_event_enrollment(mut self, enabled: bool) -> Self {
-        self.config.enable_event_enrollment = enabled;
-        self
-    }
-
-    /// Set the interval in seconds between Event Enrollment evaluation passes
-    /// (default 10).
-    pub fn event_enrollment_interval_secs(mut self, secs: u64) -> Self {
-        self.config.event_enrollment_interval_secs = secs;
-        self
-    }
-
-    /// Set the discovery rate-limiting and duplicate suppression policy.
-    pub fn discovery_policy(mut self, policy: DiscoveryPolicy) -> Self {
-        self.config.discovery_policy = policy;
-        self
-    }
-
-    /// Set the COV quota and notification work budget policy, checked by
-    /// [`CovPolicy::validate`] before transport startup.
-    pub fn cov_policy(mut self, policy: CovPolicy) -> Self {
-        self.config.cov_policy = policy;
-        self
-    }
-
-    /// Build and start the server, constructing a BipTransport from the config.
-    pub async fn build(mut self) -> Result<BACnetServer<BipTransport>, Error> {
-        let config = &self.config;
-        let mut transport =
-            BipTransport::new(config.interface, config.port, config.broadcast_address);
-        transport.set_share_port_by_address(config.share_port_by_address);
-        transport.set_share_wildcard_port(config.share_wildcard_port);
-        transport.set_mode(self.mode);
-        transport.set_multicast(self.multicast)?;
+    /// Build and start the server. A refusal hands back the database
+    /// ([`StartError`]).
+    pub async fn build(mut self) -> Result<BACnetServer<T>, StartError> {
+        let Some(transport) = self.transport else {
+            let error = Error::invalid_config("transport not set on ServerBuilder");
+            return Err(StartError::new(error, self.db));
+        };
         let db = crate::local_device::prepare_database(
             &mut self.config,
             self.db,
@@ -387,6 +270,9 @@ pub struct BACnetServer<T: TransportPort = AnyTransport> {
     network_number_task: Option<JoinHandle<()>>,
     /// Shared object database.
     db: Arc<RwLock<ObjectDatabase>>,
+    /// The node that stopped this server took its handle on the database
+    /// back (`__endpoint_into_database`, #2766): its drop lets go of none.
+    database_handed_back: bool,
     /// COV subscription table (also held by dispatch task; read by
     /// [`write_local`](Self::write_local) to fire post-write notifications).
     cov_table: Arc<RwLock<CovSubscriptionTable>>,
@@ -459,22 +345,15 @@ impl<T: TransportPort> Clone for IAmBroadcaster<T> {
     }
 }
 
-impl BACnetServer<BipTransport> {
-    /// Create a BIP-specific builder with interface/port/broadcast fields.
-    pub fn bip_builder() -> BipServerBuilder {
-        BipServerBuilder {
-            config: ServerConfig::default(),
-            db: None,
-            configured_device_bindings: Vec::new(),
-            mode: BipMode::Normal,
-            multicast: None,
-            clock_zone: ClockConfig::default(),
-        }
-    }
-}
-
+mod bip_builder;
+pub use bip_builder::BipServerBuilder;
+mod start_error;
+pub use start_error::StartError;
+#[doc(hidden)]
+pub use start_error::refused as __endpoint_start_refused;
 mod clock;
 mod command_runs;
+pub(crate) mod device_storage;
 mod reinitialize;
 mod time_sync_policy;
 pub use reinitialize::{ReinitializeContext, ReinitializeHandler};
@@ -545,6 +424,8 @@ mod network_port_tests;
 #[cfg(test)]
 #[path = "../../../bacnet-endpoint/tests/support/port_retry.rs"]
 mod port_retry;
+#[cfg(test)]
+mod start_refusal_tests;
 pub use confirmed_answer::CovAckResult;
 mod remote_writes;
 pub(crate) use remote_writes::RemoteRequestError;
@@ -677,6 +558,12 @@ mod cov_owed_id_room_tests;
 #[cfg(test)]
 mod cov_owed_id_tests;
 #[cfg(test)]
+mod cov_owed_limit_life_tests;
+#[cfg(test)]
+mod cov_owed_limit_room_tests;
+#[cfg(test)]
+mod cov_owed_limit_tests;
+#[cfg(test)]
 mod cov_quota_tests;
 #[cfg(test)]
 mod cov_stalled_send_tests;
@@ -692,6 +579,8 @@ mod cov_timed_deadline_tests;
 mod cov_timed_multiple_tests;
 #[cfg(test)]
 mod cov_timed_producer_tests;
+#[cfg(test)]
+mod cov_timed_schedule_pass_tests;
 #[cfg(test)]
 mod cov_timed_value_split_tests;
 #[cfg(test)]
@@ -740,6 +629,8 @@ mod event_network_priority_tests;
 mod event_notifications_tests;
 #[cfg(test)]
 mod event_recipient_routing_tests;
+#[cfg(test)]
+mod event_router_application_tests;
 #[cfg(test)]
 mod legacy_event_parameters_wire_tests;
 #[cfg(test)]
@@ -792,6 +683,8 @@ mod pulse_converter_reference_tests;
 mod rb07_provenance_tests;
 #[cfg(test)]
 mod reference_write_wire_tests;
+#[cfg(test)]
+mod remote_broadcast_recipient_tests;
 #[cfg(test)]
 mod remote_write_answer_tests;
 #[cfg(test)]

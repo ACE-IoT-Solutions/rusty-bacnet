@@ -76,7 +76,7 @@ class PropertyObservationTests(unittest.IsolatedAsyncioTestCase):
                                          [bytes.fromhex("22 0007"), b"\x00", b"\x60", UCS4_OMEGA, bytes.fromhex("72 00 ff")])
                         # Index zero of an ObjectIdentifier array is its unsigned count.
                         observed = values[0]
-                        declared = rb.decode_property_as(observed["raw"], "ObjectIdentifier",
+                        declared = rb.decode_property_as(observed["raw"], "object_identifier",
                                                          shape="array", array_index=observed["array_index"])
                         self.assertEqual((declared.status, declared.value, declared.raw),
                                          ("decoded", number, bytes.fromhex("22 00 07")))
@@ -114,7 +114,7 @@ class PropertyObservationTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual((context.object_id, context.property_id, context.array_index),
                                              (EE, P.DESCRIPTION.to_raw(), None))
                             self.assertEqual((context.raw, result.octets), (UCS4_OMEGA, UTF8_OMEGA))
-                            projected = rb.decode_property_as(context.raw, "CharacterString")
+                            projected = rb.decode_property_as(context.raw, "character_string")
                             self.assertEqual((projected.status, projected.raw, projected.value),
                                              ("decoded", UCS4_OMEGA, result))
 

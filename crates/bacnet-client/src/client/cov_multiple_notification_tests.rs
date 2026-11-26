@@ -502,7 +502,7 @@ async fn the_ack_policy_answers_both_confirmed_forms() {
     pair.stop().await;
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_segmented_confirmed_multiple_is_reassembled_and_published_once() {
     // The notifier segments it (#2646): each segment is acknowledged with
     // the server bit set, and the whole notification is published and

@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::{Lifecycle, Refusal};
 
 #[cfg(test)]
 #[path = "request_tasks_tests.rs"]
@@ -121,6 +122,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 task.abort();
             }
             {
+                // Held across the timer's join, and waited for here, which
+                // holds up nothing the server serves, a stop left unpolled
+                // included (#2781): the set closed above admits no DCC or
+                // ReinitializeDevice request, the only requests that take
+                // the slot, and aborted those it held; dispatch never takes
+                // it. The timer, aborted once stop holds the slot, gives up
+                // its own wait for it without the guard. One queued ahead of
+                // stop, as an aborted request lets go, takes the slot first
+                // and makes its expiry, as it would have a moment before;
+                // stop then joins a timer that has ended. A drop's join
+                // (`join_released`, below) meets the same order.
                 let mut timer = self.dcc_timer.lock().await;
                 super::dcc_timer::cancel(&mut timer).await;
             }
@@ -152,6 +164,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // stopped below finds them sealed.
         self.notification_transactions.shut_lanes().await;
         {
+            // Every request is joined: only the timer, which the join
+            // aborts, can want the slot held across it (#2781).
             let mut timer = self.dcc_timer.lock().await;
             super::dcc_timer::cancel(&mut timer).await;
         }
@@ -163,6 +177,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         stop_producer(&mut self.binary_lighting_operation_task).await;
         stop_producer(&mut self.cov_purge_task).await;
         stop_producer(&mut self.cov_revisit_task).await;
+        // Nothing looks at a reference owed room any more: its wait goes
+        // with the task (#2671).
+        self.cov_table.read().await.revisits().clear();
         // A local write dropped while the guard was taken lets go of its
         // stage from a task of its own (#2493). Let those finish, so none
         // holds the guard as the objects settle (#2495), but for a bounded
@@ -187,7 +204,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
         self.target_audit = None;
         if let Some(error) = &self.transport_cleanup_error {
-            return Err(Error::Encoding(error.clone()));
+            return Err(cleanup_failed(error.clone()));
         }
         if !self.owns_link() {
             // The node's layer, which the node stops: let go of it (#2617).
@@ -222,7 +239,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             Err(error) => {
                 let message = format!("transport cleanup task failed: {error}");
                 self.transport_cleanup_error = Some(message.clone());
-                Err(Error::Encoding(message))
+                Err(cleanup_failed(message))
             }
         }
     }
@@ -237,6 +254,19 @@ impl<T: TransportPort> Drop for BACnetServer<T> {
     /// keeps the objects alive; let go of it with
     /// [`drop_database_off_runtime`] (#1513).
     fn drop(&mut self) {
+        let tasks = self.seal_and_abort();
+        // A node that took the handle back left nothing to let go of.
+        if !self.database_handed_back {
+            self.let_database_go(tasks);
+        }
+    }
+}
+
+impl<T: TransportPort> BACnetServer<T> {
+    /// Seal the server, as a drop and the node's
+    /// [`__endpoint_into_database`](BACnetServer::__endpoint_into_database)
+    /// both do first.
+    fn seal(&mut self) {
         if let Some(network) = self.network.as_ref().filter(|_| self.owns_link()) {
             network.seal_responses();
         }
@@ -256,7 +286,11 @@ impl<T: TransportPort> Drop for BACnetServer<T> {
         // they are joined, or with no runtime dropped, before the database
         // goes.
         super::event_send::lanes(&self.notification_transactions).seal();
-        let mut tasks: Vec<JoinHandle<()>> = [
+    }
+
+    /// The server's own tasks, each in its slot.
+    fn task_slots(&mut self) -> [&mut Option<JoinHandle<()>>; 10] {
+        [
             &mut self.dispatch_task,
             &mut self.network_number_task,
             &mut self.cov_purge_task,
@@ -268,20 +302,26 @@ impl<T: TransportPort> Drop for BACnetServer<T> {
             &mut self.binary_lighting_operation_task,
             &mut self.cov_revisit_task,
         ]
-        .into_iter()
-        .filter_map(Option::take)
-        .collect();
+    }
+
+    /// What a drop does first: seal the server and abort its tasks, which
+    /// it returns to be joined before the database goes.
+    fn seal_and_abort(&mut self) -> Vec<JoinHandle<()>> {
+        self.seal();
+        let mut tasks: Vec<JoinHandle<()>> = self
+            .task_slots()
+            .into_iter()
+            .filter_map(Option::take)
+            .collect();
         if let Ok(mut timer) = self.dcc_timer.try_lock() {
             tasks.extend(timer.take());
         }
         for task in &tasks {
             task.abort();
         }
-        self.let_database_go(tasks);
+        tasks
     }
-}
 
-impl<T: TransportPort> BACnetServer<T> {
     /// Let the object database go off the async runtime as the server is
     /// dropped (#1409).
     ///
@@ -314,32 +354,91 @@ impl<T: TransportPort> BACnetServer<T> {
             return;
         };
         let db = std::mem::take(&mut self.db);
-        let requests = Arc::clone(&self.request_tasks);
-        let notifications = Arc::clone(&self.notification_transactions);
-        let dcc_timer = Arc::clone(&self.dcc_timer);
+        let joined = join_released(
+            tasks,
+            Arc::clone(&self.request_tasks),
+            Arc::clone(&self.notification_transactions),
+            Arc::clone(&self.dcc_timer),
+        );
         runtime.spawn(async move {
-            for task in tasks {
-                let _ = task.await;
-            }
-            while let Some(result) = requests.join_next().await {
-                super::request_tasks::RequestTasks::observe(Some(result));
-            }
-            // No request is left to hold the slot. The guard goes before the
-            // join, as the timer may be queued for the slot itself.
-            let timer = dcc_timer.lock().await.take();
-            if let Some(timer) = timer {
-                timer.abort();
-                let _ = timer.await;
-            }
-            while let Some(result) = notifications.join_next().await {
-                NotificationTransactions::observe(Some(result));
-            }
-            // The lanes were sealed at the drop; their aborted tasks let go
-            // of their database handles as they are joined.
-            super::event_send::join_sealed(&notifications).await;
+            joined.await;
             drop(drop_database_off_runtime(db));
         });
     }
+}
+
+impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// The node's (#2766): a server on a node's seat that the node has
+    /// stopped hands back its handle on the database once what a drop
+    /// would join has let go of theirs, where a drop leaves that to a task.
+    /// The node's own handle is then the only one, so its refused start can
+    /// give the database to its caller. Cancelled before it returns, the
+    /// server drops as any server does.
+    #[doc(hidden)]
+    pub async fn __endpoint_into_database(mut self) -> Arc<RwLock<ObjectDatabase>> {
+        self.retire().await;
+        self.database_handed_back = true;
+        Arc::clone(&self.db)
+    }
+
+    /// Seal the server, abort its tasks and join what a drop would, each
+    /// task kept in its slot until it has ended, so a call cancelled part
+    /// way leaves what it hasn't joined to the drop, which joins it before
+    /// the database goes (#2766).
+    pub(super) async fn retire(&mut self) {
+        self.seal();
+        for task in self.task_slots().into_iter().flatten() {
+            task.abort();
+        }
+        for slot in self.task_slots() {
+            stop_producer(slot).await;
+        }
+        while let Some(result) = self.request_tasks.join_next().await {
+            super::request_tasks::RequestTasks::observe(Some(result));
+        }
+        // No request is left to hold the slot, as in a drop's join: only the
+        // timer, which the join aborts, can want it across the join (#2781).
+        {
+            let mut timer = self.dcc_timer.lock().await;
+            super::dcc_timer::cancel(&mut timer).await;
+        }
+        while let Some(result) = self.notification_transactions.join_next().await {
+            NotificationTransactions::observe(Some(result));
+        }
+        super::event_send::join_sealed(&self.notification_transactions).await;
+    }
+}
+
+/// What a dropped server's handle on the database waits for: `tasks`,
+/// aborted, then its request, DCC timer, notification and event lane tasks,
+/// each of which may hold a handle of its own.
+async fn join_released(
+    tasks: Vec<JoinHandle<()>>,
+    requests: Arc<super::request_tasks::RequestTasks>,
+    notifications: Arc<NotificationTransactions>,
+    dcc_timer: Arc<Mutex<super::dcc_timer::TimerSlot>>,
+) {
+    for task in tasks {
+        let _ = task.await;
+    }
+    while let Some(result) = requests.join_next().await {
+        super::request_tasks::RequestTasks::observe(Some(result));
+    }
+    // No request is left to hold the slot. The guard goes before the join,
+    // as the timer may be queued for the slot itself. A timer queued ahead of
+    // this wait, as an aborted request let go, makes its expiry first, and
+    // the join finds it ended (#2781).
+    let timer = dcc_timer.lock().await.take();
+    if let Some(timer) = timer {
+        timer.abort();
+        let _ = timer.await;
+    }
+    while let Some(result) = notifications.join_next().await {
+        NotificationTransactions::observe(Some(result));
+    }
+    // The lanes were sealed at the drop; their aborted tasks let go of their
+    // database handles as they are joined.
+    super::event_send::join_sealed(&notifications).await;
 }
 
 /// Let go of a handle on an object database without parking an async
@@ -394,4 +493,10 @@ pub fn drop_database_off_runtime(db: Arc<RwLock<ObjectDatabase>>) -> Option<Join
         return None;
     };
     Some(runtime.spawn_blocking(move || drop(db)))
+}
+
+/// A stop whose transport cleanup task panicked or was aborted: the server
+/// is shut for good, with the reason in the text (#1833).
+fn cleanup_failed(message: String) -> Error {
+    Error::State(Lifecycle::Closed, Refusal::text(message))
 }

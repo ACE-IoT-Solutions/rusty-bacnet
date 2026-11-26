@@ -18,7 +18,7 @@ use bacnet_services::rpm::ReadPropertyMultipleACK;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifier, RejectReason};
-use bacnet_types::error::{Error, RangeError, RemoteError};
+use bacnet_types::error::{Error, RangeError, RemoteError, SegmentationError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use crate::device::{DeviceAddress, path_to};
@@ -117,18 +117,30 @@ pub fn rpm_failure(error: &Error) -> RpmFailure {
         // a frame of 228 octets or fewer never earns this, #2665): one
         // property at a time is shorter.
         Error::SendTooLong { .. } | Error::RoutedPathTooLong { .. } => RpmFailure::TooLarge,
+        // The request needs segments the client may not send (a node whose
+        // Device doesn't transmit them, #2617), or that the device can't
+        // take, or not so many: refused before it went out, and one
+        // property at a time may fit one APDU.
+        Error::Segmentation(
+            SegmentationError::LocalCannotTransmit
+            | SegmentationError::PeerCannotReceive { .. }
+            | SegmentationError::PeerSegmentLimit { .. }
+            | SegmentationError::TooManySegments { .. },
+        ) => RpmFailure::TooLarge,
         _ => RpmFailure::Other,
     }
 }
 
 /// True when `error`, a low-level client's error such as a [`Halt`]
-/// holds, says the device, or the way to it, isn't answering: a timeout or
-/// a transport failure. Reading on would only time out again. Only a
-/// timeout makes a following handle look for its device elsewhere
+/// holds, says the device, or the way to it, isn't answering: a timeout, a
+/// transport failure, or a router on the way that refused the request at
+/// the network layer ([`Error::NetworkRejected`], #2724). Reading on would
+/// only fail the same way. A timeout or a router's refusal makes a
+/// following handle look for its device elsewhere
 /// ([`Device`](crate::Device)). The high-level calls' errors say it with
 /// [`OpsError::unreachable`](crate::OpsError::unreachable).
 pub fn unreachable(error: &Error) -> bool {
-    timed_out(error) || matches!(error, Error::Transport(_))
+    timed_out(error) || matches!(error, Error::Transport(_) | Error::NetworkRejected(_))
 }
 
 /// True when `error` is the client's or the link's own failure of a
@@ -148,41 +160,60 @@ pub fn unreachable(error: &Error) -> bool {
 ///   Nothing was sent, or, with `sent`, a request that went out had its
 ///   retry withheld; either way no word of the device's, and the next
 ///   request fails the same way until the node is enabled again.
-/// - [`Error::Encoding`], the client's untyped error (#1833 types it). A
-///   link refusing the send comes as this (a router's application given a
-///   station that names no network), and so do a client out of invoke IDs,
-///   a BACnet/SC link that isn't connected, and a response channel closed
-///   under a request, which **had already left**. So this is not "never
-///   sent", and nothing may send again on the strength of it: reads only
-///   stop on it. They are kept in because they have no type to tell them
-///   from the refusal this exists for, and each ends a read for the same
-///   reason: the client, not the property, failed.
+/// - The local refusals (#1833): [`Error::State`] (a
+///   transport not started or stopped, a router-application client's
+///   router closed, a BACnet/SC link that isn't connected to its hub, a
+///   closed loopback channel, a client seat that has closed),
+///   [`Error::InvalidConfig`], [`Error::InvalidArgument`] (a MAC of the
+///   wrong form for the link, or a router's application given a station
+///   that names no network), [`Error::Unsupported`] and
+///   [`Error::LimitReached`] (a client out of invoke IDs). Each is the
+///   client's or the link's own refusal: a stopped local link is not a
+///   device that stopped answering, so [`unreachable()`] doesn't count it.
+/// - [`Error::RequestCutOff`]: the client or its link stopped under the
+///   request before an answer came (the client's own stop, its node's, or
+///   the link's after the request went out). With `sent: true` it **may
+///   already have left**, and the device may have carried it out.
+/// - [`Error::Persistence`]: this side's own stored state failed to load or
+///   save (#1833). No answer of the device's.
+///
+/// So a failure here is not "never sent", and nothing may send again on the
+/// strength of one: reads only stop on it, since the client, not the
+/// property, failed.
 ///
 /// A request too long for the link or the routed path
-/// ([`Error::SendTooLong`], [`Error::RoutedPathTooLong`]) is not one: a
-/// smaller request may pass, so those fall back as an answer too large
-/// does ([`rpm_failure`]).
-pub(crate) fn failed_locally(error: &Error) -> bool {
+/// ([`Error::SendTooLong`], [`Error::RoutedPathTooLong`]), or one that
+/// needs segments the client or the device can't use
+/// ([`Error::Segmentation`]), is not one: a smaller request may pass, so
+/// those fall back as an answer too large does ([`rpm_failure`]).
+pub fn failed_locally(error: &Error) -> bool {
     matches!(
         error,
-        Error::Encoding(_)
+        Error::State(..)
+            | Error::InvalidConfig(_)
+            | Error::InvalidArgument(_)
+            | Error::Unsupported(_)
+            | Error::LimitReached(_)
             | Error::Encode(_)
             | Error::UnknownDevice { .. }
             | Error::UnsupportedTransport { .. }
             | Error::RoutedPathCapacityExceeded { .. }
             | Error::InitiationDisabled { .. }
+            | Error::RequestCutOff { .. }
+            | Error::Persistence(_)
     )
 }
 
 /// True when `error`, a low-level client's error, says the request timed
 /// out: the client's own timeout, or the transaction state machine giving
-/// up on its retries. A transport failure is unreachable but not a
-/// timeout. The high-level calls' errors say it with
+/// up on its retries, also after a router said it was busy
+/// ([`Error::RouterBusyTimeout`], #2724). A transport failure, or a
+/// router's network reject, is unreachable but not a timeout. The high-level calls' errors say it with
 /// [`OpsError::timed_out`](crate::OpsError::timed_out).
 pub fn timed_out(error: &Error) -> bool {
     match error {
         Error::Remote(RemoteError::Abort { reason }) => *reason == AbortReason::TSM_TIMEOUT,
-        Error::Timeout(_) => true,
+        Error::Timeout(_) | Error::RouterBusyTimeout(_) => true,
         _ => false,
     }
 }

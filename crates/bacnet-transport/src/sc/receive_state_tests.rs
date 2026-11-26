@@ -66,7 +66,9 @@ impl WebSocketPort for HeartbeatSendFailureWebSocket {
             *self.connect_request_id.lock().await = Some(request.message_id);
             Ok(())
         } else {
-            Err(Error::Encoding("scripted heartbeat send failure".into()))
+            Err(Error::Transport(std::io::Error::other(
+                "scripted heartbeat send failure",
+            )))
         }
     }
 
@@ -190,8 +192,7 @@ async fn sc_reconnect_exhaustion_leaves_connection_disconnected() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 10,
             max_delay_ms: 10,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         });
 
     let hub_task = tokio::spawn(async move {

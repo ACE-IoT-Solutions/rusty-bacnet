@@ -205,6 +205,11 @@ pub enum SegmentationError {
         /// The segmentation support the peer advertised.
         capability: Segmentation,
     },
+    /// A request needs segmenting and this side sends no segmented
+    /// requests: a client so configured, such as the client of an
+    /// endpoint whose Device's Segmentation_Supported says it doesn't
+    /// transmit them (#2617). Nothing was sent.
+    LocalCannotTransmit,
     /// A segmented request's octets, or its count of segments, passed the
     /// receiver's cap.
     PayloadCapacityExceeded,
@@ -213,12 +218,6 @@ pub enum SegmentationError {
     /// The peer kept asking for the same window again with negative
     /// SegmentACKs past the sender's retry limit.
     NegativeAckRetriesExhausted,
-    /// An endpoint operation's acknowledgement is longer than the endpoint's
-    /// maximum APDU; endpoint operations don't reassemble segments.
-    EndpointAckTooLong,
-    /// An endpoint request too long for one APDU; the endpoint requester
-    /// doesn't segment.
-    EndpointRequestTooLong,
 }
 
 impl fmt::Display for SegmentationError {
@@ -249,16 +248,13 @@ impl fmt::Display for SegmentationError {
                 "request requires segmentation but the peer advertised {capability:?} \
                  and cannot receive segmented requests"
             ),
+            Self::LocalCannotTransmit => {
+                f.write_str("request requires segmentation, which this side does not transmit")
+            }
             Self::PayloadCapacityExceeded => f.write_str("request payload capacity exceeded"),
             Self::PayloadAccountingOverflow => f.write_str("request payload accounting overflow"),
             Self::NegativeAckRetriesExhausted => {
                 f.write_str("too many negative SegmentAck retransmissions")
-            }
-            Self::EndpointAckTooLong => {
-                f.write_str("endpoint operation ACK exceeds configured max APDU")
-            }
-            Self::EndpointRequestTooLong => {
-                f.write_str("endpoint requester supports only unsegmented requests")
             }
         }
     }
@@ -303,6 +299,10 @@ mod tests {
             .to_string(),
             "request requires segmentation but the peer advertised Segmentation::SEGMENTED_TRANSMIT \
              and cannot receive segmented requests"
+        );
+        assert_eq!(
+            Error::Segmentation(SegmentationError::LocalCannotTransmit).to_string(),
+            "segmentation error: request requires segmentation, which this side does not transmit"
         );
     }
 }

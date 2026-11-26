@@ -81,8 +81,12 @@ mod tests {
                 .read_property_multiple_budget(budget)
                 .build()
                 .await;
-            for error in [direct.err(), generic.err(), bip.err()] {
-                assert!(matches!(error, Some(Error::Encoding(m)) if m.contains("rpm_max_")));
+            for error in
+                [direct.err(), generic.err(), bip.err()].map(|error| error.map(Error::from))
+            {
+                assert!(
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("rpm_max_"))
+                );
             }
             assert!(
                 bacnet_objects::DeviceIdentity::default()

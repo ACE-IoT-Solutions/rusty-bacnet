@@ -1,5 +1,6 @@
 use super::{BipServerBuilder, ServerBuilder, TransportPort, runtime_clock};
 use bacnet_types::error::Error;
+use bacnet_types::sync::MutexExt;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -28,9 +29,8 @@ impl DccDisableRateLimit {
         if !(1..=65535).contains(&self.capacity)
             || !(1..=86_400_000).contains(&self.refill_interval_ms)
         {
-            return Err(Error::Encoding(
-                "DCC disable rate requires capacity 1..=65535 and refill_interval_ms 1..=86400000"
-                    .into(),
+            return Err(Error::invalid_config(
+                "DCC disable rate requires capacity 1..=65535 and refill_interval_ms 1..=86400000",
             ));
         }
         Ok(())
@@ -66,7 +66,7 @@ impl Bucket {
     }
 
     pub(super) fn admit(&self) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         // Read time under the lock: concurrent callers cannot move last backwards.
         let now = runtime_clock::now();
         state.credit = state

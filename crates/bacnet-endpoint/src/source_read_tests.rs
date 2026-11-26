@@ -75,6 +75,15 @@ fn address(network: &NetworkLayer<TestTransport>) -> SocketAddrV4 {
     SocketAddrV4::new(ip.into(), port)
 }
 fn session(
+    db: ObjectDatabase,
+    role: SessionRole,
+    sink: &NetworkLayer<TestTransport>,
+) -> EndpointSession<TestTransport> {
+    session_on(bus_port(), db, role, sink)
+}
+/// [`session`] on `link`, such as a [`bus_port`] behind a test hook.
+fn session_on(
+    link: TestTransport,
     mut db: ObjectDatabase,
     role: SessionRole,
     sink: &NetworkLayer<TestTransport>,
@@ -85,16 +94,15 @@ fn session(
         .unwrap()
         .provision_audit_recipient(BACnetRecipient::Device(oid(ObjectType::DEVICE, 999)))
         .unwrap();
-    let mut session = bare_session(
-        role,
-        SessionConfig {
-            apdu_timeout_ms: 100,
-            apdu_retries: 0,
-            ..SessionConfig::default()
-        },
-    )
-    .with_database(db)
-    .with_source_audit_reporter(selected());
+    let config = SessionConfig {
+        apdu_timeout_ms: 100,
+        apdu_retries: 0,
+        ..SessionConfig::default()
+    };
+    let mut session = EndpointSession::new(link, role, config)
+        .unwrap()
+        .with_database(db)
+        .with_source_audit_reporter(selected());
     session
         .source_audit_bindings
         .push((oid(ObjectType::DEVICE, 999), address(sink)));
@@ -212,15 +220,44 @@ async fn reliability<T: TransportPort + 'static>(session: &EndpointSession<T>) -
     };
     value
 }
+/// The session's client, shared with the tasks that call it.
+type Client = Arc<bacnet_client::client::BACnetClient<TestTransport>>;
+
+/// The one client a running session gives at a time.
+fn client_of(session: &EndpointSession<TestTransport>) -> Client {
+    Arc::new(session.client().unwrap())
+}
+
+/// A ReadProperty of `target()`, in a task of its own.
 fn start_read(
-    session: &EndpointSession<TestTransport>,
+    client: &Client,
     target_mac: &[u8],
     property: PropertyIdentifier,
     index: Option<u32>,
 ) -> tokio::task::JoinHandle<Result<ReadPropertyACK, Error>> {
-    let handle = session.cloned_client_handle().unwrap();
+    let client = Arc::clone(client);
     let mac = target_mac.to_vec();
-    tokio::spawn(async move { handle.read_property(&mac, target(), property, index).await })
+    tokio::spawn(async move {
+        client
+            .read_property(&mac[..], target(), property, index)
+            .await
+    })
+}
+
+/// Station `n` on the link, with no node behind it: nothing it is sent
+/// is answered. Each is a source Audit lane of its own (#2652).
+fn silent(n: usize) -> [u8; 6] {
+    encode_bip_mac([127, 0, 0, 1], u16::try_from(n + 1).unwrap())
+}
+
+/// The station of the `n`th of the 64 requests that fill the slots, a
+/// lane's share to each of 16 stations: the first is `peer`, so what
+/// reaches it is seen, and the rest are [`silent`].
+fn filling(peer: &NetworkLayer<TestTransport>, n: usize) -> Vec<u8> {
+    match n / crate::source_audit::slots::LANE_SHARE {
+        0 => peer.local_mac().to_vec(),
+        lane => silent(lane).to_vec(),
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -231,6 +268,7 @@ async fn source_read_wire_fields_both_roles_modes_and_result_before_delivery() {
         for confirmed in [false, true] {
             let mut session = session(database(confirmed), role, &sink);
             session.start().await.unwrap();
+            let client = client_of(&session);
             assert!(records.try_recv().is_err());
             // Reserve a competing request ID to prove record IDs are not guessed.
             let lease = session
@@ -243,7 +281,7 @@ async fn source_read_wire_fields_both_roles_modes_and_result_before_delivery() {
                 )
                 .unwrap();
             let read = start_read(
-                &session,
+                &client,
                 peer.local_mac(),
                 PropertyIdentifier::OBJECT_NAME,
                 Some(2),
@@ -328,8 +366,9 @@ async fn source_read_identity_is_the_lowest_of_several_devices() {
     .unwrap();
     let mut session = session(db, SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
+    let client = client_of(&session);
     let read = start_read(
-        &session,
+        &client,
         peer.local_mac(),
         PropertyIdentifier::OBJECT_NAME,
         None,
@@ -348,15 +387,20 @@ async fn source_read_identity_is_the_lowest_of_several_devices() {
     sink.stop().await.unwrap();
 }
 
+/// A peer's Error, Reject and Abort, no answer, and an answer that doesn't
+/// answer the read are each recorded with their Result. No answer is
+/// TIMEOUT, though the client reports it to its caller as an Abort for its
+/// transaction's timeout.
 #[tokio::test(start_paused = true)]
 async fn source_read_peer_and_local_failure_outcomes_are_not_success() {
     let (peer, mut requests) = network().await;
     let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
+    let client = client_of(&session);
     for case in 0..7 {
         let read = start_read(
-            &session,
+            &client,
             peer.local_mac(),
             PropertyIdentifier::PRESENT_VALUE,
             None,
@@ -423,9 +467,9 @@ async fn source_read_peer_and_local_failure_outcomes_are_not_success() {
         if let Some(reply) = reply {
             send(&peer, &envelope.source_mac, reply).await;
         }
-        assert!(read.await.unwrap().is_err());
+        assert!(read.await.unwrap().is_err(), "case {case}");
         let (record, _) = notification(&receive(&mut records).await, false);
-        assert_eq!(record.result, Some(expected));
+        assert_eq!(record.result, Some(expected), "case {case}");
         assert_eq!(record.invoke_id, Some(invoke_id));
         assert_eq!(
             record.source_timestamp,
@@ -437,6 +481,8 @@ async fn source_read_peer_and_local_failure_outcomes_are_not_success() {
     sink.stop().await.unwrap();
 }
 
+/// A caller that goes away loses nothing: the session's task retries with
+/// the same invoke ID and records the answer once.
 #[tokio::test(start_paused = true)]
 async fn source_read_dropped_waiter_retries_once_per_logical_request() {
     let (peer, mut requests) = network().await;
@@ -444,8 +490,9 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
     let mut session = session(database(false), SessionRole::Both, &sink);
     session.client_config.apdu_retries = 1;
     session.start().await.unwrap();
+    let client = client_of(&session);
     let read = start_read(
-        &session,
+        &client,
         peer.local_mac(),
         PropertyIdentifier::PRESENT_VALUE,
         None,
@@ -455,7 +502,7 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
     read.abort();
     let _ = read.await;
     let second = receive(&mut requests).await;
-    assert_eq!(read_request(&second).0, invoke);
+    assert_eq!(second.apdu, first.apdu);
     send(&peer, &second.source_mac, ack(invoke, &rp)).await;
     let (record, _) = notification(&receive(&mut records).await, false);
     assert_eq!(record.invoke_id, Some(invoke));
@@ -466,6 +513,10 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
             .await
             .is_err()
     );
+    eventually(WAIT, "the invoke ID is free", async || {
+        session.coordinator.active_count().unwrap() == 0
+    })
+    .await;
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
@@ -604,13 +655,12 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     db.add(Box::new(local)).unwrap();
     let mut session = session(db, SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
+    let client = client_of(&session);
     for property in [
         PropertyIdentifier::AUDITABLE_OPERATIONS,
         PropertyIdentifier::PRESENT_VALUE,
     ] {
-        let result = session
-            .client()
-            .unwrap()
+        let result = client
             .read_property(remote_server.local_mac(), target(), property, None)
             .await
             .unwrap();

@@ -1,18 +1,83 @@
-use super::dispatch_context::{DispatchContext, InboundApdu};
+use super::dispatch_context::{AnswerSource, DispatchContext, InboundApdu};
 use super::response_admission::{
     TerminalDispatchOutcome, TerminalResponse, admit_terminal_during_reassembly,
-    complete_terminal_response, current_reassembly_owner, log_coordinated_mismatch,
-    take_current_reassembly,
+    complete_terminal_response, log_coordinated_mismatch, take_current_reassembly,
 };
 use super::segmentation_context::InboundSegmentSource;
 use super::*;
-use crate::tsm::{CompletionOutcome, CoordinatedCompletion};
 use bacnet_network::layer::ReceivedApdu;
 
+#[path = "dispatch_answers.rs"]
+mod answers;
+#[cfg(test)]
+#[path = "dispatch_order_tests.rs"]
+mod order_tests;
+
 impl<T: TransportPort + 'static> BACnetClient<T> {
+    /// Whether a routed `answer` from link station `from` is refused for the
+    /// path it came by (#2831), counted in
+    /// [`BACnetClient::off_path_answer_drops`]. One relayed with this
+    /// network as its SNET, for a request sent straight to the station it
+    /// names, is not that station's own answer. One for a request through a
+    /// router counts only from that router. A client on a router's
+    /// application port names no router (the router's own table routes its
+    /// requests), so its answers are not checked for one. Out of line: only
+    /// a routed answer comes here.
+    #[inline(never)]
+    fn refused_for_its_path(
+        context: &DispatchContext<'_, T>,
+        from: &[u8],
+        answer: &TransactionPeer,
+        invoke_id: u8,
+    ) -> bool {
+        let CanonicalPeer::Routed { network: snet, .. } = answer.canonical else {
+            return false;
+        };
+        let local_network = context.network.local_network_number().get();
+        if answer.relays_for_a_direct_request(context.tsm, local_network, invoke_id) {
+            context.routed_path_limits.count_off_path_answer();
+            debug!(
+                invoke_id,
+                "Dropping an answer relayed for a request sent straight to its station"
+            );
+            return true;
+        }
+        if context.network.transport().attached_networks().is_empty()
+            && !context
+                .routed_path_limits
+                .answer_through(from, snet, &answer.tsm_mac, invoke_id)
+        {
+            debug!(
+                invoke_id,
+                "Dropping a routed device's answer from another station than its router"
+            );
+            return true;
+        }
+        false
+    }
+
     /// Dispatch a received APDU to the appropriate handler.
+    ///
+    /// The two answers a plain request's round trip takes, a SimpleACK and a
+    /// ComplexACK, are handled here; every other PDU type has a function of
+    /// its own (#2558): the other answers' in `dispatch_answers.rs`, the
+    /// requests' below. The two stay inline because a call into a future of
+    /// their own cost each ReadProperty, WriteProperty and
+    /// ReadPropertyMultiple round trip 28 to 44 more instructions in the
+    /// counting harness (`scripts/perf/perf_counts.py` against 38bb02c02),
+    /// 14 of them the child future's drop glue.
+    ///
+    /// The dispatch loop awaits this before it takes the next frame, so each
+    /// frame's effects come before the next frame's, except what a frame
+    /// hands to the reassembly task (`hand_off_segment`, `hand_off_abort`,
+    /// #2646), which runs out of line. Two orders the stack
+    /// relies on (#2603) live in what the request functions call: an I-Am's
+    /// device events go out under the discovery table's lock
+    /// (`device_events::heard_i_am`), and a confirmed COV notification's
+    /// event is published before its acknowledgment is sent
+    /// (`receive_confirmed_cov_notification`).
     pub(super) async fn dispatch_apdu(
-        context: DispatchContext<'_, T>,
+        context: &DispatchContext<'_, T>,
         seg_state: &mut HashMap<SegKey, SegmentedReceiveState>,
         inbound: InboundApdu<'_>,
         apdu: Apdu,
@@ -20,20 +85,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ) {
         let DispatchContext {
             tsm,
-            device_table,
             network,
-            cov_tx,
-            event_tx,
-            confirmed_cov_ack_policy,
-            cov_registry,
-            cov_segments,
-            device_tx,
-            device_collision_tx,
-            i_have_tx,
-            seg_ack_senders,
-            decode_warning,
             response_warning,
-        } = context;
+            ..
+        } = *context;
         let InboundApdu {
             source_mac,
             source_network,
@@ -44,17 +99,19 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         } = inbound;
         // Each arm moves `tsm_mac` into its reassembly key and borrows it
         // back: cloning a `MacAddr` copies it a byte at a time (#1978).
+        let answer = TransactionPeer::of_answer(source_mac, source_network.as_ref());
+        // A routed answer counts only by the path its request took: its SNET
+        // and SADR are its sender's word (#2831).
+        if matches!(answer.canonical, CanonicalPeer::Routed { .. })
+            && let Some(invoke_id) = answers_own_request(&apdu)
+            && Self::refused_for_its_path(context, source_mac, &answer, invoke_id)
+        {
+            return;
+        }
         let TransactionPeer {
             tsm_mac,
             canonical: canonical_peer,
-        } = TransactionPeer::of_answer_in(
-            tsm,
-            source_mac,
-            source_network.as_ref(),
-            network.local_network_number().get(),
-            &apdu,
-        )
-        .await;
+        } = answer;
         match apdu {
             Apdu::SimpleAck(ack) => {
                 // Mid-reassembly, a SimpleACK is in Clause 5.4.4.4
@@ -210,435 +267,263 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 }
             }
             Apdu::Error(err) => {
-                // Mid-reassembly, an Error PDU is Clause 5.4.4.4
-                // UnexpectedPDU_Received — "BACnet-Error-PDU" is in its list —
-                // so the local surface is an ABORT.indication with
-                // INVALID_APDU_IN_THIS_STATE, not the error content (#367).
-                // Checked before the TSM lock below: `abort_reassembly` takes
-                // that lock itself, and tokio's Mutex is not reentrant.
-                let key = (tsm_mac, err.invoke_id, provenance);
-                let tsm_mac = &key.0;
-                let coordinator_apdu = Apdu::Error(err.clone());
-                admit_terminal_during_reassembly(
-                    tsm,
-                    seg_state,
-                    &key,
-                    &canonical_peer,
-                    &coordinator_apdu,
-                )
-                .await;
-                if let Some(state) = take_current_reassembly(tsm, seg_state, &key).await {
-                    debug!(
-                        invoke_id = err.invoke_id,
-                        "Aborting reassembly on an Error PDU"
-                    );
-                    Self::abort_reassembly(
-                        tsm,
-                        network,
-                        state.abort_target(tsm_mac),
-                        err.invoke_id,
-                        bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
-                    )
-                    .await;
-                    return;
-                }
-                debug!(invoke_id = err.invoke_id, "Received Error PDU");
-                // Correlated by invoke ID alone. Unlike 20.1.4.2 and 20.1.5.6,
-                // Clause 20.1.7.2 imposes no correspondence to the requested
-                // service: error-choice identifies the selected BACnet-Error
-                // alternative by tag, and Clause 21 opens that production with
-                // `other [127] Error`. Nothing in the Standard forbids a peer
-                // from answering through that tag, so an exact-match gate here
-                // would reject conformant responses.
-                match complete_terminal_response(
-                    tsm,
-                    TerminalResponse {
-                        tsm_mac,
-                        invoke_id: err.invoke_id,
-                        peer: &canonical_peer,
-                        apdu: &coordinator_apdu,
-                        response: TsmResponse::from_error_pdu(&err),
-                        phase_gate: true,
-                        owner: None,
-                    },
-                )
-                .await
-                {
-                    TerminalDispatchOutcome::Completion(_) => {}
-                    TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
-                        Self::send_client_abort(
-                            network,
-                            source_mac,
-                            source_network,
-                            err.invoke_id,
-                            bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
-                        )
-                        .await;
-                    }
-                }
+                let answer = AnswerSource {
+                    source_mac,
+                    source_network,
+                    provenance,
+                    tsm_mac,
+                    canonical_peer,
+                };
+                Self::dispatch_error(context, seg_state, answer, err).await;
             }
             Apdu::Reject(rej) => {
-                // Same Clause 5.4.4.4 UnexpectedPDU_Received diversion as the
-                // Error arm above ("BACnet-Reject-PDU" is in the same list),
-                // with the same lock-ordering constraint (#367).
-                let key = (tsm_mac, rej.invoke_id, provenance);
-                let tsm_mac = &key.0;
-                let coordinator_apdu = Apdu::Reject(rej.clone());
-                admit_terminal_during_reassembly(
-                    tsm,
-                    seg_state,
-                    &key,
-                    &canonical_peer,
-                    &coordinator_apdu,
-                )
-                .await;
-                if let Some(state) = take_current_reassembly(tsm, seg_state, &key).await {
-                    debug!(
-                        invoke_id = rej.invoke_id,
-                        "Aborting reassembly on a Reject PDU"
-                    );
-                    Self::abort_reassembly(
-                        tsm,
-                        network,
-                        state.abort_target(tsm_mac),
-                        rej.invoke_id,
-                        bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
-                    )
-                    .await;
-                    return;
-                }
-                debug!(invoke_id = rej.invoke_id, "Received Reject PDU");
-                // Carries no service choice (Clause 20.1.8); invoke ID is the
-                // only correlation the Standard provides.
-                let _ = complete_terminal_response(
-                    tsm,
-                    TerminalResponse {
-                        tsm_mac,
-                        invoke_id: rej.invoke_id,
-                        peer: &canonical_peer,
-                        apdu: &coordinator_apdu,
-                        response: TsmResponse::remote(rej.remote_error()),
-                        phase_gate: false,
-                        owner: None,
-                    },
-                )
-                .await;
+                let answer = AnswerSource {
+                    source_mac,
+                    source_network,
+                    provenance,
+                    tsm_mac,
+                    canonical_peer,
+                };
+                Self::dispatch_reject(context, seg_state, answer, rej).await;
             }
             Apdu::Abort(abt) => {
-                // Clause 5.4.4.3 AbortPDU_Received fires only for an Abort
-                // with `server` = TRUE. An Abort this client
-                // itself sent — 5.4.4.4 emits them with 'server' = FALSE —
-                // must not, echoed back or spoofed, complete the very
-                // transaction it was trying to abort.
-                if !abt.sent_by_server {
-                    Self::hand_off_abort(
-                        tsm,
-                        source_mac,
-                        source_network,
-                        abt.invoke_id,
-                        &provenance,
-                    );
-                    return;
-                }
-                // Clause 5.4.4.4 AbortPDU_Received delivers ABORT.indication
-                // locally and returns to IDLE —
-                // ending the reassembly session is the IDLE half, and no
-                // reply PDU is prescribed (#367). This removal must stay
-                // below the server=FALSE guard above, or an echoed copy of
-                // this client's own Abort would tear down a healthy
-                // reassembly. Behaviorally redundant with the per-segment
-                // pending gate in `handle_segmented_complex_ack` — a later
-                // segment would find no transaction and clear the session
-                // anyway — so no test can pin this line alone; it is kept so
-                // the slot frees at the Abort, not at the peer's next move.
-                let key = (tsm_mac, abt.invoke_id, provenance);
-                let tsm_mac = &key.0;
-                let reassembly_owner = current_reassembly_owner(tsm, seg_state, &key).await;
-                debug!(invoke_id = abt.invoke_id, "Received Abort PDU");
-                // Carries no service choice (Clause 20.1.9).
-                let response = TsmResponse::remote(abt.remote_error());
-                let coordinator_apdu = Apdu::Abort(abt.clone());
-                let outcome = complete_terminal_response(
-                    tsm,
-                    TerminalResponse {
-                        tsm_mac,
-                        invoke_id: abt.invoke_id,
-                        peer: &canonical_peer,
-                        apdu: &coordinator_apdu,
-                        response,
-                        phase_gate: false,
-                        owner: reassembly_owner.clone(),
-                    },
-                )
-                .await;
-                if matches!(
-                    outcome,
-                    TerminalDispatchOutcome::Completion(CoordinatedCompletion::Completed(
-                        CompletionOutcome::Delivered
-                    ))
-                ) && let Some(owner) = reassembly_owner
-                    && seg_state
-                        .get(&key)
-                        .is_some_and(|state| state.owner.same_as(&owner))
-                {
-                    seg_state.remove(&key);
-                }
+                let answer = AnswerSource {
+                    source_mac,
+                    source_network,
+                    provenance,
+                    tsm_mac,
+                    canonical_peer,
+                };
+                Self::dispatch_abort(context, seg_state, answer, abt).await;
             }
             Apdu::ConfirmedRequest(req) => {
                 let reply = InboundReply::new(response_route, reply_tx);
-                if is_group {
-                    debug!(
-                        invoke_id = req.invoke_id,
-                        service = req.service_choice.to_raw(),
-                        "Ignoring group-addressed ConfirmedRequest"
-                    );
-                    return;
-                }
-                if req.segmented {
-                    if let Some(settings) = cov_segments
-                        && is_confirmed_cov_notification(req.service_choice)
-                    {
-                        Self::hand_off_segment(
-                            request_reassembly::HandOff {
-                                tsm,
-                                network,
-                                cov_tx,
-                                registry: cov_registry,
-                                policy: confirmed_cov_ack_policy,
-                                limits,
-                            },
-                            settings,
-                            source_mac,
-                            source_network,
-                            reply,
-                            req,
-                        );
-                        return;
-                    }
-                    Self::send_server_abort(
-                        network,
-                        source_mac,
-                        source_network,
-                        reply,
-                        req.invoke_id,
-                        bacnet_types::enums::AbortReason::SEGMENTATION_NOT_SUPPORTED,
-                    )
-                    .await;
-                    return;
-                }
-                if is_confirmed_cov_notification(req.service_choice) {
-                    Self::receive_confirmed_cov_notification(
-                        network,
-                        cov_tx,
-                        confirmed_cov_ack_policy,
-                        cov_registry.map(Arc::as_ref),
-                        source_mac,
-                        source_network,
-                        reply,
-                        req,
-                        decode_warning,
-                    )
-                    .await;
-                } else if req.service_choice == ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION
-                {
-                    Self::receive_confirmed_event_notification(
-                        network,
-                        event_tx,
-                        source_mac,
-                        source_network,
-                        reply,
-                        req,
-                        decode_warning,
-                    )
-                    .await;
-                } else {
-                    debug!(
-                        service = req.service_choice.to_raw(),
-                        "Rejecting unsupported ConfirmedRequest (client mode)"
-                    );
-                    Self::send_confirmed_request_reject(
-                        network,
-                        source_mac,
-                        source_network,
-                        reply,
-                        req.invoke_id,
-                        RejectReason::UNRECOGNIZED_SERVICE,
-                    )
-                    .await;
-                }
-            }
-            Apdu::UnconfirmedRequest(req) => {
-                if req.service_choice == UnconfirmedServiceChoice::I_AM {
-                    match bacnet_services::who_is::IAmRequest::decode(&req.service_request) {
-                        Ok(i_am) => {
-                            debug!(
-                                device = i_am.object_identifier.instance_number(),
-                                vendor = i_am.vendor_id,
-                                "Received IAm"
-                            );
-                            let routed_while_unknown = device_events::heard_i_am(
-                                &device_table.table,
-                                device_events::IAmSource {
-                                    mac: source_mac,
-                                    network: source_network,
-                                    this_network: network.local_network_number(),
-                                },
-                                &i_am,
-                                (device_tx, device_collision_tx),
-                            );
-                            // A routed row stored while the number is
-                            // unknown may be a local device's twin: ask
-                            // (#2572), through the Number owner.
-                            if routed_while_unknown {
-                                device_table.asking.want();
-                            }
-                        }
-                        Err(e) => {
-                            warn_throttled!(decode_warning, error = %e, "Failed to decode IAm");
-                        }
-                    }
-                } else if req.service_choice
-                    == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION
-                    || req.service_choice
-                        == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE
-                {
-                    cov_notifications::receive_unconfirmed_cov_notification(
-                        cov_tx,
-                        source_mac,
-                        source_network,
-                        &req.service_request,
-                        req.service_choice,
-                        decode_warning,
-                    );
-                } else if req.service_choice
-                    == UnconfirmedServiceChoice::UNCONFIRMED_EVENT_NOTIFICATION
-                {
-                    event_notifications::receive_unconfirmed_event_notification(
-                        event_tx,
-                        source_mac,
-                        source_network,
-                        &req.service_request,
-                        decode_warning,
-                    );
-                } else if req.service_choice == UnconfirmedServiceChoice::I_HAVE {
-                    i_have::deliver(
-                        i_have_tx,
-                        source_mac,
-                        source_network,
-                        &req.service_request,
-                        decode_warning,
-                    );
-                } else {
-                    debug!(
-                        service = req.service_choice.to_raw(),
-                        "Ignoring unconfirmed service in client dispatch"
-                    );
-                }
-            }
-            Apdu::SegmentAck(sa) => {
-                // Clause 5.4.4.2 gates DuplicateACK_Received, NewACK_Received
-                // and FinalACK_Received on the 'server' parameter being TRUE.
-                // A SegmentACK this client sent while receiving a segmented
-                // response carries server=FALSE and must not be fed back into
-                // its own segmented send.
-                //
-                // This check must stay ahead of the Abort below. A client
-                // emits SegmentACKs with 'server' = FALSE, so if the order
-                // were reversed, two of these clients exchanging a segmented
-                // ConfirmedCOVNotification would answer each other's
-                // SegmentACKs with Aborts indefinitely. Dropping them here is
-                // what keeps the Abort reachable only by a *server's* PDU.
-                if !sa.sent_by_server {
-                    debug!(
-                        invoke_id = sa.invoke_id,
-                        "Ignoring SegmentAck with server=FALSE"
-                    );
-                    return;
-                }
-                let invoke_id = sa.invoke_id;
-                let key = (tsm_mac, invoke_id, provenance);
-                let tsm_mac = &key.0;
-
-                // SEGMENTED_CONF (5.4.4.4) `UnexpectedPDU_Received` lists
-                // a server-side BACnet-SegmentACK-PDU among the inappropriate
-                // PDUs. The response has three parts: send a client-side
-                // BACnet-Abort-PDU (`server` = FALSE), raise ABORT.indication to
-                // the local user carrying `abort-reason` INVALID_APDU_IN_THIS_STATE
-                // (again `server` = FALSE), and go back to IDLE.
-                //
-                // Receive state is checked before the outgoing phase because
-                // SEGMENTED_CONF gives this PDU the opposite disposition.
-                if let Some(state) = take_current_reassembly(tsm, seg_state, &key).await {
-                    debug!(invoke_id, "Aborting reassembly on an unexpected SegmentAck");
-                    // The stored identity, not this PDU's source. A key match
-                    // already forces the inbound SNET/SADR to equal the
-                    // stored pair (the key is derived from it), but the
-                    // immediate MAC can diverge — a second router to the same
-                    // peer — and reading both from the state keeps the
-                    // (reply_mac, reply_network) pair consistent.
-                    Self::abort_reassembly(
-                        tsm,
-                        network,
-                        state.abort_target(tsm_mac),
-                        invoke_id,
-                        bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
-                    )
-                    .await;
-                    return;
-                }
-
-                // Hold the TSM lock through the route lookup and try_send.
-                // Terminal completion uses this same lock, so a raw sender
-                // entry cannot outlive the authoritative phase for delivery.
-                // Both locks are blocking ones, released before any await.
-                let coordinator_apdu = Apdu::SegmentAck(sa.clone());
-                let outstanding = {
-                    let tsm_guard = tsm.lock();
-                    match tsm_guard.coordinated_segment_ack_phase(
-                        tsm_mac,
-                        invoke_id,
-                        &canonical_peer,
-                        &coordinator_apdu,
-                    ) {
-                        SegmentAckPhase::SegmentedRequest(owner) => {
-                            // Lock order is TSM then SegmentACK routes. Setup and
-                            // cleanup never hold both locks. Compat mode: SegmentACK
-                            // delivery stays provenance-agnostic (RB-09 later).
-                            let send_key = (MacAddr::from_slice(tsm_mac), invoke_id);
-                            let senders = seg_ack_senders.lock();
-                            if let Some(route) = senders
-                                .get(&send_key)
-                                .filter(|route| route.owner.same_as(&owner))
-                            {
-                                let _ = route.sender.try_send(sa);
-                            }
-                            return;
-                        }
-                        SegmentAckPhase::Outstanding => true,
-                        SegmentAckPhase::CoordinatorRejected => return,
-                        SegmentAckPhase::Idle => false,
-                    }
-                };
-                if outstanding {
-                    debug!(
-                        invoke_id,
-                        "Discarding duplicate SegmentAck for an outstanding transaction"
-                    );
-                    return;
-                }
-
-                // IDLE (5.4.4.1) `UnexpectedSegmentInfoReceived`: nothing is
-                // outstanding, so a server SegmentACK earns a client Abort.
-                debug!(invoke_id, "Aborting SegmentAck received while idle");
-                Self::send_client_abort(
-                    network,
+                Self::dispatch_confirmed_request(
+                    context,
                     source_mac,
                     source_network,
-                    invoke_id,
-                    bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
+                    reply,
+                    is_group,
+                    req,
+                    limits,
                 )
                 .await;
             }
+            Apdu::UnconfirmedRequest(req) => {
+                Self::dispatch_unconfirmed_request(context, source_mac, source_network, req);
+            }
+            Apdu::SegmentAck(sa) => {
+                let answer = AnswerSource {
+                    source_mac,
+                    source_network,
+                    provenance,
+                    tsm_mac,
+                    canonical_peer,
+                };
+                Self::dispatch_segment_ack(context, seg_state, answer, sa).await;
+            }
+        }
+    }
+
+    /// A confirmed request, which the client executes only when it is a
+    /// notification: a segment goes to the reassembly task (or draws an
+    /// Abort), and any other service is rejected.
+    async fn dispatch_confirmed_request(
+        context: &DispatchContext<'_, T>,
+        source_mac: &[u8],
+        source_network: &Option<NpduAddress>,
+        reply: InboundReply,
+        is_group: bool,
+        req: ConfirmedRequestPdu,
+        limits: ResponseLimits,
+    ) {
+        // Any frame a routed row's own router carries from the device keeps
+        // the row young (#2823).
+        if source_network.is_some() {
+            device_events::heard_routed(&context.device_table.table, source_mac, source_network);
+        }
+        let DispatchContext {
+            tsm,
+            network,
+            cov_tx,
+            event_tx,
+            confirmed_cov_ack_policy,
+            decode_warning,
+            ..
+        } = *context;
+        if is_group {
+            debug!(
+                invoke_id = req.invoke_id,
+                service = req.service_choice.to_raw(),
+                "Ignoring group-addressed ConfirmedRequest"
+            );
+            return;
+        }
+        if req.segmented {
+            // A client that receives segments hands the segment to
+            // its reassembly task (#2646), out of line.
+            if limits.segmented_response_accepted {
+                Self::hand_off_segment(
+                    request_reassembly::HandOff {
+                        tsm,
+                        network,
+                        cov_tx,
+                        event_tx,
+                        policy: confirmed_cov_ack_policy,
+                        registry: context.cov_registry,
+                        hold: context.reassembly_hold,
+                        limits,
+                    },
+                    source_mac,
+                    source_network,
+                    reply,
+                    req,
+                );
+                return;
+            }
+            Self::send_server_abort(
+                network,
+                source_mac,
+                source_network,
+                reply,
+                req.invoke_id,
+                bacnet_types::enums::AbortReason::SEGMENTATION_NOT_SUPPORTED,
+            )
+            .await;
+            return;
+        }
+        if is_confirmed_cov_notification(req.service_choice) {
+            Self::receive_confirmed_cov_notification(
+                network,
+                cov_tx,
+                confirmed_cov_ack_policy,
+                context.cov_registry.map(Arc::as_ref),
+                source_mac,
+                source_network,
+                reply,
+                req,
+                decode_warning,
+            )
+            .await;
+        } else if req.service_choice == ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION {
+            Self::receive_confirmed_event_notification(
+                network,
+                event_tx,
+                source_mac,
+                source_network,
+                reply,
+                req,
+                decode_warning,
+            )
+            .await;
+        } else {
+            debug!(
+                service = req.service_choice.to_raw(),
+                "Rejecting unsupported ConfirmedRequest (client mode)"
+            );
+            Self::send_confirmed_request_reject(
+                network,
+                source_mac,
+                source_network,
+                reply,
+                req.invoke_id,
+                RejectReason::UNRECOGNIZED_SERVICE,
+            )
+            .await;
+        }
+    }
+
+    /// An unconfirmed request: an I-Am goes into the discovery table, a
+    /// notification or an I-Have to its subscribers, and the rest is
+    /// ignored. Nothing here waits.
+    fn dispatch_unconfirmed_request(
+        context: &DispatchContext<'_, T>,
+        source_mac: &[u8],
+        source_network: &Option<NpduAddress>,
+        req: bacnet_encoding::apdu::UnconfirmedRequest,
+    ) {
+        let DispatchContext {
+            device_table,
+            network,
+            cov_tx,
+            event_tx,
+            device_tx,
+            device_collision_tx,
+            i_have_tx,
+            decode_warning,
+            ..
+        } = *context;
+        // Any frame a routed row's own router carries from the device keeps
+        // the row young (#2823); an I-Am is taken into the table below.
+        if source_network.is_some() && req.service_choice != UnconfirmedServiceChoice::I_AM {
+            device_events::heard_routed(&device_table.table, source_mac, source_network);
+        }
+        if req.service_choice == UnconfirmedServiceChoice::I_AM {
+            match bacnet_services::who_is::IAmRequest::decode(&req.service_request) {
+                Ok(i_am) => {
+                    debug!(
+                        device = i_am.object_identifier.instance_number(),
+                        vendor = i_am.vendor_id,
+                        "Received IAm"
+                    );
+                    let wants = device_events::heard_i_am(
+                        &device_table.table,
+                        device_events::IAmSource {
+                            mac: source_mac,
+                            network: source_network,
+                            this_network: network.local_network_number(),
+                        },
+                        &i_am,
+                        (device_tx, device_collision_tx),
+                    );
+                    // A routed row stored while the number is
+                    // unknown may be a local device's twin: ask
+                    // (#2572), through the Number owner.
+                    if wants.number {
+                        device_table.asking.want();
+                    }
+                    // A routed row named through another station:
+                    // the purge task checks the path (#2823).
+                    if wants.route_check {
+                        device_table.route_cue.notify_one();
+                    }
+                }
+                Err(e) => {
+                    warn_throttled!(decode_warning, error = %e, "Failed to decode IAm");
+                }
+            }
+        } else if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION
+            || req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE
+        {
+            cov_notifications::receive_unconfirmed_cov_notification(
+                cov_tx,
+                source_mac,
+                source_network,
+                &req.service_request,
+                req.service_choice,
+                decode_warning,
+            );
+        } else if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_EVENT_NOTIFICATION {
+            event_notifications::receive_unconfirmed_event_notification(
+                event_tx,
+                source_mac,
+                source_network,
+                &req.service_request,
+                decode_warning,
+            );
+        } else if req.service_choice == UnconfirmedServiceChoice::I_HAVE {
+            i_have::deliver(
+                i_have_tx,
+                source_mac,
+                source_network,
+                &req.service_request,
+                decode_warning,
+            );
+        } else {
+            debug!(
+                service = req.service_choice.to_raw(),
+                "Ignoring unconfirmed service in client dispatch"
+            );
         }
     }
 
@@ -677,6 +562,22 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     }
 }
 
+/// The invoke ID of an answer to one of this client's own requests: an
+/// acknowledgment, an Error, a Reject, or a server's Abort or Segment-ACK.
+/// A client's Abort or Segment-ACK belongs to a request this client is
+/// answering, and is `None`, as is every request.
+fn answers_own_request(apdu: &Apdu) -> Option<u8> {
+    match apdu {
+        Apdu::SimpleAck(ack) => Some(ack.invoke_id),
+        Apdu::ComplexAck(ack) => Some(ack.invoke_id),
+        Apdu::Error(error) => Some(error.invoke_id),
+        Apdu::Reject(reject) => Some(reject.invoke_id),
+        Apdu::Abort(abort) if abort.sent_by_server => Some(abort.invoke_id),
+        Apdu::SegmentAck(ack) if ack.sent_by_server => Some(ack.invoke_id),
+        _ => None,
+    }
+}
+
 /// Whether `service` is a confirmed COV notification, of one object or of
 /// several (Clauses 13.7 and 13.17).
 fn is_confirmed_cov_notification(service: ConfirmedServiceChoice) -> bool {
@@ -706,7 +607,10 @@ pub(super) fn seated_client_answers(request: &ConfirmedRequestPdu) -> bool {
 
 /// A confirmed request that reached a seated client beside a server role and
 /// is the server's to answer. A ConfirmedEventNotification is published to
-/// the client's subscribers; the client sends nothing either way.
+/// the client's subscribers: the copy ingress makes of one that comes whole,
+/// or the whole one the server hands on once it has reassembled its segments
+/// (#2743). A segment alone is never published. The client sends nothing
+/// either way.
 pub(super) fn heard_for_the_server(
     event_tx: &broadcast::Sender<ReceivedEventNotification>,
     received: &ReceivedApdu,

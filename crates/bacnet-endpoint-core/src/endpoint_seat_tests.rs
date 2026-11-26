@@ -19,6 +19,8 @@ const EVENT_NOTIFICATION: &[u8] = &[0x00, 0x05, 0x23, 0x02];
 /// A first segment of a ConfirmedCOVNotification: the service choice sits
 /// after the sequence number and window size.
 const SEGMENTED_COV_NOTIFICATION: &[u8] = &[0x0c, 0x05, 0x24, 0x00, 0x01, 0x01, 0xaa];
+/// A first segment of a ConfirmedEventNotification.
+const SEGMENTED_EVENT_NOTIFICATION: &[u8] = &[0x0c, 0x05, 0x25, 0x00, 0x01, 0x02, 0xaa];
 
 struct Seated {
     endpoint: EndpointIngress<TestTransport>,
@@ -124,6 +126,14 @@ async fn beside_a_server_only_its_own_notifications_are_the_seats() {
     assert_eq!(copy.apdu.as_ref(), EVENT_NOTIFICATION);
     assert!(copy.reply_tx.is_none());
     assert_quiet(&mut seated);
+
+    // Of one in segments the client hears nothing segment by segment: the
+    // server hands it the whole request once reassembled (#2743).
+    let _reply = inject_expecting_reply(&seated.link, SEGMENTED_EVENT_NOTIFICATION).await;
+    let served = receive(&mut seated.ingress.inbound_requests).await;
+    assert_eq!(served.apdu.as_ref(), SEGMENTED_EVENT_NOTIFICATION);
+    assert!(served.reply_tx.is_some());
+    assert_quiet(&mut seated);
 }
 
 #[tokio::test]
@@ -143,10 +153,6 @@ async fn an_answer_goes_to_the_role_that_holds_its_lease_and_nothing_is_claimed(
     let mut seated = seated(true, 8).await;
     let coordinator = Arc::clone(&seated.coordinator);
     let client = coordinator.reserve(requester(&PEER)).unwrap();
-    let narrow = coordinator.reserve(requester(&PEER)).unwrap();
-    coordinator
-        .mark_endpoint_requester(narrow.invoke_id())
-        .unwrap();
     let server = coordinator
         .reserve(LeaseMetadata::notification(
             CanonicalPeer::direct(&PEER),
@@ -158,10 +164,6 @@ async fn an_answer_goes_to_the_role_that_holds_its_lease_and_nothing_is_claimed(
     assert_eq!(
         coordinator.holder_of(&peer, client.invoke_id()),
         Some(LeaseHolder::Client)
-    );
-    assert_eq!(
-        coordinator.holder_of(&peer, narrow.invoke_id()),
-        Some(LeaseHolder::EndpointRequester)
     );
     assert_eq!(
         coordinator.holder_of(&peer, server.invoke_id()),
@@ -219,15 +221,10 @@ async fn an_answer_goes_to_the_role_that_holds_its_lease_and_nothing_is_claimed(
         assert_quiet(&mut seated);
     }
 
-    // The endpoint requester's and the server role's answers, an answer for
-    // a lease another peer holds, and one no lease holds, all stay with the
-    // endpoint, which counts what nothing claims.
-    for id in [
-        narrow.invoke_id(),
-        server.invoke_id(),
-        elsewhere.invoke_id(),
-        200,
-    ] {
+    // The server role's answers, an answer for a lease another peer holds,
+    // and one no lease holds, all stay with the endpoint, which counts what
+    // nothing claims.
+    for id in [server.invoke_id(), elsewhere.invoke_id(), 200] {
         let apdu = [0x20, id, 0x0c];
         inject(&seated.link, &apdu).await;
         assert_eq!(
@@ -482,7 +479,11 @@ async fn one_client_at_a_time_and_a_seat_whose_client_is_gone_takes_nothing() {
         seat,
     } = seated(true, 8).await;
     let second = endpoint.client_seat(Arc::clone(&coordinator), SeatRoles::new(true), 8);
-    assert!(second.unwrap_err().to_string().contains("already has"));
+    assert!(matches!(
+        second.unwrap_err(),
+        Error::LimitReached(text)
+            if text.to_string() == "the endpoint already has a full client: drop it before making another"
+    ));
 
     // With the client gone its notification goes where it went before any
     // seat, and the endpoint takes another client.
@@ -500,15 +501,15 @@ async fn one_client_at_a_time_and_a_seat_whose_client_is_gone_takes_nothing() {
         receive(&mut again.apdus).await.apdu.as_ref(),
         COV_NOTIFICATION
     );
-    assert!(
-        endpoint
-            .client_seat(
-                Arc::new(OutboundTransactionCoordinator::new()),
-                SeatRoles::new(true),
-                0
-            )
-            .is_err()
-    );
+    assert!(matches!(
+        endpoint.client_seat(
+            Arc::new(OutboundTransactionCoordinator::new()),
+            SeatRoles::new(true),
+            0
+        ),
+        Err(Error::InvalidConfig(text))
+            if text.to_string() == "client seat queue capacity must be greater than zero"
+    ));
 }
 
 /// An I-Am-Router-To-Network for network 7, from [`PEER`].
@@ -654,9 +655,14 @@ async fn a_dropped_client_frees_the_seat_before_its_tasks_have_ended() {
     drop((seat, next));
 }
 
-/// The error a send through a stopped layer gets (#2617).
+/// The error a send through a stopped layer gets (#2617): its transport's
+/// stopped state (#1833), not running, since the test transport starts
+/// again.
 fn is_stopped(error: &Error) -> bool {
-    matches!(error, Error::Transport(io) if io.kind() == std::io::ErrorKind::NotConnected)
+    matches!(
+        error,
+        Error::State(bacnet_types::error::Lifecycle::NotRunning, _)
+    )
 }
 
 #[tokio::test]
@@ -676,11 +682,10 @@ async fn one_stop_stops_the_link_while_a_seat_still_keeps_the_layer() {
     ));
     assert_eq!(link.stops(), 1);
     assert!(seat.holds.hold().is_none());
-    assert!(
-        endpoint
-            .client_seat(coordinator, SeatRoles::new(true), 8)
-            .is_err()
-    );
+    assert!(matches!(
+        endpoint.client_seat(coordinator, SeatRoles::new(true), 8),
+        Err(Error::State(error::Lifecycle::Closed, _))
+    ));
     // The layer the seat still keeps has stopped: what goes through it,
     // or straight to its transport, fails as a stopped link's send does.
     let sent = link.counters.sent().len();

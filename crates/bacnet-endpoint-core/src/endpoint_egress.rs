@@ -70,7 +70,7 @@ impl From<EndpointEgressAdmissionError> for Error {
     fn from(error: EndpointEgressAdmissionError) -> Self {
         match error {
             EndpointEgressAdmissionError::QueueFull => {
-                Error::Encoding("endpoint egress queue is full".into())
+                Error::limit_reached("endpoint egress queue is full")
             }
             EndpointEgressAdmissionError::Closed => shutdown_error(),
         }
@@ -196,29 +196,6 @@ impl EndpointEgress {
         })
     }
 
-    /// Queue caller-owned work without a deadline. Dropping its completion retracts
-    /// queued work and cancels an in-progress transport future, whose wire outcome
-    /// may already be ambiguous. A session-owned caller can retain this same guard.
-    #[doc(hidden)]
-    pub fn admit_owned_apdu(
-        &self,
-        apdu: Vec<u8>,
-        destination: EndpointApduDestination,
-        expecting_reply: bool,
-        priority: NetworkPriority,
-        data_attributes: Vec<DataAttribute>,
-    ) -> Result<EndpointSend, EndpointEgressAdmissionError> {
-        self.admit(ApduAdmission {
-            apdu,
-            destination,
-            expecting_reply,
-            priority,
-            data_attributes,
-            deadline: None,
-            cancel_on_drop: true,
-        })
-    }
-
     fn admit(&self, send: ApduAdmission) -> Result<EndpointSend, EndpointEgressAdmissionError> {
         let ApduAdmission {
             apdu,
@@ -259,8 +236,8 @@ impl EndpointEgress {
             || npdu[5] > 1
             || matches!(u16::from_be_bytes([npdu[3], npdu[4]]), 0 | 65535)
         {
-            return Err(Error::Encoding(
-                "invalid local Network-Number-Is NPDU".into(),
+            return Err(Error::invalid_argument(
+                "invalid local Network-Number-Is NPDU",
             ));
         }
         if !self.is_open() {

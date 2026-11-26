@@ -35,9 +35,12 @@ fn transit_checks_the_resolved_port_for_unicast_remote_and_global_broadcasts() {
     let mut r = configured(Options::HOSTED);
     learn_9_via_r7(&mut r, at(0));
     for (from, network) in [(1, 3), (2, 2), (2, 9)] {
-        for mac in [&[7][..], &[]] {
-            assert!(sends(&mut r, from, &apdu_to(network, mac, UNCONFIRMED)).is_empty());
-        }
+        // One node there: only the reject, back to the sender (the exact
+        // frames are in isolation_wire.rs). A broadcast: nothing.
+        let sent = sends(&mut r, from, &apdu_to(network, &[7], UNCONFIRMED));
+        assert_eq!(egress(&sent), [from]);
+        assert!(matches!(sent[0].kind, Kind::Reject(_)));
+        assert!(sends(&mut r, from, &apdu_to(network, &[], UNCONFIRMED)).is_empty());
     }
     for (from, network, to) in [(0, 2, 1), (0, 3, 2), (1, 1, 0), (2, 1, 0), (0, 9, 1)] {
         assert_eq!(
@@ -104,10 +107,6 @@ fn startup_announcements_do_not_expose_other_isolated_ports() {
     r.start();
     let sent = drain(&mut r);
     assert_eq!(egress(&sent), [0, 1]);
-    assert!(r.announce_port(bacnet_router_core::PortId(0)));
-    let recovery = drain(&mut r);
-    assert_eq!(egress(&recovery), [0]);
-    assert_eq!(recovery[0].kind, Kind::Announce(Msg::NETWORK_NUMBER_IS));
     assert!(
         sent.iter()
             .all(|s| s.kind == Kind::Announce(Msg::NETWORK_NUMBER_IS))
@@ -260,17 +259,4 @@ fn an_isolated_request_with_no_egress_leaves_discovery_available_to_local_origin
     assert!(r.discovery().is_empty());
     assert_eq!(r.counters().solicitations, 0);
     assert_eq!(search_ports(&mut r, None, at(1)), [0, 1]);
-}
-
-#[test]
-fn routed_table_query_to_another_isolated_port_stays_hidden() {
-    let mut r = configured(Options::HOSTED);
-    let query = bytes(&Npdu {
-        destination: Some(addr(3, &[3])),
-        ..Npdu::message(Msg::INITIALIZE_ROUTING_TABLE, &[0])
-    });
-    assert!(sends(&mut r, 1, &query).is_empty());
-    let answer = sends(&mut r, 0, &query);
-    assert_eq!(answer.len(), 1);
-    assert_eq!(answer[0].parsed().source, Some(addr(3, &[3])));
 }

@@ -161,8 +161,8 @@ async fn sender_records_forward_success_and_error_per_port() {
             TestTransport::builder()
                 .on_send(move |_| async move {
                     if fail {
-                        Err(bacnet_types::error::Error::Encoding(
-                            "injected send failure".into(),
+                        Err(bacnet_types::error::Error::Transport(
+                            std::io::Error::other("injected send failure"),
                         ))
                     } else {
                         Ok(())

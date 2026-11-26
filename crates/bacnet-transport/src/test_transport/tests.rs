@@ -295,7 +295,7 @@ async fn ignore_and_hook_errors_skip_built_in_controls() {
                 let refuse = flag.load(Ordering::SeqCst);
                 async move {
                     if refuse {
-                        Err(Error::Encoding("hook refused".into()))
+                        Err(Error::Transport(std::io::Error::other("hook refused")))
                     } else {
                         Ok(())
                     }
@@ -307,7 +307,7 @@ async fn ignore_and_hook_errors_skip_built_in_controls() {
     arm_controls(&handle);
     assert!(matches!(
         transport.send_unicast(&[1], &[2]).await,
-        Err(Error::Encoding(m)) if m == "hook refused"
+        Err(Error::Transport(m)) if m.to_string() == "hook refused"
     ));
     assert_eq!(handle.sent().len(), 1, "the refused send is recorded");
     refuse.store(false, Ordering::SeqCst);
@@ -336,14 +336,14 @@ async fn hooks_state_and_lifecycle() {
             async move {
                 assert_eq!(recorded, 1, "the frame is logged before the hook");
                 if frame.mac.as_slice() == [9] {
-                    return Err(Error::Encoding("hook refused".into()));
+                    return Err(Error::Transport(std::io::Error::other("hook refused")));
                 }
                 Ok(())
             }
         })
         .on_stop(move || {
             stop_count.fetch_add(1, Ordering::SeqCst);
-            async { Err(Error::Encoding("cleanup failed".into())) }
+            async { Err(Error::Transport(std::io::Error::other("cleanup failed"))) }
         })
         .on_drop(move || drop_flag.store(true, Ordering::SeqCst))
         .state(Arc::new(41_u32))
@@ -490,7 +490,7 @@ async fn lifecycle_counters_and_started_report() {
     let seen = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&seen);
     let mut transport = TestTransport::builder()
-        .start_gate(|| async { Err(Error::Encoding("no start".into())) })
+        .start_gate(|| async { Err(Error::Transport(std::io::Error::other("no start"))) })
         .on_started(move |_| {
             count.fetch_add(1, Ordering::SeqCst);
         })
@@ -519,7 +519,8 @@ async fn sends_fail_between_a_stop_and_the_next_start() {
     transport.send_unicast(&[1, 0], &[2]).await.unwrap();
     let transport = Arc::new(transport);
     Arc::clone(&transport).stop().await.unwrap();
-    let stopped = |sent: Result<(), Error>| matches!(sent, Err(Error::Transport(io)) if io.kind() == std::io::ErrorKind::NotConnected);
+    let stopped =
+        |sent: Result<(), Error>| matches!(sent, Err(Error::State(Lifecycle::NotRunning, _)));
     assert!(stopped(transport.send_unicast(&[1, 0], &[2]).await));
     assert!(
         stopped(transport.send_broadcast(&[1, 0]).await),
@@ -538,6 +539,38 @@ async fn sends_fail_between_a_stop_and_the_next_start() {
     assert_eq!(handle.sent().len(), 2, "a start opens the link again");
 }
 
+/// An abort through a shared reference fails every later send, as a stop
+/// does, and closes the `Fresh` channel; a start then waits for a stop
+/// (#2617).
+#[tokio::test]
+async fn sends_fail_after_an_abort_until_the_next_start() {
+    let mut transport = TestTransport::builder().start(StartMode::Fresh(4)).build();
+    let handle = transport.handle();
+    let mut received = transport.start().await.unwrap();
+    let transport = Arc::new(transport);
+    transport.abort();
+    let sent = transport.send_unicast(&[1, 0], &[2]).await;
+    assert!(
+        matches!(&sent, Err(Error::State(Lifecycle::NotRunning, _))),
+        "{sent:?}"
+    );
+    assert!(received.recv().await.is_none());
+    assert!(handle.sent().is_empty());
+    assert_eq!((handle.stops(), handle.aborts()), (0, 1));
+    let mut transport = Arc::into_inner(transport).unwrap();
+    assert!(
+        matches!(
+            transport.start().await,
+            Err(Error::State(Lifecycle::Stopping, _))
+        ),
+        "a start waits for a stop"
+    );
+    transport.stop().await.unwrap();
+    transport.start().await.unwrap();
+    transport.send_unicast(&[1, 0], &[2]).await.unwrap();
+    assert_eq!(handle.sent().len(), 1, "a start opens the link again");
+}
+
 /// Two stops at once run the stop hook once, and both return once it has
 /// finished; a stop after it runs nothing until a start, and one that
 /// failed is run again. Every call is counted (#2617).
@@ -554,7 +587,7 @@ async fn stops_at_once_run_the_hooks_once() {
             async move {
                 gate.notified().await;
                 match failing.load(Ordering::SeqCst) {
-                    true => Err(Error::Encoding("stop refused".into())),
+                    true => Err(Error::Transport(std::io::Error::other("stop refused"))),
                     false => Ok(()),
                 }
             }

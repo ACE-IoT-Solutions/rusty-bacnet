@@ -73,9 +73,9 @@ async fn send_message(ws: &LoopbackWebSocket, msg: &ScMessage) {
 }
 
 fn fail_random48_vmac() -> Result<Vmac, Error> {
-    Err(Error::Encoding(
-        "test Random-48 VMAC generation failure".into(),
-    ))
+    Err(Error::Transport(std::io::Error::other(
+        "test Random-48 VMAC generation failure",
+    )))
 }
 
 async fn wait_for_hub_vmac(conn: &Arc<Mutex<ScConnection>>, expected: Vmac, timeout: Duration) {
@@ -109,8 +109,7 @@ async fn primary_restore_duplicate_vmac_reseed_is_reused_by_next_probe() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 25,
             max_delay_ms: 25,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 
@@ -187,8 +186,7 @@ async fn primary_restore_reseed_failure_blocks_stale_restore_retry() {
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: 25,
             max_delay_ms: 25,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 
@@ -269,14 +267,13 @@ async fn primary_restore_attempts_start_one_interval_after_failover() {
             let dials = dial_tx.clone();
             async move {
                 let _ = dials.send(tokio::time::Instant::now());
-                Err::<LoopbackWebSocket, _>(Error::Encoding("primary hub still down".into()))
+                Err::<LoopbackWebSocket, _>(Error::Transport(std::io::Error::other("primary hub still down")))
             }
         })
         .with_reconnect(ScReconnectConfig {
             initial_delay_ms: INTERVAL.as_millis() as u64,
             max_delay_ms: INTERVAL.as_millis() as u64,
-            max_retries: 1,
-            retry_forever: false,
+            max_retries: Some(1),
         })
         .with_failover(failover_client);
 

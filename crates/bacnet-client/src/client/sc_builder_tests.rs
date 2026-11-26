@@ -75,7 +75,7 @@ async fn sc_client_builder_rejects_reserved_vmac_before_connect() {
 
     assert!(matches!(
         result,
-        Err(Error::Encoding(message)) if message.contains("unknown VMAC")
+        Err(Error::InvalidConfig(message)) if message.to_string().contains("unknown VMAC")
     ));
 
     if let Ok(Ok(data)) = timeout(Duration::from_millis(50), ws_hub.recv()).await {
@@ -106,7 +106,7 @@ fn sc_client_builder_rejects_broadcast_vmac_and_zero_device_uuid() {
         .validate_identity();
     assert!(matches!(
         broadcast,
-        Err(Error::Encoding(message)) if message.contains("broadcast VMAC")
+        Err(Error::InvalidConfig(message)) if message.to_string().contains("broadcast VMAC")
     ));
 
     let zero_uuid = BACnetClient::sc_builder()
@@ -114,7 +114,7 @@ fn sc_client_builder_rejects_broadcast_vmac_and_zero_device_uuid() {
         .validate_identity();
     assert!(matches!(
         zero_uuid,
-        Err(Error::Encoding(message)) if message.contains("device_uuid")
+        Err(Error::InvalidConfig(message)) if message.to_string().contains("device_uuid")
     ));
 }
 
@@ -128,15 +128,14 @@ async fn sc_client_builder_rejects_invalid_reconnect_before_tls_lookup() {
                 .reconnect(ScReconnectConfig {
                     initial_delay_ms,
                     max_delay_ms,
-                    max_retries,
-                    retry_forever: false,
+                    max_retries: Some(max_retries),
                 })
                 .build()
                 .await
                 .err()
                 .expect("invalid reconnect must fail");
             assert!(
-                matches!(&error, Error::OutOfRange(message) if message.contains("reconnect")),
+                matches!(&error, Error::InvalidConfig(message) if message.to_string().contains("reconnect")),
                 "expected reconnect error before TLS lookup, got {error:?}"
             );
         }
@@ -151,14 +150,12 @@ async fn sc_client_builder_valid_reconnect_preserves_missing_tls_error() {
         Some(ScReconnectConfig {
             initial_delay_ms: 1,
             max_delay_ms: 1,
-            max_retries: 0,
-            retry_forever: false,
+            max_retries: Some(0),
         }),
         Some(ScReconnectConfig {
             initial_delay_ms: 1,
             max_delay_ms: 2,
-            max_retries: u32::MAX,
-            retry_forever: false,
+            max_retries: Some(u32::MAX),
         }),
     ] {
         let mut builder = BACnetClient::sc_builder()
@@ -169,7 +166,7 @@ async fn sc_client_builder_valid_reconnect_preserves_missing_tls_error() {
         }
         assert!(matches!(
             builder.build().await,
-            Err(Error::Encoding(message)) if message == "SC client builder: tls_config is required"
+            Err(Error::InvalidConfig(message)) if message.to_string() == "SC client builder: tls_config is required"
         ));
     }
 }
@@ -182,12 +179,16 @@ struct RejectIoWebSocket {
 impl WebSocketPort for RejectIoWebSocket {
     async fn send(&self, _: &[u8]) -> Result<(), Error> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(Error::Encoding("unexpected WebSocket send".into()))
+        Err(Error::Transport(std::io::Error::other(
+            "unexpected WebSocket send",
+        )))
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(Error::Encoding("unexpected WebSocket receive".into()))
+        Err(Error::Transport(std::io::Error::other(
+            "unexpected WebSocket receive",
+        )))
     }
 }
 
@@ -208,8 +209,7 @@ async fn sc_client_test_builder_reconnect_preflight_drops_input_without_io() {
             .reconnect(ScReconnectConfig {
                 initial_delay_ms,
                 max_delay_ms,
-                max_retries: 0,
-                retry_forever: false,
+                max_retries: Some(0),
             })
             .build_with_websocket_for_test(RejectIoWebSocket {
                 calls: calls.clone(),
@@ -219,7 +219,7 @@ async fn sc_client_test_builder_reconnect_preflight_drops_input_without_io() {
             .err()
             .expect("invalid reconnect must fail");
         assert!(
-            matches!(&error, Error::OutOfRange(message) if message.contains("reconnect")),
+            matches!(&error, Error::InvalidConfig(message) if message.to_string().contains("reconnect")),
             "expected reconnect preflight error, got {error:?}"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -241,7 +241,7 @@ async fn sc_client_builder_npdu_limit_preflight_covers_all_build_paths() {
             builder().build_any().await.err().unwrap(),
         ] {
             assert!(
-                matches!(error, Error::OutOfRange(message) if message.contains("per-origin limit"))
+                matches!(error, Error::InvalidConfig(message) if message.to_string().contains("per-origin limit"))
             );
         }
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -255,7 +255,7 @@ async fn sc_client_builder_npdu_limit_preflight_covers_all_build_paths() {
             .err()
             .unwrap();
         assert!(
-            matches!(error, Error::OutOfRange(message) if message.contains("per-origin limit"))
+            matches!(error, Error::InvalidConfig(message) if message.to_string().contains("per-origin limit"))
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -270,7 +270,7 @@ async fn sc_client_builder_npdu_limit_preflight_covers_all_build_paths() {
             .err()
             .unwrap();
         assert!(
-            matches!(error, Error::Encoding(message) if message.contains("tls_config is required"))
+            matches!(error, Error::InvalidConfig(message) if message.to_string().contains("tls_config is required"))
         );
     }
 }

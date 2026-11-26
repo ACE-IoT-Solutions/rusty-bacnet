@@ -288,10 +288,15 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
                     await client.who_is()
                 except RuntimeError as error:
                     self.assertIn("closing", str(error))
+                    # A stop under way (#2819).
+                    self.assertIsInstance(error, rb.BacnetStateError)
+                    self.assertEqual(error.state, "stopping")
                     break
                 await asyncio.sleep(0.01)
-        with self.assertRaisesRegex(RuntimeError, "stopping"):
+        with self.assertRaisesRegex(RuntimeError, "stopping") as caught:
             await self.endpoint.client()
+        self.assertIsInstance(caught.exception, rb.BacnetStateError)
+        self.assertEqual(caught.exception.state, "stopping")
         read.cancel()
         await asyncio.gather(read, return_exceptions=True)
         await asyncio.wait_for(stop, 5)
@@ -359,7 +364,7 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         # open requests and releases the link, then the client closes.
         await asyncio.wait_for(self.endpoint.close(), 1.5)
         for read in reads:
-            with self.assertRaisesRegex(rb.BacnetError, "the client stopped while it waited"):
+            with self.assertRaisesRegex(rb.BacnetError, "after it went out, and the device may have carried it out"):
                 await asyncio.wait_for(read, 1)
         self.assertLess(loop.time() - started, 1.5)
         with self.assertRaisesRegex(RuntimeError, "ran on an endpoint"):

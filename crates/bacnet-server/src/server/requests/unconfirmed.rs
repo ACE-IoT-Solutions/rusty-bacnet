@@ -287,7 +287,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         {
             debug!("Received time synchronization request");
             let is_utc = req.service_choice == UnconfirmedServiceChoice::UTC_TIME_SYNCHRONIZATION;
-            if let Err(error) = apply_time_sync_request(
+            // The clock is set under a shared database guard, as every other
+            // writer of it holds the guard: so a request that writes both
+            // halves of the zone, holding it, can't have a synchronization
+            // judged between them (#2395). The observer runs after.
+            let requests = db.read().await;
+            let synced = synchronize_clock(
                 clock.map(Arc::as_ref),
                 config,
                 time_sync_limiter,
@@ -295,8 +300,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 is_utc,
                 received,
                 network.local_network_number().get(),
-            ) {
-                debug!(%error, is_utc, "Ignoring time synchronization request");
+            );
+            drop(requests);
+            match synced {
+                Ok(data) => report_time_sync(config, data),
+                Err(error) => debug!(%error, is_utc, "Ignoring time synchronization request"),
             }
         } else if req.service_choice == UnconfirmedServiceChoice::UNCONFIRMED_TEXT_MESSAGE {
             match handlers::handle_text_message(&req.service_request) {
@@ -368,6 +376,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     }
 }
 
+/// [`synchronize_clock`], then the observer, as the dispatcher runs them
+/// with no database guard to take: for the tests that drive it alone.
+#[cfg(test)]
 pub(super) fn apply_time_sync_request(
     clock: Option<&ServerClock>,
     config: &ServerConfig,
@@ -377,11 +388,36 @@ pub(super) fn apply_time_sync_request(
     received: &bacnet_network::layer::ReceivedApdu,
     local_network: Option<u16>,
 ) -> Result<(), Error> {
+    let data = synchronize_clock(
+        clock,
+        config,
+        limiter,
+        raw_service_data,
+        is_utc,
+        received,
+        local_network,
+    )?;
+    report_time_sync(config, data);
+    Ok(())
+}
+
+/// Judge a time synchronization and set the clock from it: what the
+/// observer is told of it once it took.
+fn synchronize_clock(
+    clock: Option<&ServerClock>,
+    config: &ServerConfig,
+    limiter: &TimeSyncLimiter,
+    raw_service_data: Bytes,
+    is_utc: bool,
+    received: &bacnet_network::layer::ReceivedApdu,
+    local_network: Option<u16>,
+) -> Result<TimeSyncData, Error> {
     let request = TimeSynchronizationRequest::decode(&raw_service_data)?;
     clock::date_time_to_hundredths(request.date, request.time)?;
     let policy = &config.time_sync_policy;
     if !policy.enabled {
-        return Err(time_sync_policy::denied("disabled"));
+        // The server doesn't execute time synchronization (#1833).
+        return Err(Error::unsupported("time sync: disabled"));
     }
     if policy
         .source_restriction
@@ -394,9 +430,11 @@ pub(super) fn apply_time_sync_request(
             )
         })
     {
-        return Err(time_sync_policy::denied("source not allowed"));
+        // A decision about a peer, not a missing feature; it only reaches
+        // the debug log below, so its kind is provisional (#1833).
+        return Err(Error::unsupported("time sync: source not allowed"));
     }
-    let clock = clock.ok_or_else(|| Error::Encoding("Device clock is disabled".into()))?;
+    let clock = clock.ok_or(Error::unsupported("Device clock is disabled"))?;
     let mut delta_hundredths = None;
     // The step is judged and the clock set under one hold of its lock, so
     // a zone change can't fall between the two (#2395).
@@ -416,15 +454,19 @@ pub(super) fn apply_time_sync_request(
         "Time synchronization decision"
     );
     result?;
+    Ok(TimeSyncData {
+        raw_service_data,
+        is_utc,
+        source_mac: received.source_mac.clone(),
+        source_network: received.source_network.clone(),
+        provenance: received.provenance.clone(),
+    })
+}
 
+/// Tell the application's observer of a synchronization that took.
+fn report_time_sync(config: &ServerConfig, data: TimeSyncData) {
     if let Some(callback) = &config.on_time_sync {
-        let data = TimeSyncData {
-            raw_service_data,
-            is_utc,
-            source_mac: received.source_mac.clone(),
-            source_network: received.source_network.clone(),
-            provenance: received.provenance.clone(),
-        };
+        let is_utc = data.is_utc;
         if catch_unwind(AssertUnwindSafe(|| callback(data))).is_err() {
             debug!(
                 is_utc,
@@ -432,7 +474,6 @@ pub(super) fn apply_time_sync_request(
             );
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

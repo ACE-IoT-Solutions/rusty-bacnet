@@ -11,8 +11,11 @@
 //!   [`DeviceAddress`]): pinned to it and made at once, sending nothing for
 //!   a local address. One on the client's own network, once the client
 //!   knows that network's number, is the local station. A remote one the
-//!   discovery table holds no router for is asked with a station-directed Who-Is
-//!   first. Its instance, when a call needs it and the table doesn't say,
+//!   discovery table holds no router for is asked with a Who-Is addressed
+//!   to the station first, then, with no answer, one Who-Is to its network,
+//!   where only the station's own address answers (an MS/TP slave behind a
+//!   slave proxy is found only so); a station found that way is asked on
+//!   its network first from then on. Its instance, when a call needs it and the table doesn't say,
 //!   comes from one read of the Device object by the wildcard instance,
 //!   remembered by the client.
 //! - **From an instance** (`1234`, or `2:1234` on one network): one
@@ -28,24 +31,52 @@
 //!
 //! A pinned handle never moves: [`Device::moved_to`] says when its
 //! instance is heard at one other address while its own has gone quiet
-//! ([`QUIET`]). A following handle moves to the one other address on its
-//! network claiming its instance, tells [`Client::events`]
-//! ([`ClientEvent::Moved`]) and sends there, when:
+//! ([`QUIET`]). A following handle's place moves only on its device's
+//! answers (#2795: the discovery table is filled by I-Ams nobody asked
+//! for). A write or relinquish never moves it: it goes only to the place
+//! the handle already holds while the device there is taken for the
+//! instance: its discovery-table row is absent or names the instance
+//! (neither is the device's own answer, and neither has an age limit), or
+//! the device's last own answer there named it; else one identity read is
+//! sent within the call, and an answer as the instance, an unclear one (a
+//! Reject, an Abort, another error) or the client's own failure keeps the
+//! write there. Otherwise nothing is sent ([`OpsError::NotConfirmed`]). A
+//! read moves it to the one other address on its network claiming its
+//! instance, telling [`Client::events`] ([`ClientEvent::Moved`]), once the
+//! device at its own address was asked which it is and isn't the instance
+//! (silent, by a timeout alone, or another device) and the device at the
+//! new address names the instance, when:
 //!
-//! - before a request, another device has announced itself at its address
-//!   (with no other claim the request fails as [`OpsError::UnknownDevice`],
-//!   with two or more as ambiguous, and nothing is sent);
-//! - after a request timed out, or found no route left to a routed
-//!   address, no row there claims the instance any more;
-//! - after a request timed out while its address still claims the
+//! - before the read, another device has announced itself at its address
+//!   (still the instance when asked, or no word of which it is, the handle
+//!   stays; with no other claim, or one that doesn't answer as it, the
+//!   read fails as [`OpsError::UnknownDevice`], with two or more claims as
+//!   ambiguous, and the read isn't sent);
+//! - after the read timed out, or a router refused it, no row at its
+//!   address claims the instance any more;
+//! - after the read timed out while its address still claims the
 //!   instance, only the other address answered the one Who-Is for the
 //!   instance an earlier timeout sent, on the network where the device was
 //!   last reached, never on every network ([`QUIET`] says how often it
-//!   asks, and how a clone that sends no Who-Is decides instead).
+//!   asks, and how a clone that sends no Who-Is decides instead);
+//! - after the read found no route to a routed address, a Who-Is for the
+//!   instance addressed to the station, then one to its network, drew no
+//!   answer as the instance (one sends the read there again).
 //!
 //! Two or more other claims fail a timed-out request as ambiguous, and
 //! otherwise its error stays as it was. Handles following one instance on
-//! one network share where it is, so one moving takes the others with it.
+//! one network share where it is, so one moving takes the others with it;
+//! a handle made later for the instance joins them where they are, whatever
+//! the table says, and a watch hub following the instance moves them when
+//! its own reads find the device elsewhere after asking their address
+//! ([`crate::watch`]).
+//!
+//! What this leaves: a read moves a following handle once its old address
+//! misses one identity question (about 24 s at the default timers; about 3
+//! to 6 s for a routed address with no row) while another address names
+//! the instance, and later writes go to the new place. A routed device's
+//! path through its router is #2823, and a new handle's first resolution
+//! of an instance is #2824.
 
 /// Evaluate `$body` with `$at` where the device is reached now
 /// ([`Device::target`]), and for a following handle whose request timed
@@ -79,7 +110,9 @@ macro_rules! sent {
 pub(crate) use sent;
 
 mod address;
+pub(crate) mod confirm;
 mod follow;
+mod misses;
 mod reads;
 mod resolve;
 mod route;
@@ -93,9 +126,12 @@ use bacnet_transport::any::AnyTransport;
 use bacnet_transport::port::TransportPort;
 
 pub use self::address::DeviceAddress;
-use self::follow::Followed;
-pub(crate) use self::follow::Follows;
-pub(crate) use self::route::path_to;
+pub(crate) use self::confirm::Answer;
+pub(crate) use self::follow::{FollowKey, Followed};
+pub(crate) use self::follow::{Follows, keep_room};
+pub use self::misses::MISS_MEMORY;
+pub(crate) use self::misses::StationMisses;
+pub(crate) use self::route::{path_to, router_for};
 use crate::client::{Client, lock};
 use crate::error::OpsError;
 
@@ -202,10 +238,11 @@ pub struct Duplicate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ClientEvent {
-    /// A handle following `instance` found it gone from `from` (another
-    /// device announced itself there, or it stopped answering there while
-    /// `to` answered for it) and moved to `to`, the one other address
-    /// claiming it.
+    /// The handles following `instance` found it gone from `from` (another
+    /// device answers there, or it stopped answering there while `to`
+    /// answered for it) and moved to `to`, the one other address claiming
+    /// it, once the device there named the instance to a read of the
+    /// handle's or of a watch hub following it (#2795).
     Moved {
         /// The device instance.
         instance: u32,
@@ -342,6 +379,9 @@ impl<T: TransportPort + 'static> Device<T> {
 mod ask_tests;
 
 #[cfg(test)]
+mod confirm_tests;
+
+#[cfg(test)]
 mod discover_tests;
 
 #[cfg(test)]
@@ -351,13 +391,25 @@ mod find_tests;
 mod follow_tests;
 
 #[cfg(test)]
+mod one_station_tests;
+
+#[cfg(test)]
+mod proxy_tests;
+
+#[cfg(test)]
 mod resolve_scope_tests;
 
 #[cfg(test)]
 mod routed_tests;
 
 #[cfg(test)]
+mod router_app_tests;
+
+#[cfg(test)]
 pub(crate) mod test_bus;
+
+#[cfg(test)]
+mod write_follow_tests;
 
 #[cfg(test)]
 #[path = "tests.rs"]

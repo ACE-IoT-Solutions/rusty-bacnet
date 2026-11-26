@@ -13,21 +13,36 @@ pub use crate::principal::ScPrincipal;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 
-/// The error a send returns once its transport has stopped (#2617): an
-/// [`Error::Transport`] of kind
-/// [`NotConnected`](std::io::ErrorKind::NotConnected), the kind a send
-/// before start gets, saying that the transport stopped. See
-/// [`TransportPort::stop`].
+/// The error a send returns once its transport has stopped (#2617), for a
+/// transport that can start again (#1833): an [`Error::State`] with
+/// [`Lifecycle::NotRunning`], the state a send before start finds too.
+/// Nothing was sent. [`stopped_for_good`] is the one for a transport that
+/// doesn't start again. See [`TransportPort::stop`].
+///
+/// Out of line but not `#[cold]`: a cold call here changed how the B/IP
+/// send path that names it is inlined, about 8 instructions a request in
+/// the counting harness (#1833).
+#[inline(never)]
 pub fn stopped() -> Error {
-    Error::Transport(std::io::Error::new(
-        std::io::ErrorKind::NotConnected,
-        "transport stopped",
-    ))
+    Error::state(Lifecycle::NotRunning, "transport stopped")
+}
+
+/// The error a send returns once its transport has stopped, for a
+/// transport that doesn't start again (#1833), such as a loopback, a
+/// BACnet/SC or an MS/TP transport: an [`Error::State`] with
+/// [`Lifecycle::Closed`]. Nothing was sent.
+#[cold]
+#[inline(never)]
+pub fn stopped_for_good() -> Error {
+    Error::state(
+        Lifecycle::Closed,
+        "transport stopped; it does not start again",
+    )
 }
 
 /// An owned copy of a link's group-destination rule
@@ -510,6 +525,18 @@ pub trait TransportPort: Send + Sync {
         None
     }
 
+    /// The numbers of the networks this port is directly attached to when
+    /// it has no one link of its own: a router's application port is on
+    /// each of the router's networks, so its local broadcast goes to every
+    /// one of them, and an answer from any of them, which comes up with
+    /// that network as its SNET, is an answer from this network (#2601).
+    /// Empty, the default, for a port on one link, whose network number,
+    /// if any, the network layer learns. A wrapper must forward the
+    /// underlying answer.
+    fn attached_networks(&self) -> &[u16] {
+        &[]
+    }
+
     /// The B/IP transport this one is or wraps, for what only that type
     /// offers: BBMD table reads, the foreign-registration state and the
     /// management counters. `None`, the default, when the link isn't
@@ -556,7 +583,7 @@ pub trait TransportPort: Send + Sync {
     /// [`Error::UnsupportedTransport`] naming this transport's data link when
     /// it is not BACnet/IP. A transport that reports no data link (a router's
     /// application port, a test double, or a wrapper that doesn't forward
-    /// [`data_link`](Self::data_link)) refuses with [`Error::Encoding`],
+    /// [`data_link`](Self::data_link)) refuses with [`Error::Unsupported`],
     /// since it can't say which link it is.
     fn as_bip(&self) -> Result<&crate::bip::BipTransport, Error> {
         self.bip_transport().ok_or_else(|| match self.data_link() {
@@ -564,7 +591,7 @@ pub trait TransportPort: Send + Sync {
                 required: DataLink::Bip,
                 actual,
             },
-            None => Error::Encoding("transport reports no B/IP link or data link".into()),
+            None => Error::unsupported("transport reports no B/IP link or data link"),
         })
     }
 
@@ -632,8 +659,8 @@ pub trait TransportPort: Send + Sync {
         &mut self,
         _lease: std::sync::Arc<()>,
     ) -> Result<(), Error> {
-        Err(Error::Encoding(
-            "transport cannot retain a registered B/IP port".into(),
+        Err(Error::unsupported(
+            "transport cannot retain a registered B/IP port",
         ))
     }
 
@@ -650,7 +677,9 @@ pub trait TransportPort: Send + Sync {
     /// Start the transport. Returns a receiver for incoming NPDUs.
     ///
     /// The transport spawns a background receive task that decodes incoming
-    /// frames and sends `ReceivedNpdu` through the returned channel.
+    /// frames and sends `ReceivedNpdu` through the returned channel. A
+    /// second start, while it runs, is refused with an [`Error::State`] of
+    /// [`Lifecycle::AlreadyStarted`] (#1833).
     fn start(
         &mut self,
     ) -> impl std::future::Future<Output = Result<mpsc::Receiver<ReceivedNpdu>, Error>> + Send;
@@ -659,9 +688,11 @@ pub trait TransportPort: Send + Sync {
     /// reference, so an owner can stop a link that others still hold
     /// (#2617).
     ///
-    /// Once it returns, every send fails with an [`Error::Transport`] of
-    /// kind [`NotConnected`](std::io::ErrorKind::NotConnected), the kind a
-    /// send before start gets ([`stopped`] makes one); the receiver `start`
+    /// Once it returns, every send fails with an [`Error::State`] (#1833):
+    /// [`Lifecycle::NotRunning`], the state a send before start finds, for
+    /// a transport that can start again ([`stopped`] makes one), or
+    /// [`Lifecycle::Closed`] for one that doesn't ([`stopped_for_good`]).
+    /// Nothing of such a send is attempted. The receiver `start`
     /// returned yields what was queued and then ends, unless something
     /// outside the transport holds its sender (a loopback's peer); the
     /// background tasks are ended; and the link's sockets, ports and leases
@@ -674,21 +705,36 @@ pub trait TransportPort: Send + Sync {
     /// after a stop says so in its own documentation.
     fn stop(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
-    /// Synchronously abort background work and release owned transport resources.
+    /// End the link at once, without waiting, through a shared reference,
+    /// so the owner of a link that others still hold can end it from a
+    /// `Drop` (#2617).
     ///
-    /// This hook is intended for `Drop` paths where async [`Self::stop`] cannot
-    /// be awaited. Implementations should not attempt graceful protocol shutdown
-    /// here; graceful disconnects remain the responsibility of [`Self::stop`].
-    fn abort(&mut self) {}
+    /// The background tasks are aborted, not joined, so what they hold goes
+    /// once the runtime drops them, in the background, or with the runtime;
+    /// the transport lets go of the sockets, ports and leases it holds
+    /// itself, at once or as the runtime frees them; and every later send
+    /// fails, as after [`Self::stop`], with an [`Error::State`]. A send already
+    /// under way may still finish. Nothing graceful happens here: no
+    /// disconnect or unregistration goes out, which remains
+    /// [`Self::stop`]'s. It needs no runtime and is idempotent.
+    ///
+    /// The aborted tasks stay with the transport: a stop after an abort
+    /// joins them, and returns once they have let go of the link, as a stop
+    /// alone does. Until that stop, a start is refused; after it, a
+    /// transport that starts again after a stop does. What the transport
+    /// can't reach without waiting (an MS/TP serial port not yet started,
+    /// say) goes when it drops. The default does nothing, for a transport
+    /// that holds nothing.
+    fn abort(&self) {}
 
     /// Send NPDU bytes to a specific MAC address (unicast).
     ///
     /// When [`Error::SendTooLong`] is returned, the NPDU or its encoded link
     /// frame exceeded a bound before any bytes were sent or queued for
-    /// writing. BACnet/SC uses it for NPDU and frame-length checks; other
-    /// transports may return their existing error variants. Wrappers must
-    /// preserve `SendTooLong`. Other variants do not identify a definite
-    /// length refusal for the router.
+    /// writing. B/IP, MS/TP and Ethernet refuse an NPDU too long for their
+    /// link this way (#1833), and BACnet/SC its NPDU and frame-length checks.
+    /// Wrappers must preserve `SendTooLong`. Other variants do not identify
+    /// a definite length refusal for the router.
     ///
     /// B/IP refuses a MAC that is one of its group addresses
     /// ([`Self::is_group_destination`]) with an error, sending nothing

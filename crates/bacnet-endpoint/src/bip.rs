@@ -41,6 +41,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_server::server::{__endpoint_start_refused as start_refused, StartError};
 use std::sync::Arc;
 
 use bacnet_transport::bbmd_lookup::BbmdResolver;
@@ -65,6 +66,7 @@ pub struct BipEndpointBuilder {
     role: SessionRole,
     session: SessionConfig,
     database: Option<ObjectDatabase>,
+    device_storage_path: Option<std::path::PathBuf>,
     registered_network_port: Option<ObjectIdentifier>,
     identity: Option<crate::identity::DeviceIdentity>,
     source_audit_bindings: Vec<(ObjectIdentifier, SocketAddrV4)>,
@@ -92,6 +94,7 @@ impl BipEndpointBuilder {
             role: SessionRole::Both,
             session: SessionConfig::default(),
             database: None,
+            device_storage_path: None,
             registered_network_port: None,
             identity: None,
             source_audit_bindings: Vec::new(),
@@ -168,6 +171,15 @@ impl BipEndpointBuilder {
         self
     }
 
+    /// Keeps what peers write to the Device the session builds in the file
+    /// at `path` (#2730), a relative one resolved against the current
+    /// directory here; see [`EndpointSession::with_device_storage_path`].
+    pub fn device_storage_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        self.device_storage_path = Some(std::path::absolute(&path).unwrap_or(path));
+        self
+    }
+
     /// Explicitly associate the selected concrete built-in port with this B/IP
     /// transport, in whichever single mode it runs (normal, foreign device or
     /// BBMD). Declaring an identity entry alone does not register it.
@@ -217,7 +229,20 @@ impl BipEndpointBuilder {
         network: u16,
         mac: bacnet_types::MacAddr,
     ) -> Self {
-        self.source_audit_routed.push((device, network, mac));
+        self.source_audit_routed.push((device, network, mac, false));
+        self
+    }
+
+    /// [`source_audit_routed_device_binding`](Self::source_audit_routed_device_binding)
+    /// with the address marked one station (#2738); see
+    /// [`EndpointSession::with_source_audit_routed_one_station_binding`].
+    pub fn source_audit_routed_one_station_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: bacnet_types::MacAddr,
+    ) -> Self {
+        self.source_audit_routed.push((device, network, mac, true));
         self
     }
 
@@ -264,19 +289,24 @@ impl BipEndpointBuilder {
 
     /// Builds the concrete B/IP transport with all pre-start controls applied.
     ///
-    /// Returns a typed [`Error::Encoding`] when any session-owned
+    /// Returns [`Error::InvalidConfig`] when any session-owned
     /// configuration is set, since a bare transport would discard it: a
-    /// Network Port registration or source Audit route data. Those require
-    /// [`build_session`](Self::build_session).
+    /// Network Port registration, source Audit route data or a Device
+    /// storage path. Those require [`build_session`](Self::build_session).
     pub fn build_transport(self) -> Result<BipTransport, Error> {
         if self.registered_network_port.is_some() {
-            return Err(Error::Encoding(
-                "Network Port registration requires build_session()".into(),
+            return Err(Error::invalid_config(
+                "Network Port registration requires build_session()",
+            ));
+        }
+        if self.device_storage_path.is_some() {
+            return Err(Error::invalid_config(
+                "a Device storage path requires build_session()",
             ));
         }
         if !self.source_audit_bindings.is_empty() || !self.source_audit_routed.is_empty() {
-            return Err(Error::Encoding(
-                "source Audit route data requires build_session()".into(),
+            return Err(Error::invalid_config(
+                "source Audit route data requires build_session()",
             ));
         }
         let mut transport = BipTransport::new(self.interface, self.port, self.broadcast_address);
@@ -299,7 +329,13 @@ impl BipEndpointBuilder {
     /// socket after `start()`); no second hidden socket is created here or
     /// in [`EndpointSession`]. Bind-count proofs use a counting test double
     /// plus real-socket corroboration (single nonzero local MAC/port).
-    pub fn build_session(self) -> Result<EndpointSession<BipTransport>, Error> {
+    ///
+    /// Refuses source Audit routes the link can't take, a multicast group
+    /// [`BipTransport::set_multicast`] refuses and session settings
+    /// [`EndpointSession::new`] refuses, before the database moves into the
+    /// session: the [`StartError`] hands back the one
+    /// [`database`](Self::database) gave, as given (#2766).
+    pub fn build_session(self) -> Result<EndpointSession<BipTransport>, StartError> {
         self.build_session_wrapped(std::convert::identity)
     }
 
@@ -307,15 +343,16 @@ impl BipEndpointBuilder {
     /// its one B/IP transport passed through `wrap` first (#2617): for an
     /// owner that keeps several kinds of link in one type, such as a
     /// binding's enum over [`AnyTransport`](bacnet_transport::any::AnyTransport),
-    /// so a [`full_client`](EndpointSession::full_client) has the type its
+    /// so a [`client`](EndpointSession::client) has the type its
     /// other clients have. The transport's BVLC status, table reader and
     /// frame tap are taken before `wrap`, so the session's B/IP calls keep
     /// working. `wrap` must pass every [`TransportPort`](bacnet_transport::port::TransportPort)
-    /// call through to the transport it is given.
+    /// call through to the transport it is given. A refusal hands back the
+    /// database, as [`build_session`](Self::build_session)'s does.
     pub fn build_session_wrapped<U: bacnet_transport::port::TransportPort + 'static>(
         self,
         wrap: impl FnOnce(BipTransport) -> U,
-    ) -> Result<EndpointSession<U>, Error> {
+    ) -> Result<EndpointSession<U>, StartError> {
         let mut handles = None;
         let mut endpoint = self.compose(|builder| {
             let transport = builder.build_transport()?;
@@ -345,36 +382,50 @@ impl BipEndpointBuilder {
     pub(crate) fn build_session_over<T: bacnet_transport::port::TransportPort + 'static>(
         self,
         transport: T,
-    ) -> Result<EndpointSession<T>, Error> {
+    ) -> Result<EndpointSession<T>, StartError> {
         self.compose(|builder| {
             builder.build_transport()?;
             Ok(transport)
         })
     }
 
-    /// Validates the session-owned configuration (source Audit routes
-    /// included) and takes it out of the builder, then hands the rest of the
-    /// builder to `transport` and composes the session over the transport it
-    /// returns.
+    /// Validates the session-owned configuration (source Audit routes and
+    /// the session settings) and takes it out of the builder, then hands the
+    /// rest of the builder to `transport` and composes the session over the
+    /// transport it returns. Every refusal hands back the database (#2766).
     fn compose<T: bacnet_transport::port::TransportPort + 'static>(
         mut self,
         transport: impl FnOnce(Self) -> Result<T, Error>,
-    ) -> Result<EndpointSession<T>, Error> {
+    ) -> Result<EndpointSession<T>, StartError> {
         let bindings = std::mem::take(&mut self.source_audit_bindings);
         let routed = std::mem::take(&mut self.source_audit_routed);
-        crate::source_audit::recipient::SourceRoutes::new(
+        let checked = crate::source_audit::recipient::SourceRoutes::new(
             &bindings,
             SocketAddrV4::new(self.broadcast_address, self.port),
-        )?
-        .bind_routed(&routed)?;
+        )
+        .and_then(|routes| routes.bind_routed(&routed))
+        .and_then(|_| self.session.validate());
+        if let Err(error) = checked {
+            return Err(start_refused(error, self.database.take()));
+        }
         let role = self.role;
         let session = self.session.clone();
         let database = self.database.take();
+        let device_storage_path = self.device_storage_path.take();
         let identity = self.identity.take();
         let registered_network_port = self.registered_network_port.take();
-        let mut endpoint = EndpointSession::new(transport(self)?, role, session)?;
+        // The transport's own refusals (a multicast group) come here, with
+        // the database still the caller's.
+        let built = transport(self).and_then(|link| EndpointSession::new(link, role, session));
+        let mut endpoint = match built {
+            Ok(endpoint) => endpoint,
+            Err(error) => return Err(start_refused(error, database)),
+        };
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);
+        }
+        if let Some(path) = device_storage_path {
+            endpoint = endpoint.with_device_storage_path(path);
         }
         if let Some(id) = identity {
             endpoint = endpoint.device(id);
@@ -402,7 +453,7 @@ mod share_port_tests {
                 .share_port_by_address(true)
                 .build_session()
                 .unwrap();
-        let Err(Error::Transport(refused)) = endpoint.start().await else {
+        let Err(Error::Transport(refused)) = endpoint.start().await.map_err(Error::from) else {
             panic!("start must refuse");
         };
         assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
@@ -428,7 +479,7 @@ mod share_port_tests {
                     .share_wildcard_port(share)
                     .build_session()
                     .unwrap();
-            let Err(Error::Transport(refused)) = endpoint.start().await else {
+            let Err(Error::Transport(refused)) = endpoint.start().await.map_err(Error::from) else {
                 panic!("start must fail on a held port (share: {share})");
             };
             assert!(refused.to_string().contains(says), "{refused}");

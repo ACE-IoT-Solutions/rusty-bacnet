@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::sync::MutexExt as _;
 use tokio::sync::oneshot;
 
 #[cfg(test)]
@@ -64,8 +65,7 @@ impl BacnetRuntime {
         let current_configs: BTreeMap<_, _> = self
             .inner
             .attachments
-            .lock()
-            .unwrap()
+            .locked()
             .iter()
             .map(|(id, attachment)| (*id, attachment.config.clone()))
             .collect();
@@ -185,7 +185,7 @@ impl BacnetRuntime {
             } else {
                 let delivered = offered.send(Ok(())).is_ok();
                 #[cfg(test)]
-                if let Some(marker) = runtime.inner.offered.lock().unwrap().take() {
+                if let Some(marker) = runtime.inner.offered.locked().take() {
                     let _ = marker.send(());
                 }
                 if !delivered || claimed.await.is_err() {
@@ -216,7 +216,7 @@ impl BacnetRuntime {
             tokio::time::sleep(self.inner.config.shutdown_timeout).await;
         }
         #[cfg(test)]
-        if let Some(done) = self.inner.cleaned.lock().unwrap().take() {
+        if let Some(done) = self.inner.cleaned.locked().take() {
             let _ = done.send(());
         }
     }
@@ -225,12 +225,11 @@ impl BacnetRuntime {
         let owner = Arc::new(start_attachment(config.clone()).await?);
         self.inner
             .attachments
-            .lock()
-            .unwrap()
+            .locked()
             .insert(config.id, owner.clone());
         #[cfg(test)]
         {
-            let hook = self.inner.started.lock().unwrap().remove(&config.id);
+            let hook = self.inner.started.locked().remove(&config.id);
             if let Some((entered, resume)) = hook {
                 let _ = entered.send(owner);
                 resume.await.expect("injected startup worker loss");
@@ -250,12 +249,12 @@ impl BacnetRuntime {
         &self,
         deadline: Option<Instant>,
     ) -> Result<(), RuntimeError> {
-        let owners = self.inner.attachments.lock().unwrap().clone();
+        let owners = self.inner.attachments.locked().clone();
         let mut failure = None;
         for (id, owner) in owners {
             match owner.stop(deadline).await {
                 Ok(()) => {
-                    self.inner.attachments.lock().unwrap().remove(&id);
+                    self.inner.attachments.locked().remove(&id);
                 }
                 Err(error) => {
                     failure = Some(match failure {

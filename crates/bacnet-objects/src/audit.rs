@@ -14,7 +14,7 @@ use bacnet_types::enums::{
     AuditLevel, BACnetSuccessFilter, ErrorClass, ErrorCode, EventState, ObjectType,
     PropertyIdentifier, Reliability,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RangeError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
 use crate::clock::ClockReader;
@@ -52,6 +52,9 @@ pub use receipt::{
     CompletedAuditReceipt, ConfirmedAuditNotificationOutcome, MAX_AUDIT_RECEIPT_KEY_BYTES,
     MAX_COMPLETED_AUDIT_RECEIPTS,
 };
+// For the crate's table of range refusal texts (#1833).
+#[cfg(test)]
+pub(crate) use receipt::validate_receipts;
 pub use reporter_change::{
     AuditReporterAuthority, AuditReporterChangeSink, AuditReporterConfiguration,
 };
@@ -124,6 +127,10 @@ pub struct AuditLogObject {
     oid: ObjectIdentifier,
     name: String,
     description: String,
+    /// Whether `description` is one a peer wrote and storage holds
+    /// (#2407): it then wins over [`set_description`](Self::set_description)
+    /// until [`clear_written_description`](Self::clear_written_description).
+    description_kept: bool,
     log_enable: bool,
     buffer_size: u32,
     buffer: VecDeque<BACnetAuditLogRecordResult>,
@@ -151,6 +158,12 @@ impl AuditLogObject {
     /// from `buffer_size`. To give a stored log a new size, turn Enable
     /// off, write Buffer_Size and turn it on again, or start from empty
     /// storage.
+    ///
+    /// Storage keeps a Description a peer writes too (#2407), at most
+    /// 16 KiB: it is saved before the write is answered, a write whose save
+    /// fails is refused with DEVICE / OPERATIONAL_PROBLEM, and the saved one
+    /// is served from the start and wins over
+    /// [`set_description`](Self::set_description).
     pub fn new(
         instance: u32,
         name: impl Into<String>,
@@ -159,16 +172,18 @@ impl AuditLogObject {
     ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::AUDIT_LOG, instance)?;
         if buffer_size > MAX_AUDIT_RECORDS {
-            return Err(Error::OutOfRange(format!(
-                "AuditLog capacity {buffer_size} exceeds {MAX_AUDIT_RECORDS}"
-            )));
+            return Err(RangeError::new("AuditLog capacity {} exceeds {}")
+                .with_values(u64::from(buffer_size), u64::from(MAX_AUDIT_RECORDS))
+                .into());
         }
         let snapshot = match persistence.load(oid)? {
             Some(snapshot) => {
                 if snapshot.object_identifier != oid {
-                    return Err(Error::Encoding(
-                        "AuditLog persisted identity does not match configuration".into(),
-                    ));
+                    return Err(bacnet_types::error::PersistenceError::new(
+                        bacnet_types::error::PersistenceErrorKind::OtherObject,
+                        "AuditLog persisted identity does not match configuration",
+                    )
+                    .into());
                 }
                 validate_snapshot(&snapshot)?;
                 if snapshot.capacity != buffer_size {
@@ -190,6 +205,7 @@ impl AuditLogObject {
                     total_record_count: 0,
                     records: Vec::new(),
                     completed_receipts: Vec::new(),
+                    description: None,
                 };
                 validate_snapshot(&snapshot)?;
                 persistence.commit(&snapshot)?;
@@ -199,7 +215,8 @@ impl AuditLogObject {
         Ok(Self {
             oid,
             name: name.into(),
-            description: String::new(),
+            description_kept: snapshot.description.is_some(),
+            description: snapshot.description.unwrap_or_default(),
             log_enable: snapshot.log_enable,
             buffer_size: snapshot.capacity,
             buffer: snapshot.records.into(),
@@ -253,9 +270,36 @@ impl AuditLogObject {
         self.generation
     }
 
-    /// Set the description string.
+    /// Set the description string. Once storage holds a Description a
+    /// peer wrote, that one wins and this leaves it alone (#2407), until
+    /// [`clear_written_description`](Self::clear_written_description).
     pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
+        if !self.description_kept {
+            self.description = desc.into();
+        }
+    }
+
+    /// The Description storage holds, one a peer wrote now or before a
+    /// restart (#2407); `None` while there is none.
+    pub fn written_description(&self) -> Option<&str> {
+        self.description_kept.then_some(self.description.as_str())
+    }
+
+    /// Drop the Description a write saved (#2407): storage keeps none from
+    /// now on, so [`set_description`](Self::set_description) applies
+    /// again. The text served now stays until it, or a write, changes it.
+    /// Commits before it returns, at the next generation; a commit that
+    /// fails keeps the written Description and returns storage's error.
+    /// Does nothing while no saved Description is held. Call it before the
+    /// object joins the database, as the setters are, not under the
+    /// database guard: it waits for its commit.
+    pub fn clear_written_description(&mut self) -> Result<(), Error> {
+        if !self.description_kept {
+            return Ok(());
+        }
+        let mut prospective = self.snapshot_for_next_generation()?;
+        prospective.description = None;
+        self.commit_and_apply(prospective)
     }
 
     fn valid_timestamp(
@@ -286,7 +330,7 @@ impl AuditLogObject {
         let generation = self
             .generation
             .checked_add(1)
-            .ok_or_else(|| Error::OutOfRange("AuditLog persistence generation exhausted".into()))?;
+            .ok_or_else(|| Error::limit_reached("AuditLog persistence generation exhausted"))?;
         let mut snapshot = self.current_snapshot();
         snapshot.generation = generation;
         Ok(snapshot)
@@ -301,6 +345,7 @@ impl AuditLogObject {
             total_record_count: self.total_record_count,
             records: self.buffer.iter().cloned().collect(),
             completed_receipts: self.completed_receipts.clone(),
+            description: self.written_description().map(String::from),
         }
     }
 }
@@ -599,10 +644,8 @@ impl BACnetObject for AuditLogObject {
                 ErrorCode::WRITE_ACCESS_DENIED,
             ));
         }
-        if let Some(result) =
-            crate::common::write_description(&mut self.description, property, &value)
-        {
-            return result;
+        if property == PropertyIdentifier::DESCRIPTION {
+            return self.write_description(&value);
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),

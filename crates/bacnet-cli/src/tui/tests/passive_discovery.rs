@@ -106,9 +106,9 @@ impl Passive {
             .expect("listener on a free port")
     }
     /// [`Self::start`] on a port the test chose before the listener binds it.
-    /// A failed start probes that port: when another socket holds it, the
-    /// probe's bind error goes back to `rerun_on_lost_port` (#2216). A failure
-    /// on a free port panics.
+    /// A failed start there goes back to `rerun_on_lost_port` when the
+    /// listener's own bind found another socket on the port, and panics
+    /// otherwise (`lost_port`, #2216, #2776).
     pub(super) async fn try_start(plan: ConnectPlan) -> std::io::Result<Self> {
         let port = plan.args.port;
         let (sink, mut events) = EventSink::channel(32);
@@ -117,10 +117,10 @@ impl Passive {
         let mut app = new_app(None);
         app.safety.passive = true;
         let event = events.recv().await.unwrap();
-        if let WorkerEvent::ConnectFailed { .. } = event
+        if let WorkerEvent::ConnectFailed { error } = &event
             && port != 0
         {
-            std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
+            return Err(super::lost_port(error));
         }
         let WorkerEvent::PassiveListening { ref local, .. } = event else {
             panic!("{event:?}")
@@ -192,14 +192,8 @@ async fn passive_receives_real_router_startup_after_listener_readiness() {
     let StartedRouter { mut router, .. } = crate::heap::boxed(|| {
         BACnetRouter::start(
             vec![
-                RouterPort {
-                    transport: AnyTransport::Bip(Box::new(bip)),
-                    network_number: 1,
-                },
-                RouterPort {
-                    transport: AnyTransport::Loopback(far),
-                    network_number: 2,
-                },
+                RouterPort::new(AnyTransport::Bip(Box::new(bip)), 1),
+                RouterPort::new(AnyTransport::Loopback(far), 2),
             ],
             RouterOptions::new(),
         )
@@ -326,12 +320,17 @@ async fn zero_send_attempts() -> std::io::Result<()> {
     peer.send_to(&wire(Bvll::ReadBroadcastDistributionTable), address)
         .await
         .unwrap();
-    let mut reply = [0; 128];
-    let (n, from) = peer.recv_from(&mut reply).await.unwrap();
-    assert_eq!(from.port(), address.port());
+    // The control's answer, judged by its sender: a late datagram meant for
+    // another test's process can land on `peer`'s fresh port (#2718).
+    let answer = super::sender::next_from(&peer, address.into());
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), answer)
+        .await
+        .expect("the control's answer");
     assert_eq!(
-        reply[1], 0,
-        "normal node responds with a BVLC result, {n} bytes"
+        reply[1],
+        0,
+        "normal node responds with a BVLC result, {} bytes",
+        reply.len()
     );
     assert!(
         positive.attempts() > 0,
@@ -414,10 +413,10 @@ async fn zero_send_attempts() -> std::io::Result<()> {
         0,
         "startup, commands, requests, foreign settings and shutdown"
     );
-    assert_eq!(
-        peer.try_recv_from(&mut reply).unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
+    // Nothing came from the listener's address; a datagram from anywhere
+    // else is another test's (#2718).
+    let answered = super::sender::queued_from(address.into(), |buffer| peer.try_recv_from(buffer));
+    assert_eq!(answered.unwrap(), None, "the passive listener answered");
     released
 }
 

@@ -1,5 +1,7 @@
 use super::ingress::{ApduReceiver, Ingress};
 use super::*;
+use bacnet_types::error::Lifecycle;
+use bacnet_types::sync::MutexExt;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::task::Poll;
@@ -7,6 +9,11 @@ use tokio::sync::mpsc;
 
 const QUEUE_CAPACITY: usize = 256;
 const APDU_SOURCE_CAPACITY: usize = 16;
+
+/// A second start of the layer, which either start refuses (#1833).
+fn already_started() -> Error {
+    Error::state(Lifecycle::AlreadyStarted, "NetworkLayer is already started")
+}
 
 // NetworkLayer has one unnamed transport; router MACs are scoped to the
 // ingress port's network number, never the routed NPDU SNET/SADR.
@@ -120,10 +127,7 @@ impl QueueAdmissionCounters {
     /// dropped; a snapshot need not be final while dispatch can still attempt
     /// admission. A default handle has zero counts and is not attached to a queue.
     pub fn snapshot(&self) -> QueueAdmissionSnapshot {
-        self.0
-            .lock()
-            .expect("queue admission counters poisoned")
-            .snapshot
+        self.0.locked().snapshot
     }
 }
 
@@ -203,11 +207,7 @@ impl<T> AdmissionReceiver<T> {
     /// or alter its accounting. No counter lock is held while waiting.
     pub async fn recv(&mut self) -> Option<T> {
         std::future::poll_fn(|cx| {
-            let mut state = self
-                .counters
-                .0
-                .lock()
-                .expect("queue admission counters poisoned");
+            let mut state = self.counters.0.locked();
             let result = self.rx.poll_recv(cx);
             if let Poll::Ready(Some(item)) = &result {
                 state.dequeued(self.source_key.map(|source_key| source_key(item)));
@@ -224,11 +224,7 @@ impl<T> AdmissionReceiver<T> {
     /// closed and drained. Errors do not change counts. See the
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub fn try_recv(&mut self) -> Result<T, mpsc::error::TryRecvError> {
-        let mut state = self
-            .counters
-            .0
-            .lock()
-            .expect("queue admission counters poisoned");
+        let mut state = self.counters.0.locked();
         let result = self.rx.try_recv();
         if let Ok(item) = &result {
             state.dequeued(self.source_key.map(|source_key| source_key(item)));
@@ -249,11 +245,7 @@ impl<T> AdmissionReceiver<T> {
     /// These match closing the corresponding raw receiver. See the
     /// [receive-queue contract](crate::layer#close-drop-stop-and-observation).
     pub fn close(&mut self) {
-        let _snapshot = self
-            .counters
-            .0
-            .lock()
-            .expect("queue admission counters poisoned");
+        let _snapshot = self.counters.0.locked();
         self.rx.close();
     }
 }
@@ -273,11 +265,7 @@ impl AdmissionReceiver<ReceivedApdu> {
 
 impl<T> Drop for AdmissionReceiver<T> {
     fn drop(&mut self) {
-        let mut state = self
-            .counters
-            .0
-            .lock()
-            .expect("queue admission counters poisoned");
+        let mut state = self.counters.0.locked();
         self.rx.close();
         state.snapshot.current_depth = 0;
         state.queued_by_source = HashMap::new();
@@ -339,11 +327,7 @@ impl<T> AdmissionSender<T> {
             // admitted item costs the channel alone (#1713).
             let result = self.tx.try_send(item);
             if let Err(error) = &result {
-                let mut state = self
-                    .counters
-                    .0
-                    .lock()
-                    .expect("queue admission counters poisoned");
+                let mut state = self.counters.0.locked();
                 let drops = match error {
                     mpsc::error::TrySendError::Full(_) => &mut state.snapshot.full_drops,
                     mpsc::error::TrySendError::Closed(_) => &mut state.snapshot.closed_drops,
@@ -356,11 +340,7 @@ impl<T> AdmissionSender<T> {
         // waiting. Each queue has its own short critical section, and no lock
         // survives a poll/try operation. Closed keeps its lifecycle semantics;
         // otherwise a source over quota takes precedence over global Full.
-        let mut state = self
-            .counters
-            .0
-            .lock()
-            .expect("queue admission counters poisoned");
+        let mut state = self.counters.0.locked();
         if !self.tx.is_closed()
             && source.as_ref().is_some_and(|source| {
                 state.queued_by_source.get(source).copied().unwrap_or(0) >= APDU_SOURCE_CAPACITY
@@ -437,6 +417,24 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.enable_network_control(false).map(|(rx, _)| rx)
     }
 
+    /// [`Self::enable_network_control_receiver`], with a handle on the
+    /// controls its queue turns away: the raw receiver dequeues with no
+    /// accounting, so the handle's snapshot counts only the Full and Closed
+    /// drops, with no depth or high-water. A consumer that waits for an
+    /// answer among the controls can tell from it whether one may have been
+    /// dropped meanwhile (#2823).
+    pub fn enable_network_control_receiver_counting_drops(
+        &mut self,
+    ) -> Result<
+        (
+            mpsc::Receiver<ReceivedNetworkControl>,
+            QueueAdmissionCounters,
+        ),
+        Error,
+    > {
+        self.enable_network_control(false)
+    }
+
     /// Enable the control stream with queue-admission snapshots.
     ///
     /// This has the same before-start, one-consumer contract and errors as
@@ -470,13 +468,15 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         Error,
     > {
         if self.started {
-            return Err(Error::Encoding(
-                "network-control receiver must be enabled before NetworkLayer::start".into(),
+            return Err(Error::state(
+                Lifecycle::AlreadyStarted,
+                "network-control receiver must be enabled before NetworkLayer::start",
             ));
         }
+        // The layer has one control stream, which a receiver already holds.
         if self.network_control_tx.is_some() {
-            return Err(Error::Encoding(
-                "network-control receiver is already enabled".into(),
+            return Err(Error::limit_reached(
+                "network-control receiver is already enabled",
             ));
         }
         let (tx, rx) = AdmissionSender::channel(track_depth);
@@ -501,7 +501,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// [receive-queue contract](crate::layer#receive-queue-admission).
     pub async fn start(&mut self) -> Result<ApduReceiver, Error> {
         if self.started {
-            return Err(Error::Encoding("NetworkLayer is already started".into()));
+            return Err(already_started());
         }
         let npdu_rx = self.transport.start().await?;
         self.started = true;
@@ -568,7 +568,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         &mut self,
     ) -> Result<(mpsc::Receiver<ReceivedApdu>, QueueAdmissionCounters), Error> {
         if self.started {
-            return Err(Error::Encoding("NetworkLayer is already started".into()));
+            return Err(already_started());
         }
         let mut npdu_rx = self.transport.start().await?;
         self.started = true;

@@ -81,7 +81,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
+use bacnet_types::sync::MutexExt;
 
 use super::control_rate::{ControlRate, ControlSource, ScControlRateLimit, is_network_message};
 use super::{ScTransport, WebSocketPort, data_attributes};
@@ -133,10 +134,10 @@ impl ScNpduAdmissionPolicy {
     /// rejected rather than coerced.
     pub fn validate(&self) -> Result<(), Error> {
         if self.per_origin_limit == 0 || self.per_origin_limit > SC_NPDU_QUEUE_CAPACITY {
-            return Err(Error::OutOfRange(format!(
-                "BACnet/SC NPDU per-origin limit must be in 1..={SC_NPDU_QUEUE_CAPACITY}, got {}",
-                self.per_origin_limit
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new("BACnet/SC NPDU per-origin limit must be in 1..={}, got {}")
+                    .with_values(SC_NPDU_QUEUE_CAPACITY as u64, self.per_origin_limit as u64),
+            ));
         }
         self.control_rate.validate()
     }
@@ -300,10 +301,7 @@ impl ScNpduAdmission {
     }
 
     pub(crate) fn drop_counts(&self) -> ScNpduDropCounts {
-        self.state
-            .lock()
-            .expect("SC NPDU admission state poisoned")
-            .drops
+        self.state.locked().drops
     }
 
     /// Core gate: Closed > control rate > fairness > Full. Holds only the
@@ -318,7 +316,7 @@ impl ScNpduAdmission {
         item: ReceivedNpdu,
         charge_control: bool,
     ) -> AdmissionOutcome {
-        let mut state = self.state.lock().expect("SC NPDU admission state poisoned");
+        let mut state = self.state.locked();
         if tx.is_closed() {
             state.note_closed();
             return AdmissionOutcome::ClosedDrop(item);

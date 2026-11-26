@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use super::request_peer::CanonicalRequester;
 
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 use bacnet_types::map_hash::BuildMapHasher;
+use bacnet_types::sync::MutexExt;
 use tokio::sync::Semaphore;
 
 #[path = "recovery_classifier.rs"]
@@ -101,32 +102,37 @@ impl RequestAdmissionPolicy {
     /// Reject zero and limits above tokio's `Semaphore::MAX_PERMITS`, the
     /// bound these limits have always had.
     pub fn validate(&self) -> Result<(), Error> {
-        for (name, value) in [
-            ("max_confirmed_in_flight", self.max_confirmed_in_flight),
-            ("max_unconfirmed_in_flight", self.max_unconfirmed_in_flight),
+        for (label, value) in [
             (
-                "max_recovery_in_flight_per_peer",
+                "max_confirmed_in_flight must be in 1..={}",
+                self.max_confirmed_in_flight,
+            ),
+            (
+                "max_unconfirmed_in_flight must be in 1..={}",
+                self.max_unconfirmed_in_flight,
+            ),
+            (
+                "max_recovery_in_flight_per_peer must be in 1..={}",
                 self.max_recovery_in_flight_per_peer,
             ),
             (
-                "max_confirmed_in_flight_per_peer",
+                "max_confirmed_in_flight_per_peer must be in 1..={}",
                 self.max_confirmed_in_flight_per_peer,
             ),
             (
-                "max_unconfirmed_in_flight_per_peer",
+                "max_unconfirmed_in_flight_per_peer must be in 1..={}",
                 self.max_unconfirmed_in_flight_per_peer,
             ),
         ] {
             if value == 0 || value > Semaphore::MAX_PERMITS {
-                return Err(Error::Encoding(format!(
-                    "{name} must be in 1..={}",
-                    Semaphore::MAX_PERMITS
-                )));
+                return Err(Error::InvalidConfig(
+                    Refusal::new(label).with_value(Semaphore::MAX_PERMITS as u64),
+                ));
             }
         }
         if self.confirmed_recovery_reserve >= self.max_confirmed_in_flight {
-            return Err(Error::Encoding(
-                "confirmed_recovery_reserve must be smaller than max_confirmed_in_flight".into(),
+            return Err(Error::invalid_config(
+                "confirmed_recovery_reserve must be smaller than max_confirmed_in_flight",
             ));
         }
         Ok(())
@@ -281,7 +287,7 @@ impl Drop for Guard {
         // `held.fetch_sub` at the end then releases the pool slot. This lock
         // never acquires the task owner's lock.
         if let Some(peer) = &self.peer {
-            let mut peers = self.pool.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut peers = self.pool.peers.locked();
             let count = peers.get_mut(peer).expect("live peer registration");
             *count -= 1;
             if *count == 0 {
@@ -371,7 +377,7 @@ impl Admission {
         let peer = if matches!(class, Class::Abort) {
             None
         } else {
-            let mut peers = pool.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut peers = pool.peers.locked();
             // One lookup for the check and the registration.
             let count = peers.entry(peer.clone()).or_insert(0);
             if *count >= pool.peer_limit {

@@ -26,9 +26,9 @@
 //! under [`SendMode::Forward`].
 //!
 //! Every send runs this pipeline, unless the transport has stopped: from a
-//! stop's return to the next start every send fails at once with
-//! [`crate::port::stopped`]'s error, recording nothing, as a real link's
-//! does (#2617).
+//! stop's return, or an abort, to the next start every send fails at once
+//! with [`crate::port::stopped`]'s error, recording nothing, as a real
+//! link's does (#2617). After an abort, a start waits for a stop.
 //! 1. The [`SendMode`] for its kind (unicast or broadcast): `Ignore` returns
 //!    `Ok(())` untouched, skipping every later step, `Panic` panics, and
 //!    `Fail` records the frame and returns its error.
@@ -59,7 +59,7 @@ use std::sync::{Arc, PoisonError};
 use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 
@@ -145,8 +145,9 @@ pub enum SendMode {
     /// fails the send. The inner transport's own error ends the send before
     /// the hook. Without an inner transport the send fails.
     ForwardFirst,
-    /// Record the frame, then fail with an error carrying this message,
-    /// skipping the hook and the built-in controls.
+    /// Record the frame, then fail as a link whose send failed does: an
+    /// `Error::Transport` carrying this message, skipping the hook and the
+    /// built-in controls.
     Fail(&'static str),
     /// Return `Ok(())` without recording or running anything.
     Ignore,
@@ -347,7 +348,7 @@ impl TestTransport {
             SendMode::ForwardFirst => (true, true),
             SendMode::Fail(message) => {
                 self.shared.sent.push(frame);
-                return Err(Error::Encoding(message.into()));
+                return Err(Error::Transport(std::io::Error::other(message)));
             }
             SendMode::Ignore => return Ok(()),
             SendMode::Panic(message) => panic!("{message}"),
@@ -380,7 +381,7 @@ impl TestTransport {
         let inner = self
             .inner
             .as_ref()
-            .ok_or_else(|| Error::Encoding("test transport has no inner transport".into()))?;
+            .ok_or_else(|| Error::invalid_config("test transport has no inner transport"))?;
         if frame.broadcast {
             inner.send_broadcast(&frame.npdu, &frame.attributes).await
         } else {
@@ -418,6 +419,12 @@ impl TransportPort for TestTransport {
     fn data_link(&self) -> Option<DataLink> {
         self.data_link
             .or_else(|| self.inner.as_ref().and_then(|i| i.data_link()))
+    }
+
+    /// The inner transport's, such as a router application port's
+    /// networks; none without one.
+    fn attached_networks(&self) -> &[u16] {
+        self.inner.as_ref().map_or(&[], |i| i.attached_networks())
     }
 
     fn bip_transport(&self) -> Option<&crate::bip::BipTransport> {
@@ -467,7 +474,7 @@ impl TransportPort for TestTransport {
         }
         match &mut self.inner {
             Some(inner) => inner.retain_lease(lease),
-            None => Err(Error::Encoding("not a B/IP test link".into())),
+            None => Err(Error::unsupported("not a B/IP test link")),
         }
     }
 
@@ -490,6 +497,13 @@ impl TransportPort for TestTransport {
 
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.shared.starts.fetch_add(1, Ordering::SeqCst);
+        // As on a real link, a start after an abort waits for a stop.
+        if self.stop_gate.is_aborted() {
+            return Err(Error::state(
+                Lifecycle::Stopping,
+                "test transport aborted: stop it before starting again",
+            ));
+        }
         self.shared.stopped.store(false, Ordering::Release);
         self.stop_gate.open();
         if let Some(hook) = &self.hooks.on_start {
@@ -503,21 +517,21 @@ impl TransportPort for TestTransport {
                 Some(inner) => inner.start().await?,
                 None => mpsc::channel(1).1,
             },
-            StartMode::Inbound(receiver) => receiver
-                .take()
-                .ok_or_else(|| Error::Encoding("test transport already started".into()))?,
+            StartMode::Inbound(receiver) => receiver.take().ok_or_else(|| {
+                Error::state(Lifecycle::AlreadyStarted, "test transport already started")
+            })?,
             StartMode::Replace(receiver) => {
                 let inner = self.inner.as_mut().ok_or_else(|| {
-                    Error::Encoding("test transport has no inner transport to start".into())
+                    Error::invalid_config("test transport has no inner transport to start")
                 })?;
                 let _real = inner.start().await?;
-                receiver
-                    .take()
-                    .ok_or_else(|| Error::Encoding("test transport already started".into()))?
+                receiver.take().ok_or_else(|| {
+                    Error::state(Lifecycle::AlreadyStarted, "test transport already started")
+                })?
             }
             StartMode::Relay(capacity) => {
                 let inner = self.inner.as_mut().ok_or_else(|| {
-                    Error::Encoding("test transport has no inner transport to start".into())
+                    Error::invalid_config("test transport has no inner transport to start")
                 })?;
                 let mut from_link = inner.start().await?;
                 let (tx, rx) = mpsc::channel(*capacity);
@@ -609,13 +623,23 @@ impl TransportPort for TestTransport {
         result
     }
 
-    fn abort(&mut self) {
+    /// Count the abort, through `&self` (#2617); then, as on a real link,
+    /// every send fails, the `Fresh` channel closes, a held lease goes, and
+    /// a start is refused until a stop. The hook, or the inner transport's
+    /// abort, runs too.
+    fn abort(&self) {
         self.shared.aborts.fetch_add(1, Ordering::SeqCst);
+        self.stop_gate.abort();
+        self.shared.stopped.store(true, Ordering::Release);
         self.close_fresh_channel();
+        self.port_lease
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         if let Some(hook) = &self.hooks.on_abort {
             hook();
         }
-        if let Some(inner) = &mut self.inner {
+        if let Some(inner) = &self.inner {
             inner.abort();
         }
     }

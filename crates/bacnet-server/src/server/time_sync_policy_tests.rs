@@ -100,14 +100,23 @@ fn rejects_invalid_allowlists_at_construction() {
             address: vec![1; 256],
         },
     ] {
-        assert!(TimeSyncSourceRestriction::new(vec![source]).is_err());
+        // A configured entry that can't be a source (#1833).
+        assert!(matches!(
+            TimeSyncSourceRestriction::new(vec![source]),
+            Err(Error::InvalidConfig(_))
+        ));
     }
     let source = TimeSyncSource::Routed {
         network: 65534,
         address: vec![1; BACnetAddress::MAX_MAC_LEN],
     };
     assert!(TimeSyncSourceRestriction::new(vec![source.clone(); 256]).is_ok());
-    assert!(TimeSyncSourceRestriction::new(vec![source; 257]).is_err());
+    // More entries than the cap is a limit reached, not a bad entry.
+    assert!(matches!(
+        TimeSyncSourceRestriction::new(vec![source; 257]),
+        Err(Error::LimitReached(m))
+            if m.to_string() == "time sync: source restriction allows at most 256 entries"
+    ));
 }
 
 /// An entry holds to [`BACnetAddress::MAX_MAC_LEN`], the longest source the
@@ -136,7 +145,7 @@ fn time_sync_source_entries_hold_to_the_bacnet_address_bound() {
     for source in entries(longest + 1) {
         assert!(
             matches!(TimeSyncSourceRestriction::new(vec![source.clone()]),
-                Err(Error::Encoding(m)) if m == "time sync: source address must contain 1..=18 octets"),
+                Err(Error::InvalidConfig(m)) if m.to_string() == "time sync: source address must contain 1..=18 octets"),
             "{source:?}"
         );
     }
@@ -301,7 +310,9 @@ fn failed_step_does_not_spend_rate_or_coalescing_budget() {
     let now = runtime_clock::now();
     assert!(
         limiter
-            .apply_at(&a, None, now, || Err(denied("step cap exceeded")))
+            .apply_at(&a, None, now, || Err(Error::invalid_argument(
+                "time sync: step cap exceeded"
+            )))
             .is_err()
     );
     assert!(limiter.state.lock().unwrap().sources.is_empty());
@@ -349,6 +360,33 @@ fn limits_are_independent_and_monotonic_time_does_not_refill_backwards() {
             .apply_at(&a, None, now + Duration::from_secs(1), || Ok(()))
             .unwrap();
     }
+}
+
+/// A panic in the clock code under the limiter's lock poisons it; the
+/// limiter takes it as it was left and admits no more than its policy, where
+/// it once refused every request (#2559).
+#[test]
+fn a_poisoned_limiter_admits_no_more_than_its_policy() {
+    let limiter = TimeSyncLimiter::new(TimeSyncPolicy {
+        global_rate: Some(rate(3)),
+        ..Default::default()
+    });
+    let now = runtime_clock::now();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        limiter.apply_at(&received(&[1], None), None, now, || {
+            panic!("the clock code panics")
+        })
+    }));
+    assert!(unwound.is_err());
+    assert!(limiter.state.is_poisoned());
+    let admitted = (0..10u8)
+        .filter(|source| {
+            limiter
+                .apply_at(&received(&[*source], None), None, now, || Ok(()))
+                .is_ok()
+        })
+        .count();
+    assert_eq!(admitted, 3, "the panicking request spent no token");
 }
 
 #[test]
@@ -436,6 +474,7 @@ async fn time_sync_defaults_and_all_builders_validate_before_start_or_dial() {
             TestTransport::never_start(),
         )
         .await
+        .map_err(Error::from)
         .err();
         let clockless = BACnetServer::start_clockless(
             config,
@@ -443,22 +482,25 @@ async fn time_sync_defaults_and_all_builders_validate_before_start_or_dial() {
             TestTransport::never_start(),
         )
         .await
+        .map_err(Error::from)
         .err();
         let generic = BACnetServer::generic_builder()
             .transport(TestTransport::never_start())
             .time_sync_policy(policy.clone())
             .build()
             .await
+            .map_err(Error::from)
             .err();
         let bip = BACnetServer::bip_builder()
             .port(0)
             .time_sync_policy(policy.clone())
             .build()
             .await
+            .map_err(Error::from)
             .err();
         for error in [direct, clockless, generic, bip] {
             assert!(
-                matches!(error, Some(Error::Encoding(message)) if message.starts_with("time sync:"))
+                matches!(error, Some(Error::InvalidConfig(message)) if message.to_string().starts_with("time sync:"))
             );
         }
         #[cfg(feature = "sc-tls")]
@@ -470,9 +512,10 @@ async fn time_sync_defaults_and_all_builders_validate_before_start_or_dial() {
                 .time_sync_policy(policy)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             assert!(
-                matches!(error, Some(Error::Encoding(message)) if message.starts_with("time sync:"))
+                matches!(error, Some(Error::InvalidConfig(message)) if message.to_string().starts_with("time sync:"))
             );
         }
     }
@@ -492,7 +535,9 @@ fn global_coalescing_bounds_direct_routed_and_sc_vmac_without_extending_cadence(
     let now = runtime_clock::now();
     assert!(
         limiter
-            .apply_at(&contexts[0], None, now, || Err(denied("step cap exceeded")))
+            .apply_at(&contexts[0], None, now, || Err(Error::invalid_argument(
+                "time sync: step cap exceeded"
+            )))
             .is_err()
     );
     for (index, context) in contexts.iter().enumerate() {

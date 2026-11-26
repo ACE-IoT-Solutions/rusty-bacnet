@@ -34,7 +34,8 @@
 //!   ([`Written`], [`PriorityView`]), and what
 //!   [`Device::preview_write`] reads ([`WritePreview`]);
 //! - [`inventory`]: a device's objects as [`PointRecord`]s
-//!   ([`Device::inventory`]): each one's name, units, state texts and
+//!   ([`Device::inventory`], or some of them, a page a call:
+//!   [`Device::point_records`]): each one's name, units, state texts and
 //!   whether it takes commands, with its value when asked, read in batches
 //!   and written as JSON or CSV;
 //! - [`error`](mod@error): [`OpsError`], why a call failed as a whole;
@@ -77,16 +78,33 @@ pub mod watch;
 pub mod write;
 
 pub use arrival::{IAmArrival, IAmArrivals};
-pub use client::{Client, Discover, Find, ResolveScope, Scope};
+pub use client::{
+    Client, Discover, Find, ResolveScope, RoutedPath, RoutedPathStatus, RoutedPaths,
+    RouterDiscovery, Scope,
+};
 pub use device::{Device, DeviceAddress};
 pub use error::OpsError;
 pub use format::{PropertyError, Value};
-pub use inventory::{Inventory, InventoryOptions, PointRecord};
+pub use inventory::{Inventory, InventoryOptions, PointRecord, PointRecords};
 pub use reading::{IntoObject, IntoProperty, ObjectRead, PropertyRef, Reading, Readings};
-pub use watch::{CovSupport, Update, Watch};
+pub use watch::{CovSupport, Update, Watch, WatchControl, WatchSettings};
 pub use write::{
     IntoWriteValue, Priority, PriorityView, WriteDenied, WritePolicy, WritePreview, Written,
 };
+
+/// One station, as a [`Scope::Directed`] Who-Is or Who-Has names it: on the
+/// local link ([`Station::local`]), on another network by its address alone
+/// ([`Station::remote`], through the router the client knows for it, or a
+/// local broadcast naming that network while it knows none), or through a
+/// named router ([`Station::routed`]). A [`DeviceAddress`] converts with
+/// `.into()`. The low-level client's type, re-exported so an application
+/// needs no direct `bacnet-client` dependency to name one.
+pub use bacnet_client::client::Station;
+
+/// Where a routed path's size limit comes from ([`RoutedPathStatus::source`]):
+/// the default, a limit set by hand, or one learned from a router's too-long
+/// reject. The low-level client's type, re-exported as [`Station`] is.
+pub use bacnet_client::client::RoutedPathLimitSource;
 
 /// The BACnet/SC TLS configuration [`Client::sc`] takes, and the error its
 /// constructors return with the types its variants name, so an application

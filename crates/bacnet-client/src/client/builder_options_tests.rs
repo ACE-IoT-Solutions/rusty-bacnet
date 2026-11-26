@@ -54,7 +54,9 @@ async fn bip_builder_foreign_device_validates_settings_before_io() {
             .build()
             .await;
         match result {
-            Err(Error::Encoding(message)) => assert!(message.contains("renewal interval")),
+            Err(Error::InvalidConfig(refusal)) => {
+                assert!(refusal.to_string().contains("renewal interval"));
+            }
             Err(other) => panic!("expected local configuration error, got {other}"),
             Ok(mut client) => {
                 client.stop().await.unwrap();
@@ -179,7 +181,8 @@ async fn bip_builder_bbmd_mode_starts_a_bbmd_with_its_options() {
 fn assert_apdu_tuning(config: &ClientConfig) {
     assert_eq!(config.apdu_retries, 7);
     assert_eq!(config.max_segments, Some(8));
-    assert!(!config.segmented_response_accepted);
+    assert_eq!(config.segmentation, Segmentation::SEGMENTED_RECEIVE);
+    assert_eq!(config.apdu_segment_timeout_ms, Some(1_500));
     assert_eq!(config.proposed_window_size, 4);
 }
 
@@ -190,7 +193,8 @@ async fn generic_builder_sets_apdu_tuning_options() {
         .transport(transport)
         .apdu_retries(7)
         .max_segments(Some(8))
-        .segmented_response_accepted(false)
+        .segmentation(Segmentation::SEGMENTED_RECEIVE)
+        .apdu_segment_timeout_ms(1_500)
         .proposed_window_size(4)
         .build()
         .await
@@ -207,7 +211,8 @@ async fn bip_builder_sets_apdu_tuning_options() {
         .port(0)
         .apdu_retries(7)
         .max_segments(Some(8))
-        .segmented_response_accepted(false)
+        .segmentation(Segmentation::SEGMENTED_RECEIVE)
+        .apdu_segment_timeout_ms(1_500)
         .proposed_window_size(4)
         .build()
         .await
@@ -215,6 +220,17 @@ async fn bip_builder_sets_apdu_tuning_options() {
 
     assert_apdu_tuning(&client.config);
     client.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn builder_rejects_a_zero_segment_timeout() {
+    let (transport, _peer_transport) = LoopbackTransport::pair(vec![0x10], vec![0x11]);
+    let result = BACnetClient::generic_builder()
+        .transport(transport)
+        .apdu_segment_timeout_ms(0)
+        .build()
+        .await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -513,4 +529,49 @@ async fn bip6_builder_hands_the_transport_its_resolver_and_release() {
         (1, 1)
     );
     client.stop().await.unwrap();
+}
+
+/// One setting gives a request's header both its segmented-answer bit and
+/// its segment count, which a client that takes no segments doesn't state
+/// (#2617). Any value past NO_SEGMENTATION fails the build.
+#[tokio::test(start_paused = true)]
+async fn segmentation_sets_the_request_header() {
+    use bacnet_transport::test_transport::TestTransport;
+    use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+    use bacnet_types::primitives::ObjectIdentifier;
+    for (mode, receives, transmits) in [
+        (Segmentation::SEGMENTED_BOTH, true, true),
+        (Segmentation::SEGMENTED_TRANSMIT, false, true),
+        (Segmentation::SEGMENTED_RECEIVE, true, false),
+        (Segmentation::NO_SEGMENTATION, false, false),
+    ] {
+        let (transport, _input) = TestTransport::inbound(1);
+        let log = transport.sent();
+        let mut client = BACnetClient::generic_builder()
+            .transport(transport)
+            .max_segments(Some(8))
+            .segmentation(mode)
+            .apdu_timeout_ms(50)
+            .apdu_retries(0)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(client.config.receives_segments(), receives, "{mode:?}");
+        assert_eq!(client.config.transmits_segments(), transmits, "{mode:?}");
+        let oid = ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap();
+        let read = client.read_property(&[2u8][..], oid, PropertyIdentifier::OBJECT_NAME, None);
+        assert!(read.await.is_err(), "nobody answers");
+        let Apdu::ConfirmedRequest(sent) = log.frame(0).apdu() else {
+            panic!("expected the request");
+        };
+        assert_eq!(sent.segmented_response_accepted, receives, "{mode:?}");
+        assert_eq!(sent.max_segments, receives.then_some(8), "{mode:?}");
+        client.stop().await.unwrap();
+    }
+    let built = BACnetClient::generic_builder()
+        .transport(TestTransport::inbound(1).0)
+        .segmentation(Segmentation::from_raw(4))
+        .build()
+        .await;
+    assert!(built.is_err(), "an unknown segmentation fails the build");
 }

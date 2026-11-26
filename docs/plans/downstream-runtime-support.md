@@ -1,10 +1,11 @@
 # Downstream BACnet runtime support
 
 The published adapter baseline is `ace-rusty-bacnet==0.17.2`, tag `v0.17.2`
-at `aa5c452364663155b77429729b2dd84f46f74b8f`. The 0.18.0 release includes work through
-`5118145ad`, adding native diagnostics, value decoding, Rust runtime ownership
-fixes and integration evidence. The pre-release qualification wheels carry version
-0.17.2. Use their source commit and SHA-256 to identify the installed build.
+at `aa5c452364663155b77429729b2dd84f46f74b8f`. The current ACE 0.18.0
+candidate combines downstream implementation and qualification through
+`a3989363c` with upstream dev at `4ade57174`. Historical qualification
+wheels described below carried version 0.17.2. Identify each wheel by its
+source commit and SHA-256. The merged candidate builds version 0.18.0.
 
 The current downstream contract is
 `docs/reviews/bacnet-rusty-0172-parity-2026-11-25.md` at `ddeb861e` on
@@ -90,6 +91,20 @@ are scoped to those revisions. Historical records include
 | `979cf2d69` | Valid big-endian UCS-4 CharacterStrings project to Python text. Exact-wire consumers use `read_context.raw` or COV row `raw`. For example, a received UCS-4 Ω retains its original value bytes, while `.octets` emits the canonical UTF-8 write encoding. Unsupported DBCS/JIS values retain their opaque handling. |
 | `f4a152d8c` | Private publication verifies the remote source tag and uses the canonical artifacts staged by the tagged release workflow. Extracted source checks and builds carry the pinned Rust toolchain. The local helper builds and validates candidate artifacts. |
 
+### Integration with upstream dev
+
+The release candidate merges upstream `4ade571740ab4cdbe54417cbf171db3b86c4cf7c` into the ACE 0.18.0 preparation at `a3edf6e20bda1cbd99a82c614e396bf023b6428c`. The following decisions apply to the combined source.
+
+| Boundary | Combined behavior |
+| --- | --- |
+| Routed replies and transactions | Upstream binds replies to the request’s issued path. The full client and server use the upstream transaction and segmented-request machinery. ACE retains the initial SegmentACK for segmented ComplexACKs, a transfer’s fixed service, timer priority and joined endpoint shutdown. A full incoming-request handoff queue counts dropped arrivals while the worker owns the terminal reply. |
+| Endpoint segmentation | Endpoints advertise both directions by default. Explicit no-segmentation disables segmented reads and notifications. Receive and both admit large responses. Operators replacing a previously unconfigured ACE endpoint should check the capability advertised on their link. |
+| Property values | `read_context.raw` keeps the bytes of an actual ACK. Selector-only contexts have `raw is None`. Contexts compare by selector and property values compare by canonical value and form. Copy/pickle preserve provenance, including published 0.17.2 whole-value pickles. Forced decode takes lowercase datatype tokens such as `unsigned`, `signed` and `character_string`; pass the exact bytes when interpreting a vendor declaration. |
+| Network Port tables | BDT and FDT reads, builders and restored 0.17.2 table pickles use upstream’s typed collection and address dictionaries. Empty tables retain their table tag. Exact received bytes remain available in `read_context.raw`. |
+| COV and polling | Strict confirmed-COV leases match the wire station, optional router and property notification identity. A one-station sending mark does not change that identity. Upstream managed watch is an opt-in owner of subscription, renewal and polling traffic. Installing a strict expectation alone sends nothing. |
+| Local errors and router configuration | Python exposes upstream typed lifecycle errors. A cut-off write that may have gone out requires the caller to resolve its outcome before retry. Native mixed routers now set isolation on each `RouterPort`, and SC unlimited retries use `ScReconnect(max_retries=None)`. |
+| Distribution | The ACE distribution keeps its name, Python 3.10 minimum and private index. Its existing tag workflow verifies the source tag and publishes the same staged wheels and source archive used for release validation. |
+
 ## Native qualification by artifact and topology
 
 - **Concurrent routed workload.** At `424391ce5`, a shared endpoint exercised
@@ -144,7 +159,7 @@ fixtures retain scripted-peer exchanges and SDK observations.
 At `a3989363c`, the completed implementation and handoff passed CI, Native,
 Docs with publication disabled, and the standalone instruction-count comparison
 against `v0.17.2`. The five-platform release rehearsal also passed.
-These jobs used the source revision before the 0.18.0 version bump. The release
+These jobs used the source revision before the 0.18.0 version bump and the upstream integration. The combined release candidate requires fresh exact-source qualification. The release
 commit and its tagged distribution have their own gates and artifact checks.
 [CI](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725869170) ·
 [Native](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725872673) ·

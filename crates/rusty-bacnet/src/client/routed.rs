@@ -3,29 +3,32 @@
 //! `write_property`, `atomic_read_file`, `atomic_write_file`,
 //! `subscribe_cov`, `unsubscribe_cov`, `subscribe_cov_property`,
 //! `unsubscribe_cov_property` and `subscribe_cov_property_multiple` take one
-//! where they take an address, on a standalone
-//! client and on one from `endpoint.client()` alike, as the narrow endpoint
-//! client did (#2612). Each call goes through the client's own routed
-//! requests, so it is paced, sized and segmented as every other request is.
+//! where they take an address, on a standalone client and on one from
+//! `endpoint.client()` alike (#2612). Each call goes through the client's
+//! own routed requests, so it is paced, sized and segmented as every other
+//! request is.
 //!
 //! A `str` stays an address on the local link and is never read as a
-//! routed one. With `router` given, the request goes through that router.
+//! routed one. The client checks each call's station as it checks every
+//! confirmed request (#2722, #2709): this binding keeps no copy of those
+//! checks. With `router` given, the request goes through that router.
 //! With `router=None` the client uses the route it knows for the station,
-//! the router its discovery-table row names, and asks the station
-//! with a directed Who-Is first when it has no row, as `device()` does; a station
-//! that doesn't answer raises `BacnetLookupError`, which says to pass
-//! `router=`, and the client doesn't ask for it again for [`MISS_MEMORY`]
-//! unless an I-Am from it arrives. A station on this client's own network,
-//! once it knows the number, is sent to directly either way.
+//! the router its discovery-table row names, and when it has no row finds
+//! the station as `device()` does: a Who-Is addressed to the station, then
+//! one to its network. A station that answers neither raises
+//! `BacnetLookupError`, which says to pass `router=`, and the client doesn't
+//! ask for it again for [`MISS_MEMORY`] unless an I-Am from it arrives;
+//! bacnet-ops keeps that memory ([`OpsClient::unanswered_recently`]). A
+//! station on this client's own network, once it knows the number, is sent
+//! to directly either way.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 
 use bacnet_client::client::Station;
+use bacnet_ops::device::MISS_MEMORY;
 use bacnet_ops::{DeviceAddress, OpsError};
-use bacnet_transport::port::TransportPort;
-use bacnet_types::error::Error;
+use bacnet_types::sync::MutexExt;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyString;
@@ -62,6 +65,7 @@ impl Address {
             network,
             station: station.to_vec(),
             router: router.map(<[u8]>::to_vec),
+            one_station: target.get().is_one_station(),
         }))
     }
 
@@ -71,33 +75,72 @@ impl Address {
     }
 }
 
-/// A station on another network, and the router to reach it by, if named.
+/// A station on another network, the router to reach it by, if named, and
+/// whether its address is marked one station.
 pub(super) struct Routed {
     network: u16,
     station: Vec<u8>,
     router: Option<Vec<u8>>,
+    one_station: bool,
 }
 
 impl Routed {
-    /// The path to the station on `client`'s link. A named router that is
-    /// a broadcast or group address on the local link raises BacnetError:
-    /// a routed request goes to its router by unicast. With no router, the
-    /// discovery table's row for the station gives it, after one Who-Is to
-    /// the station when there is no row (`device()`'s rule);
-    /// with none after that, BacnetLookupError, and `misses` keeps the
-    /// station so a call soon after raises at once instead of asking again.
-    pub(super) async fn path(self, client: &OpsClient, misses: &RecentMisses) -> PyResult<Station> {
+    /// The path to the station on `client`'s link, for a confirmed call.
+    /// The client's checks of a confirmed request that need no link come
+    /// first ([`Station::check_confirmed`]): a remote broadcast form, as
+    /// `one_station` has them (#2709, #2738), raises BacnetError before any
+    /// lookup, so it is never asked for or remembered as a miss. A named
+    /// router that is a broadcast or group address on the local link is
+    /// the client's to refuse, when the call is made (#2722).
+    ///
+    /// With no router, the discovery table's row for the station gives it,
+    /// after a Who-Is to the station when there is no row and, unanswered,
+    /// one to its network (`device()`'s rule, up to two resolve waits);
+    /// with none after that, BacnetLookupError, and a call soon after
+    /// raises at once instead of asking again (bacnet-ops remembers the
+    /// miss). `lookups` keeps one lookup per station in flight. A station
+    /// marked one station at a form bacnet-ops refuses as an address (the
+    /// one octet `0xFF`, two octets starting `0x00` or `0xFF`) has no
+    /// address it takes, so with no router it is reached through its row
+    /// alone.
+    pub(super) async fn path(
+        self,
+        client: &OpsClient,
+        lookups: &StationLookups,
+    ) -> PyResult<Station> {
+        let named = match &self.router {
+            Some(router) => Station::routed(router, self.network, &self.station),
+            None => Station::remote(self.network, &self.station),
+        };
+        let named = if self.one_station {
+            named.one_station()
+        } else {
+            named
+        };
+        named.check_confirmed().map_err(to_py_err)?;
+        if self.router.is_some() {
+            return Ok(named);
+        }
         let core = client.low_level();
-        if let Some(router) = self.router {
-            if core.transport().is_group_destination(&router) {
-                return Err(to_py_err(Error::Encoding(
-                    "a routed request goes to its router by unicast, and this router is a \
-                     broadcast or group address on the local link: pass router=None to use \
-                     the route the client learns"
-                        .into(),
-                )));
-            }
-            return Ok(Station::routed(&router, self.network, &self.station));
+        if self.one_station && bacnet_npdu::RemoteBroadcast::of(&self.station, false).is_some() {
+            let shown = format!(
+                "{}:0x{}",
+                self.network,
+                bacnet_ops::octets::hex_upper(&self.station)
+            );
+            return match core.get_device_at(self.network, &self.station).await {
+                Some(row) => Ok(
+                    Station::routed(&row.mac_address, self.network, &self.station).one_station(),
+                ),
+                None => Err(crate::errors::lookup_error(
+                    format!(
+                        "no route to {shown}, marked one station: the discovery table has no \
+                         row for it; name its router: RoutedTarget(..., router=..., \
+                         one_station=True)"
+                    ),
+                    crate::errors::Lookup::unknown(shown),
+                )),
+            };
         }
         let address =
             DeviceAddress::new(self.network, &self.station).map_err(PyValueError::new_err)?;
@@ -110,10 +153,10 @@ impl Routed {
             // One lookup per station at a time: calls that find one in
             // flight wait for what it finds instead of asking again.
             loop {
-                if misses.recent(&key, Instant::now()) {
+                if client.unanswered_recently(&at) {
                     return Err(no_route(&at, self.network, Asked::Recently));
                 }
-                match misses.turn(&key) {
+                match lookups.turn(&key) {
                     Turn::Wait(mut answer) => {
                         let found = answer.wait_for(Option::is_some).await.map(|found| *found);
                         match found {
@@ -126,17 +169,17 @@ impl Routed {
                             Ok(None) | Err(_) => continue,
                         }
                     }
-                    // Asks the station with a directed Who-Is, as device() does.
+                    // Asks as device() does: a Who-Is to the station, then,
+                    // unanswered, one to its network.
                     Turn::Ask(asking) => match client.device(address.clone()).await {
                         Ok(device) => {
                             drop(device);
-                            misses.forget(&key);
                             asking.finish(Found::Row);
                             break;
                         }
                         Err(OpsError::UnknownDevice { asked, .. }) => {
+                            // bacnet-ops remembered the miss when it asked.
                             let asked = if asked.is_some() {
-                                misses.remember(key.clone(), Instant::now());
                                 Asked::Now
                             } else {
                                 Asked::Never
@@ -165,33 +208,25 @@ impl Routed {
                 crate::errors::Lookup::unknown(at.to_string()),
             )
         })?;
-        Ok(Station::routed(
-            &row.mac_address,
-            self.network,
-            &self.station,
-        ))
+        let routed = Station::routed(&row.mac_address, self.network, &self.station);
+        Ok(if self.one_station {
+            routed.one_station()
+        } else {
+            routed
+        })
     }
 }
-
-/// How long a station that didn't answer the client's Who-Is is remembered:
-/// a call to it with no router in that time raises at once, unless an I-Am
-/// from it has given the client a row.
-pub(crate) const MISS_MEMORY: Duration = Duration::from_secs(30);
-
-/// The most stations remembered at once; past it the oldest is forgotten.
-const MISS_ROWS: usize = 256;
 
 /// A station behind a router: its network and its MAC there.
 type StationKey = (u16, Vec<u8>);
 
-/// Stations behind a router that didn't answer the client's Who-Is, and
-/// when, and the lookups in flight (#2617). Std mutexes, held only to look
-/// up, add or remove, never across an await.
+/// The lookups in flight for stations behind a router, one per station
+/// (#2617): a call that finds one here waits for what it finds. Which
+/// stations missed is bacnet-ops' memory
+/// ([`OpsClient::unanswered_recently`]). A std mutex, held only to look up,
+/// add or remove, never across an await.
 #[derive(Default)]
-pub(super) struct RecentMisses {
-    missed: Mutex<HashMap<StationKey, Instant>>,
-    /// One lookup per station: a call that finds one here waits for what
-    /// it finds.
+pub(super) struct StationLookups {
     asking: Mutex<HashMap<StationKey, watch::Receiver<Option<Found>>>>,
 }
 
@@ -215,7 +250,7 @@ enum Turn<'a> {
 /// The one lookup in flight for a station. Dropped, finished or not, it
 /// leaves the map; a call that waited on an unfinished one asks itself.
 struct Asking<'a> {
-    misses: &'a RecentMisses,
+    lookups: &'a StationLookups,
     station: StationKey,
     found: watch::Sender<Option<Found>>,
 }
@@ -230,60 +265,24 @@ impl Asking<'_> {
 impl Drop for Asking<'_> {
     fn drop(&mut self) {
         // Only this lookup inserts the station's entry, so it is its own.
-        self.misses
-            .asking
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.station);
+        self.lookups.asking.locked().remove(&self.station);
     }
 }
 
-impl RecentMisses {
+impl StationLookups {
     /// Join the lookup in flight for `station`, or start it.
     fn turn(&self, station: &StationKey) -> Turn<'_> {
-        let mut asking = self.asking.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut asking = self.asking.locked();
         if let Some(answer) = asking.get(station) {
             return Turn::Wait(answer.clone());
         }
         let (found, answer) = watch::channel(None);
         asking.insert(station.clone(), answer);
         Turn::Ask(Asking {
-            misses: self,
+            lookups: self,
             station: station.clone(),
             found,
         })
-    }
-
-    /// Whether `station` missed within [`MISS_MEMORY`] of `now`.
-    fn recent(&self, station: &StationKey, now: Instant) -> bool {
-        let misses = self.missed.lock().unwrap_or_else(PoisonError::into_inner);
-        misses
-            .get(station)
-            .is_some_and(|&missed| now.saturating_duration_since(missed) < MISS_MEMORY)
-    }
-
-    /// Keep `station` as missed at `now`, dropping misses past
-    /// [`MISS_MEMORY`] and, at [`MISS_ROWS`], the oldest.
-    fn remember(&self, station: StationKey, now: Instant) {
-        let mut misses = self.missed.lock().unwrap_or_else(PoisonError::into_inner);
-        misses.retain(|_, &mut missed| now.saturating_duration_since(missed) < MISS_MEMORY);
-        if misses.len() >= MISS_ROWS
-            && let Some(oldest) = misses
-                .iter()
-                .min_by_key(|(_, missed)| **missed)
-                .map(|(key, _)| key.clone())
-        {
-            misses.remove(&oldest);
-        }
-        misses.insert(station, now);
-    }
-
-    /// Forget `station`: it answered.
-    fn forget(&self, station: &StationKey) {
-        self.missed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(station);
     }
 }
 
@@ -304,12 +303,13 @@ fn no_route(at: &DeviceAddress, network: u16, asked: Asked) -> PyErr {
     let seconds = MISS_MEMORY.as_secs();
     let why = match asked {
         Asked::Now => format!(
-            "it didn't answer a station-directed Who-Is, and the client won't ask that \
-             station again for {seconds} s unless an I-Am from it arrives"
+            "it answered neither a Who-Is addressed to it nor one to network {network}, and \
+             the client won't ask that station again for {seconds} s unless an I-Am from it \
+             arrives"
         ),
         Asked::Recently => format!(
-            "it didn't answer a station-directed Who-Is in the last {seconds} s, and no \
-             I-Am from it has arrived since"
+            "it answered neither a Who-Is addressed to it nor one to network {network} in \
+             the last {seconds} s, and no I-Am from it has arrived since"
         ),
         Asked::Never => {
             format!("this client asks no network for a station, network {network} included")
@@ -317,45 +317,12 @@ fn no_route(at: &DeviceAddress, network: u16, asked: Asked) -> PyErr {
     };
     crate::errors::lookup_error(
         format!(
-            "no route to station {at}: {why}. A station that never sends an I-Am, such as an \
-             MS/TP slave, needs its router named: RoutedTarget(..., router=...), with the \
+            "no route to station {at}: {why}. A station that no I-Am comes for, such as an \
+             MS/TP slave with no slave proxy, needs its router named: RoutedTarget(..., router=...), with the \
              routers on this link from discover_routers()"
         ),
         crate::errors::Lookup::unknown(at.to_string()),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A miss is kept for [`MISS_MEMORY`], forgotten when the station
-    /// answers, and at [`MISS_ROWS`] the oldest goes first.
-    #[test]
-    fn misses_are_kept_for_a_bounded_time_and_count() {
-        let misses = RecentMisses::default();
-        let start = Instant::now();
-        let station = (5, vec![0x0a]);
-        assert!(!misses.recent(&station, start));
-        misses.remember(station.clone(), start);
-        assert!(misses.recent(&station, start + MISS_MEMORY - Duration::from_millis(1)));
-        assert!(!misses.recent(&station, start + MISS_MEMORY));
-        misses.forget(&station);
-        assert!(!misses.recent(&station, start));
-
-        for octet in 0..MISS_ROWS {
-            let later = start + Duration::from_millis(octet as u64);
-            misses.remember((7, (octet as u16).to_be_bytes().to_vec()), later);
-        }
-        let newest = start + Duration::from_secs(1);
-        misses.remember((7, vec![0xff, 0xff, 0xff]), newest);
-        assert!(!misses.recent(&(7, vec![0, 0]), newest), "the oldest went");
-        assert!(misses.recent(&(7, vec![0, 1]), newest));
-        assert!(misses.recent(&(7, vec![0xff, 0xff, 0xff]), newest));
-        // Expired misses go before the oldest live one.
-        misses.remember((8, vec![1]), start + MISS_MEMORY + Duration::from_secs(2));
-        assert_eq!(misses.missed.lock().unwrap().len(), 1);
-    }
 }
 
 #[cfg(test)]
@@ -366,7 +333,7 @@ mod lookup_tests {
     /// leaves the map when it ends, finished or dropped.
     #[tokio::test]
     async fn one_lookup_per_station_and_a_dropped_one_lets_the_next_ask() {
-        let misses = RecentMisses::default();
+        let misses = StationLookups::default();
         let station = (5, vec![0x0a]);
         let Turn::Ask(first) = misses.turn(&station) else {
             panic!("the first call asks");

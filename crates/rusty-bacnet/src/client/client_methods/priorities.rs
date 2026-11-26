@@ -24,7 +24,10 @@ impl BACnetClient {
     /// - an address pins the handle there and sends nothing for a station
     ///   on this network: `"192.168.1.10"` or `"192.168.1.10:47808"`,
     ///   `"mstp:5"`, `"bip6:0x0004D2"`, an SC VMAC as six hex octets, a
-    ///   routed station as `"2:0x05"` (network 2, MAC 05), or a
+    ///   routed station as `"2:0x05"` (network 2, MAC 05; a MAC that is
+    ///   one station though it looks like a broadcast, ARCNET's station
+    ///   255 or a gateway's two-octet station, takes the suffix
+    ///   `":one-station"`, as `"5:0xFF:one-station"`), or a
     ///   `(network, mac)` pair such as a lookup error's candidate;
     /// - an instance, `1234` (an int or text) or `"2:1234"` on network 2,
     ///   gives a handle that follows the instance: the one address
@@ -52,17 +55,13 @@ impl BACnetClient {
     }
 
     /// Where a `device()` handle made from a bare instance asks for it, as
-    /// `resolve_scope=` set it: `"local"`, `"global"` or a network number;
-    /// None on a router's application given none, which asks nowhere.
+    /// `resolve_scope=` set it: `"local"`, `"global"` or a network number.
     #[getter]
     fn resolve_scope(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use bacnet_ops::ResolveScope;
-        Ok(match (self.resolve_scope, self.transport_type.as_str()) {
-            (Some(ResolveScope::Network(network)), _) => {
-                network.into_pyobject(py)?.into_any().unbind()
-            }
-            (Some(ResolveScope::Global), _) => "global".into_pyobject(py)?.into_any().unbind(),
-            (None, "router") => py.None(),
+        Ok(match self.resolve_scope {
+            ResolveScope::Network(network) => network.into_pyobject(py)?.into_any().unbind(),
+            ResolveScope::Global => "global".into_pyobject(py)?.into_any().unbind(),
             _ => "local".into_pyobject(py)?.into_any().unbind(),
         })
     }
@@ -72,5 +71,26 @@ impl BACnetClient {
     #[getter]
     fn write_policy(&self) -> PyWritePolicy {
         PyWritePolicy(self.write_policy)
+    }
+
+    /// The COV lifetime of a `Device.watch` that names none, in seconds,
+    /// as `watch_lifetime=` set it.
+    #[getter]
+    fn watch_lifetime(&self) -> u32 {
+        self.watch_settings.lifetime.secs()
+    }
+
+    /// The poll interval of a `Device.watch` that names none, in seconds,
+    /// as `watch_poll_interval=` set it.
+    #[getter]
+    fn watch_poll_interval(&self) -> f64 {
+        self.watch_settings.poll_every.as_secs_f64()
+    }
+
+    /// Whether a `Device.watch` that doesn't say subscribes its points for
+    /// COV (False: polls them), as `watch_subscribe=` set it.
+    #[getter]
+    fn watch_subscribe(&self) -> bool {
+        self.watch_settings.subscribe
     }
 }

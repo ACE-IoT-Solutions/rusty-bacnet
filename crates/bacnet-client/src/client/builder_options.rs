@@ -40,9 +40,29 @@ impl<T: TransportPort + 'static> ClientBuilder<T> {
         self
     }
 
-    /// Set whether this client accepts segmented responses.
-    pub fn segmented_response_accepted(mut self, accepted: bool) -> Self {
-        self.config.segmented_response_accepted = accepted;
+    /// Set which ways this client segments (default SEGMENTED_BOTH). One
+    /// that doesn't receive segments takes no segmented answer and aborts a
+    /// segmented notification's first segment; one that doesn't transmit
+    /// them fails a request too long for one APDU before sending it. See
+    /// [`ClientConfig::segmentation`].
+    pub fn segmentation(mut self, segmentation: Segmentation) -> Self {
+        self.config.segmentation = segmentation;
+        self
+    }
+
+    /// Set the segment timeout in milliseconds (default: the APDU timeout;
+    /// zero fails the build). See [`ClientConfig::apdu_segment_timeout_ms`].
+    pub fn apdu_segment_timeout_ms(mut self, ms: u64) -> Self {
+        self.config.apdu_segment_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Set whether a Complex-ACK completes a request whose service takes a
+    /// Simple-ACK as a success, for a device in the field that answers so
+    /// (default `false`). See
+    /// [`ClientConfig::accept_complex_ack_for_simple_services`].
+    pub fn accept_complex_ack_for_simple_services(mut self, accept: bool) -> Self {
+        self.config.accept_complex_ack_for_simple_services = accept;
         self
     }
 
@@ -124,9 +144,29 @@ impl BipClientBuilder {
         self
     }
 
-    /// Set whether this client accepts segmented responses.
-    pub fn segmented_response_accepted(mut self, accepted: bool) -> Self {
-        self.config.segmented_response_accepted = accepted;
+    /// Set which ways this client segments (default SEGMENTED_BOTH). One
+    /// that doesn't receive segments takes no segmented answer and aborts a
+    /// segmented notification's first segment; one that doesn't transmit
+    /// them fails a request too long for one APDU before sending it. See
+    /// [`ClientConfig::segmentation`].
+    pub fn segmentation(mut self, segmentation: Segmentation) -> Self {
+        self.config.segmentation = segmentation;
+        self
+    }
+
+    /// Set the segment timeout in milliseconds (default: the APDU timeout;
+    /// zero fails the build). See [`ClientConfig::apdu_segment_timeout_ms`].
+    pub fn apdu_segment_timeout_ms(mut self, ms: u64) -> Self {
+        self.config.apdu_segment_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Set whether a Complex-ACK completes a request whose service takes a
+    /// Simple-ACK as a success, for a device in the field that answers so
+    /// (default `false`). See
+    /// [`ClientConfig::accept_complex_ack_for_simple_services`].
+    pub fn accept_complex_ack_for_simple_services(mut self, accept: bool) -> Self {
+        self.config.accept_complex_ack_for_simple_services = accept;
         self
     }
 
@@ -222,9 +262,29 @@ impl Bip6ClientBuilder {
         self
     }
 
-    /// Set whether this client accepts segmented responses.
-    pub fn segmented_response_accepted(mut self, accepted: bool) -> Self {
-        self.config.segmented_response_accepted = accepted;
+    /// Set which ways this client segments (default SEGMENTED_BOTH). One
+    /// that doesn't receive segments takes no segmented answer and aborts a
+    /// segmented notification's first segment; one that doesn't transmit
+    /// them fails a request too long for one APDU before sending it. See
+    /// [`ClientConfig::segmentation`].
+    pub fn segmentation(mut self, segmentation: Segmentation) -> Self {
+        self.config.segmentation = segmentation;
+        self
+    }
+
+    /// Set the segment timeout in milliseconds (default: the APDU timeout;
+    /// zero fails the build). See [`ClientConfig::apdu_segment_timeout_ms`].
+    pub fn apdu_segment_timeout_ms(mut self, ms: u64) -> Self {
+        self.config.apdu_segment_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Set whether a Complex-ACK completes a request whose service takes a
+    /// Simple-ACK as a success, for a device in the field that answers so
+    /// (default `false`). See
+    /// [`ClientConfig::accept_complex_ack_for_simple_services`].
+    pub fn accept_complex_ack_for_simple_services(mut self, accept: bool) -> Self {
+        self.config.accept_complex_ack_for_simple_services = accept;
         self
     }
 
@@ -288,9 +348,29 @@ impl ScClientBuilder {
         self
     }
 
-    /// Set whether this client accepts segmented responses.
-    pub fn segmented_response_accepted(mut self, accepted: bool) -> Self {
-        self.config.segmented_response_accepted = accepted;
+    /// Set which ways this client segments (default SEGMENTED_BOTH). One
+    /// that doesn't receive segments takes no segmented answer and aborts a
+    /// segmented notification's first segment; one that doesn't transmit
+    /// them fails a request too long for one APDU before sending it. See
+    /// [`ClientConfig::segmentation`].
+    pub fn segmentation(mut self, segmentation: Segmentation) -> Self {
+        self.config.segmentation = segmentation;
+        self
+    }
+
+    /// Set the segment timeout in milliseconds (default: the APDU timeout;
+    /// zero fails the build). See [`ClientConfig::apdu_segment_timeout_ms`].
+    pub fn apdu_segment_timeout_ms(mut self, ms: u64) -> Self {
+        self.config.apdu_segment_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Set whether a Complex-ACK completes a request whose service takes a
+    /// Simple-ACK as a success, for a device in the field that answers so
+    /// (default `false`). See
+    /// [`ClientConfig::accept_complex_ack_for_simple_services`].
+    pub fn accept_complex_ack_for_simple_services(mut self, accept: bool) -> Self {
+        self.config.accept_complex_ack_for_simple_services = accept;
         self
     }
 
@@ -310,5 +390,28 @@ impl ScClientBuilder {
             .options
             .with_confirmed_cov_notification_ack_policy(policy);
         self
+    }
+}
+
+impl ClientOptions {
+    /// Refuse a channel capacity outside 1 to its maximum, a value the
+    /// client keeps (#1833).
+    pub(super) fn validate(&self) -> Result<(), Error> {
+        let cov = "invalid cov-channel-capacity {}; expected 1..={}";
+        let event = "invalid event-channel-capacity {}; expected 1..={}";
+        for (label, capacity, max) in [
+            (cov, self.cov_channel_capacity, MAX_COV_CHANNEL_CAPACITY),
+            (
+                event,
+                self.event_channel_capacity,
+                MAX_EVENT_CHANNEL_CAPACITY,
+            ),
+        ] {
+            if !(1..=max).contains(&capacity) {
+                let refusal = Refusal::new(label).with_values(capacity as u64, max as u64);
+                return Err(Error::InvalidConfig(refusal));
+            }
+        }
+        Ok(())
     }
 }

@@ -193,8 +193,9 @@ async fn silence_is_no_answer_after_the_first_answer_wait() {
     };
     let (result, _) = query(wait, |_inbound| async {}).await;
     match result {
-        Err(RoutingTableError::NoAnswer { waited }) => {
-            assert_eq!(waited, Duration::from_secs(2));
+        Err(error @ RoutingTableError::NoAnswer { waited, routed }) => {
+            assert_eq!((waited, routed), (Duration::from_secs(2), None));
+            assert!(!error.to_string().contains("own link"), "{error}");
         }
         other => panic!("{other:?}"),
     }
@@ -342,6 +343,67 @@ async fn a_query_that_cannot_be_sent_is_refused_before_it_goes() {
     ));
     assert!(outbound.try_recv().is_err(), "nothing was sent");
     client.stop().await.unwrap();
+}
+
+/// A link that refuses the query for the router's address, which the call
+/// was given, refuses the call as an invalid argument, which the bindings
+/// raise as `ValueError`. One that refuses it for its own state (a
+/// BACnet/SC link with no hub connection), configuration, platform or
+/// limits, a stopped link and a send too long are send failures, which
+/// keep the link's error and which the bindings raise as they raise that
+/// error (#1833).
+#[tokio::test(start_paused = true)]
+async fn a_link_refusing_the_query_refuses_the_call() {
+    use bacnet_types::error::Lifecycle;
+    const REFUSED: &str = "BACnet/SC transport not in Connected state";
+    let cases: [(fn() -> Error, bool); 7] = [
+        (|| Error::state(Lifecycle::NotConnected, REFUSED), false),
+        (|| Error::invalid_config(REFUSED), false),
+        (|| Error::invalid_argument(REFUSED), true),
+        (|| Error::unsupported(REFUSED), false),
+        (|| Error::limit_reached(REFUSED), false),
+        (
+            || {
+                Error::Transport(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "stopped",
+                ))
+            },
+            false,
+        ),
+        (
+            || Error::SendTooLong {
+                length: 600,
+                limit: 480,
+            },
+            false,
+        ),
+    ];
+    for (refusal, argument) in cases {
+        let (_inbound, inbound_rx) = mpsc::channel(1);
+        let transport = TestTransport::builder()
+            .local_mac(&[1])
+            .inbound(inbound_rx)
+            .egress_limit(1486)
+            .on_send(move |_| async move { Err(refusal()) })
+            .build();
+        let mut client = BACnetClient::start(ClientConfig::default(), transport)
+            .await
+            .unwrap();
+        let result = client
+            .routing_table(&ROUTER, RoutingTableWait::default())
+            .await;
+        match result {
+            Err(RoutingTableError::InvalidArgument(why)) if argument => {
+                assert_eq!(why, REFUSED);
+            }
+            Err(RoutingTableError::Send(error)) if !argument => {
+                assert_eq!(error.to_string(), refusal().to_string());
+            }
+            other => panic!("{:?}: {other:?}", refusal()),
+        }
+        client.stop().await.unwrap();
+    }
 }
 
 async fn i_am_router(inbound: &mpsc::Sender<ReceivedNpdu>, from: &[u8]) {
@@ -632,6 +694,39 @@ async fn a_lagging_collector_marks_the_table_truncated() {
         .unwrap();
     assert!(outbound.try_recv().is_ok());
     assert!(table.truncated, "{table:?}");
+    client.stop().await.unwrap();
+}
+
+/// A call polled once while another holds the one-query gate, and never
+/// again, holds the gate for nobody once that call ends (#2759): a third
+/// call, polled, runs. It waited behind the parked one for good while the
+/// gate was Tokio's fair mutex.
+#[tokio::test(start_paused = true)]
+async fn a_parked_call_holds_the_query_gate_for_nobody() {
+    use std::task::{Context, Waker};
+    let (mut client, inbound, mut outbound) = started().await;
+    let wait = RoutingTableWait::default();
+    let (go, gone) = tokio::sync::oneshot::channel();
+    let mut parked = Box::pin(client.routing_table(&ROUTER, wait));
+    let driver = async {
+        outbound.recv().await.expect("the first query");
+        let noop = &mut Context::from_waker(Waker::noop());
+        assert!(parked.as_mut().poll(noop).is_pending());
+        go.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        ack(&inbound, &ROUTER, &[(2, 1)]).await;
+        let third = tokio::time::timeout(Duration::from_secs(60), outbound.recv());
+        third.await.expect("the third call's query").unwrap();
+        ack(&inbound, &ROUTER, &[(3, 1)]).await;
+    };
+    let third = async {
+        gone.await.unwrap();
+        client.routing_table(&ROUTER, wait).await
+    };
+    let (first, (), third) = tokio::join!(client.routing_table(&ROUTER, wait), driver, third);
+    assert_eq!(first.unwrap().entries, [entry(2, 1)]);
+    assert_eq!(third.unwrap().entries, [entry(3, 1)]);
+    drop(parked);
     client.stop().await.unwrap();
 }
 

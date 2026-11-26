@@ -1,9 +1,44 @@
-//! Bounded answering-side reassembly for confirmed COV. A lazy worker owns its
-//! timers and processes segments and requester Aborts in arrival order. The
-//! dispatch task drops and counts overflow. Only the worker answers a transfer.
+//! The segmented confirmed requests the client executes (#2646).
+//!
+//! A client executes three confirmed services: ConfirmedCOVNotification,
+//! ConfirmedCOVNotificationMultiple and ConfirmedEventNotification (beside a
+//! server role, the COV notifications only). A notifier may send any of them
+//! as segments, a COV-multiple with many values most of all. When the client
+//! receives segments ([`ClientConfig::segmentation`]), it reassembles a
+//! segmented request on the answering side's rules ([`SegmentedRequests`],
+//! the full server's) and then answers it as one that came whole: it
+//! executes a notification (the same decoding, publishing and answer), and
+//! rejects any other service as unrecognized, as it does an unsegmented one
+//! (Clause 18.9). A peer that segments to a device declaring segmented
+//! receive is never told that it can't. A client that takes no segments
+//! answers the first segment with an Abort (SEGMENTATION_NOT_SUPPORTED).
+//!
+//! # Where it runs
+//!
+//! In a task of its own, the reassembly task, which the first segment
+//! starts and which owns the table and its timers. The dispatch task meets a
+//! segment, and a requester's Abort, only in the two branches of
+//! `dispatch_apdu` that always took them (the segment's Abort, the Abort it
+//! ignored): their bodies hand the PDU over, out of line and without
+//! waiting, and nothing else in the dispatch task changed. A request's plain
+//! path is the dev path, instruction for instruction (#2646 review: a shape
+//! that grew `dispatch_apdu` or its loop cost every answer 11 to 32
+//! instructions).
+//!
+//! The hand-over is one bounded queue, so a transfer's segments and a
+//! requester's Abort reach the table in the order the client received
+//! them. A full queue counts and drops the arriving segment or Abort. The
+//! worker remains the sole owner of any pending transfer and its terminal
+//! response; sequence gaps and expiry still run on that worker.
+//!
+//! The client's transaction table keeps the queue's sender and the task's
+//! handle. The task holds the network layer weakly, so it never keeps the
+//! link up, and it ends when the client stops (which waits for it), when
+//! the client is dropped, when the node a seated client runs on stops, and
+//! when the layer is gone.
+
 use std::sync::Weak;
 
-use bacnet_endpoint_core::seat::SeatHold;
 use bacnet_endpoint_core::segmented_request::{Opening, Receipt, Segment, SegmentedRequests};
 use bacnet_types::enums::AbortReason;
 use tokio::sync::mpsc::error::TrySendError;
@@ -45,7 +80,7 @@ pub(crate) struct RequestReassembly {
 }
 
 impl RequestReassembly {
-    /// Request cancellation without losing the join for a subsequent client stop.
+    /// Cancel without detaching the worker from an explicit stop's join.
     pub(crate) fn abort(&self) {
         if let Some(task) = &self.task {
             task.abort();
@@ -63,15 +98,10 @@ impl RequestReassembly {
 
 impl Drop for RequestReassembly {
     fn drop(&mut self) {
-        self.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
-}
-
-/// Receive settings for the dispatch task and the worker it may start.
-pub(super) struct Settings {
-    pub(super) timeout: Duration,
-    /// The endpoint's stop waits for every clone, including the lazy worker's.
-    pub(super) hold: Option<SeatHold>,
 }
 
 /// What starting the reassembly task and handing it a segment take,
@@ -80,16 +110,21 @@ pub(super) struct HandOff<'a, T: TransportPort + 'static> {
     pub(super) tsm: &'a Arc<SyncMutex<Tsm>>,
     pub(super) network: &'a Arc<NetworkLayer<T>>,
     pub(super) cov_tx: &'a broadcast::Sender<COVEvent>,
-    pub(super) registry: Option<&'a Arc<cov_registry::Registry>>,
+    pub(super) event_tx: &'a broadcast::Sender<ReceivedEventNotification>,
     pub(super) policy: &'a ConfirmedCOVNotificationAckPolicy,
+    pub(super) registry: Option<&'a Arc<cov_registry::Registry>>,
+    pub(super) hold: Option<&'a bacnet_endpoint_core::seat::SeatHold>,
     pub(super) limits: ResponseLimits,
 }
 
 /// What the reassembly task publishes to and warns through.
 struct Outlets {
     cov_tx: broadcast::Sender<COVEvent>,
-    registry: Option<Arc<cov_registry::Registry>>,
+    event_tx: broadcast::Sender<ReceivedEventNotification>,
     policy: ConfirmedCOVNotificationAckPolicy,
+    registry: Option<Arc<cov_registry::Registry>>,
+    /// Keeps endpoint shutdown waiting until this worker releases its captured resources.
+    _hold: Option<bacnet_endpoint_core::seat::SeatHold>,
     decode_warning: WarnThrottle,
     response_warning: WarnThrottle,
 }
@@ -116,7 +151,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     #[inline]
     pub(super) fn hand_off_segment(
         at: HandOff<'_, T>,
-        settings: &Settings,
         source_mac: &[u8],
         source_network: &Option<NpduAddress>,
         reply: InboundReply,
@@ -129,18 +163,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             request,
         };
         let mut tsm = at.tsm.lock();
-
+        let segment_timeout = tsm.segment_timeout();
         let reassembly = tsm
             .request_reassembly
-            .get_or_insert_with(|| Box::new(Self::start_reassembly(&at, settings)));
+            .get_or_insert_with(|| Box::new(Self::start_reassembly(&at, segment_timeout)));
         match reassembly.queue.try_send(handed) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                // Only the worker may finish or abort this transfer.
                 reassembly.full_drops = reassembly.full_drops.saturating_add(1);
             }
-            Err(TrySendError::Closed(_)) => {
-                tsm.request_reassembly = None;
-            }
+            Err(TrySendError::Closed(_)) => tsm.request_reassembly = None,
         }
     }
 
@@ -173,22 +206,23 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     }
 
     /// Start the reassembly task.
-    fn start_reassembly(at: &HandOff<'_, T>, settings: &Settings) -> RequestReassembly {
+    fn start_reassembly(at: &HandOff<'_, T>, segment_timeout: Duration) -> RequestReassembly {
         let (queue, received) = mpsc::channel(QUEUE);
-        let table = SegmentedRequests::new(settings.timeout)
+        let table = SegmentedRequests::new(segment_timeout)
             .with_max_segments(at.limits.max_reassembly_segments);
         let table = Arc::new(SyncMutex::new(table));
         #[cfg(test)]
         let weak = Arc::downgrade(&table);
         let outlets = Outlets {
             cov_tx: at.cov_tx.clone(),
-            registry: at.registry.cloned(),
+            event_tx: at.event_tx.clone(),
             policy: Arc::clone(at.policy),
+            registry: at.registry.cloned(),
+            _hold: at.hold.cloned(),
             decode_warning: WarnThrottle::default(),
             response_warning: WarnThrottle::default(),
         };
         let task = tokio::spawn(Self::reassemble(
-            settings.hold.clone(),
             Arc::downgrade(at.network),
             received,
             table,
@@ -206,9 +240,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// The reassembly task: take each segment and Abort in turn, and end
     /// each transfer when its timer is due.
     async fn reassemble(
-        // Function parameters drop in reverse order. Keep the seat until the
-        // table, queued replies and any in-flight network send have gone.
-        _hold: Option<SeatHold>,
         network: Weak<NetworkLayer<T>>,
         mut queue: mpsc::Receiver<Handed>,
         table: Arc<SyncMutex<SegmentedRequests>>,
@@ -364,18 +395,46 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 );
                 // Its answer goes back the way its first segment came.
                 let answer = InboundReply::new(route, None);
-                Self::receive_confirmed_cov_notification(
-                    network,
-                    &outlets.cov_tx,
-                    &outlets.policy,
-                    outlets.registry.as_deref(),
-                    &source_mac,
-                    &source_network,
-                    answer,
-                    request,
-                    &outlets.decode_warning,
-                )
-                .await;
+                if request.service_choice == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION
+                    || request.service_choice
+                        == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION_MULTIPLE
+                {
+                    Self::receive_confirmed_cov_notification(
+                        network,
+                        &outlets.cov_tx,
+                        &outlets.policy,
+                        outlets.registry.as_deref(),
+                        &source_mac,
+                        &source_network,
+                        answer,
+                        request,
+                        &outlets.decode_warning,
+                    )
+                    .await;
+                } else if request.service_choice
+                    == ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION
+                {
+                    Self::receive_confirmed_event_notification(
+                        network,
+                        &outlets.event_tx,
+                        &source_mac,
+                        &source_network,
+                        answer,
+                        request,
+                        &outlets.decode_warning,
+                    )
+                    .await;
+                } else {
+                    Self::send_confirmed_request_reject(
+                        network,
+                        &source_mac,
+                        &source_network,
+                        answer,
+                        invoke_id,
+                        RejectReason::UNRECOGNIZED_SERVICE,
+                    )
+                    .await;
+                }
             }
         }
     }

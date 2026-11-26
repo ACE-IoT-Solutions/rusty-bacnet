@@ -62,6 +62,9 @@ pub(super) trait Unconfirmed {
 impl<T: TransportPort + 'static> BACnetClient<T> {
     /// Send `service` to `to` and check its answer: every typed confirmed
     /// call is this, through the request path every request takes.
+    ///
+    /// [`Self::call_with`] with no data attributes, its own copy so a typed
+    /// call's future holds no `None` for them.
     pub(super) async fn call<S: Confirmed>(
         &self,
         to: &(impl ToStation + ?Sized),
@@ -69,7 +72,23 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ) -> Result<S::Answer, Error> {
         let mut buf = BytesMut::new();
         service.encode_into(&mut buf)?;
-        let answer = to.confirmed(self, service.choice(), &buf).await?;
+        let answer = to.confirmed(self, service.choice(), &buf, None).await?;
+        service.answer(answer)
+    }
+
+    /// [`Self::call`], every frame of the request carrying `attributes`
+    /// (#2723).
+    pub(super) async fn call_with<S: Confirmed>(
+        &self,
+        to: &(impl ToStation + ?Sized),
+        service: S,
+        attributes: Attributes<'_>,
+    ) -> Result<S::Answer, Error> {
+        let mut buf = BytesMut::new();
+        service.encode_into(&mut buf)?;
+        let answer = to
+            .confirmed(self, service.choice(), &buf, attributes)
+            .await?;
         service.answer(answer)
     }
 
@@ -105,10 +124,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 self.broadcast_network_unconfirmed(choice, &buf, network)
                     .await
             }
-            Broadcast::Network(network) => Err(Error::Encoding(format!(
-                "a network broadcast names one remote network, 1 to 65534, not {network}: \
-                 Broadcast::Local is this network and Broadcast::Global every network"
-            ))),
+            Broadcast::Network(network) => Err(Error::InvalidArgument(
+                Refusal::new(
+                    "a network broadcast names one remote network, 1 to 65534, not {}: \
+                     Broadcast::Local is this network and Broadcast::Global every network",
+                )
+                .with_value(u64::from(network)),
+            )),
             Broadcast::Global => self.broadcast_global_unconfirmed(choice, &buf).await,
         }
     }
@@ -198,12 +220,30 @@ macro_rules! acked {
     )*};
 }
 
+/// ConfirmedPrivateTransfer, whose raw request takes either acknowledgement
+/// (#2721): its typed answer needs the ACK's vendor and service numbers, so
+/// a Simple-ACK, which carries none, is the device's wrong kind.
+impl Confirmed for &PrivateTransferRequest {
+    type Answer = PrivateTransferAck;
+    fn choice(&self) -> ConfirmedServiceChoice {
+        ConfirmedServiceChoice::CONFIRMED_PRIVATE_TRANSFER
+    }
+    fn encode_into(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        self.encode(buf);
+        Ok(())
+    }
+    fn answer(self, data: Bytes) -> Result<PrivateTransferAck, Error> {
+        if data.is_empty() {
+            return Err(Error::UnexpectedAck {
+                service: ConfirmedServiceChoice::CONFIRMED_PRIVATE_TRANSFER,
+                complex: false,
+            });
+        }
+        PrivateTransferAck::decode(&data)
+    }
+}
+
 acked! {
-    &PrivateTransferRequest => ConfirmedServiceChoice::CONFIRMED_PRIVATE_TRANSFER,
-        PrivateTransferAck, |r, buf| {
-            r.encode(buf);
-            Ok(())
-        };
     &VTOpenRequest => ConfirmedServiceChoice::VT_OPEN, VTOpenAck, |r, buf| {
         r.encode(buf);
         Ok(())

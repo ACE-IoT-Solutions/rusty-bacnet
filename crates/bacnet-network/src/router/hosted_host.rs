@@ -70,6 +70,7 @@ impl Host for HostedHost<'_> {
         let ctx = ControlAuthContext {
             port_idx: usize::from(claim.port.0),
             port_network: claim.port_network,
+            class: claim.class,
             source_mac: MacAddr::from_slice(claim.source),
             provenance: self.provenance.clone(),
             trust: ControlTrust::from_provenance(&self.provenance),
@@ -80,7 +81,7 @@ impl Host for HostedHost<'_> {
             target_nets: claim.targets.iter().collect(),
             targets_omitted: claim.targets_omitted,
         };
-        self.gate.decide(&ctx, claim.class)
+        self.gate.decide(&ctx)
     }
 
     fn observe(&mut self, event: Event) {
@@ -255,6 +256,26 @@ fn log(event: Event) {
         Event::OwnOrigin { network } => debug!(
             network,
             "Router refused an NPDU it originated itself; no reject sent"
+        ),
+        // Once per network, at the sender's pace: the count is the
+        // operator's signal (`Counters::isolated_refusals`).
+        Event::IsolationRefused {
+            network,
+            port,
+            class,
+        } => debug!(
+            network,
+            port = port.0,
+            ?class,
+            "Router refused a route change from an isolated port"
+        ),
+        // At the sender's pace, like a gate denial, which logs nothing:
+        // the count is the operator's signal (`Counters::denied`).
+        Event::RemoteUpdateRefused { port, snet } => debug!(
+            port = port.0,
+            snet,
+            "Router refused a routing-table update from another network \
+             (RouterOptions::remote_table_updates is off)"
         ),
         Event::Purged { network } => debug!(network, "Purged stale route"),
         Event::PendingExpired { network } => {

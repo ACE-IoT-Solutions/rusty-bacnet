@@ -8,22 +8,19 @@ use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 use bacnet_endpoint::identity::{DeviceIdentity, build_database_with_extra};
-use bacnet_objects::audit::ObjectAuditPolicy;
 use bacnet_objects::database::ObjectDatabase;
-use bacnet_objects::object_profile::ObjectProfile;
-use bacnet_objects::present_value_access::PresentValueAccess;
+use bacnet_objects::object_profile::FileTagsPersistence;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::ReadAccessSpecification;
 use bacnet_types::enums::ObjectType;
 use bacnet_types::enums::{AuditLevel, ErrorClass, ErrorCode, Segmentation};
-use bacnet_types::primitives::ObjectIdentifier;
 use pyo3::exceptions::PyValueError;
 use pyo3::{PyErr, PyResult};
 
-use crate::algorithm_keywords::AlgorithmKeywords;
 use crate::errors::to_py_err;
 use crate::group_members;
+use crate::point_registration::{Registration, Storage, admit};
 use crate::types::{PyReadAccessSpec, PySegmentation};
 
 /// Parse an IPv4 string at construction time (ValueError before bind).
@@ -79,26 +76,28 @@ pub(crate) fn parse_device_uuid(
     }
 }
 
-/// Map an optional segmentation override (default: NO_SEGMENTATION, the proven value).
+/// Map an optional segmentation override (default: SEGMENTED_BOTH, the
+/// identity's default, which both of the endpoint's roles follow, #2617).
 pub(crate) fn parse_segmentation(segmentation: Option<PySegmentation>) -> Segmentation {
     segmentation
         .map(|s| s.to_rust())
-        .unwrap_or(Segmentation::NO_SEGMENTATION)
+        .unwrap_or(Segmentation::SEGMENTED_BOTH)
 }
 
 /// Build the single validated DeviceIdentity (builder-time only).
 ///
-/// All Encoding failures (instance range, receive ceiling, duplicate ports) map
-/// to ValueError before any bind/dial. No post-start mutation exists. The
-/// identity keeps its default service list: the full server lists the
-/// services it executes in the Device's Protocol_Services_Supported
-/// whatever the identity says (#2617).
+/// All Encoding failures (instance range, receive ceiling, segmentation and
+/// its segment timeout, duplicate ports) map to ValueError before any
+/// bind/dial. No post-start mutation exists. The identity keeps its default
+/// service list: the full server lists the services it executes in the
+/// Device's Protocol_Services_Supported whatever the identity says (#2617).
 pub(crate) fn build_identity(
     device_instance: u32,
     device_name: &str,
     vendor_id: u16,
     max_apdu: u16,
     segmentation: Segmentation,
+    apdu_segment_timeout_ms: u64,
     device_uuid: [u8; 16],
 ) -> PyResult<DeviceIdentity> {
     let identity = DeviceIdentity::new(device_instance, vendor_id)
@@ -106,7 +105,23 @@ pub(crate) fn build_identity(
     let identity = identity
         .with_max_apdu(max_apdu)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let identity = identity.with_segmentation(segmentation);
+    let identity = identity
+        .with_segmentation(segmentation)
+        .with_apdu_segment_timeout_ms(apdu_segment_timeout_ms);
+    // An unknown mode, or a zero segment timeout while segmenting, is the
+    // identity's own refusal; four segment timeouts must also be a deadline
+    // the clock can hold, as `BACnetServer` checks (#2617).
+    identity
+        .validate()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let representable = apdu_segment_timeout_ms
+        .checked_mul(4)
+        .and_then(|ms| std::time::Instant::now().checked_add(std::time::Duration::from_millis(ms)));
+    if representable.is_none() {
+        return Err(PyValueError::new_err(
+            "apdu_segment_timeout_ms is too large: four of it must fit the clock",
+        ));
+    }
     let identity = identity.with_device_uuid(device_uuid);
     let identity = identity.with_name(device_name.to_string());
     Ok(identity)
@@ -144,12 +159,23 @@ pub(crate) fn with_sc_port(
 /// parity: `ObjectDatabase::add` reports `Error::protocol(PROPERTY,
 /// DUPLICATE_NAME)`, never an Encoding string). So does an object whose
 /// identifier the Device, a port or another object already has (OBJECT /
-/// OBJECT_IDENTIFIER_ALREADY_EXISTS, #2250).
+/// OBJECT_IDENTIFIER_ALREADY_EXISTS, #2250). With `device_storage`, the
+/// Device keeps what peers write to it in that file (#2730); a file that
+/// can't be read or loaded raises, naming the path.
 pub(crate) fn build_database(
     identity: &DeviceIdentity,
     extra: Vec<Box<dyn BACnetObject>>,
+    device_storage: Option<&FileTagsPersistence>,
 ) -> PyResult<ObjectDatabase> {
-    build_database_with_extra(identity, extra).map_err(|e| match &e {
+    let built = match device_storage {
+        Some(storage) => bacnet_objects::device_identity::build_database_with_tags_persistence(
+            identity,
+            std::sync::Arc::new(storage.clone()),
+            extra,
+        ),
+        None => build_database_with_extra(identity, extra),
+    };
+    built.map_err(|e| match &e {
         bacnet_types::error::Error::Remote(RemoteError::Error { class, code })
             if *class == ErrorClass::PROPERTY && *code == ErrorCode::DUPLICATE_NAME =>
         {
@@ -160,11 +186,6 @@ pub(crate) fn build_database(
                 && *code == ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS =>
         {
             PyValueError::new_err(format!("duplicate object identifier: {e}"))
-        }
-        bacnet_types::error::Error::Encoding(message)
-            if message.contains("duplicate object name") =>
-        {
-            PyValueError::new_err(e.to_string())
         }
         _ => to_py_err(e),
     })
@@ -177,100 +198,16 @@ pub(crate) fn build_database(
 // settles. Boxes are built fresh; failed/cancelled attempts restore the params
 // only after releasing the corresponding resources.
 
-/// The Value-object keywords a pending registration keeps for its rebuilds
-/// (#1552, #1867): how Present_Value is written, whether Value_Source is
-/// served, and the optional Audit policy.
-#[derive(Clone, Debug)]
-pub(crate) struct ValueKeywords {
-    pub(crate) access: PresentValueAccess,
-    pub(crate) value_source_tracking: bool,
-    pub(crate) audit_policy: ObjectAuditPolicy,
-}
-
 /// Pending object parameters: one entry per pre-start `add_*` call.
 ///
 /// `Clone` so a failed/cancelled start restores the exact registration set
 /// for retry. Built into boxes at start time; the `add_*` call builds one
-/// first, so a bad registration fails there. `profile` is the parsed
-/// `tags`/`profile_location`/`profile_name` keywords (#1867), and
-/// `parameters` the event algorithm parameter keywords (#2410).
+/// first, so a bad registration fails there. A point is the shape
+/// `BACnetServer` registers and builds too (#2711, [`crate::point_registration`]).
 #[derive(Clone, Debug)]
 pub(crate) enum PendingObject {
-    AnalogInput {
-        instance: u32,
-        name: String,
-        units: u32,
-        present_value: f32,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    AnalogValue {
-        instance: u32,
-        name: String,
-        units: u32,
-        value: ValueKeywords,
-        present_value: Option<f32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    AnalogOutput {
-        instance: u32,
-        name: String,
-        units: u32,
-        present_value: Option<f32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    BinaryInput {
-        instance: u32,
-        name: String,
-        polarity: bacnet_types::enums::Polarity,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    BinaryOutput {
-        instance: u32,
-        name: String,
-        polarity: bacnet_types::enums::Polarity,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    BinaryValue {
-        instance: u32,
-        name: String,
-        value: ValueKeywords,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    MultiStateInput {
-        instance: u32,
-        name: String,
-        number_of_states: u32,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    MultiStateOutput {
-        instance: u32,
-        name: String,
-        number_of_states: u32,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
-    MultiStateValue {
-        instance: u32,
-        name: String,
-        number_of_states: u32,
-        access: PresentValueAccess,
-        value_source_tracking: bool,
-        present_value: Option<u32>,
-        profile: Option<ObjectProfile>,
-        parameters: AlgorithmKeywords,
-    },
+    /// One of the nine point builders' registrations.
+    Point(Registration),
     Group {
         instance: u32,
         name: String,
@@ -287,48 +224,51 @@ pub(crate) enum PendingObject {
     },
 }
 
-#[path = "pending_build.rs"]
 mod pending_build;
 
-/// Validate the fresh object before admission, then check the entire identity
-/// and pending set under the same lock that seals registrations at startup.
+/// What a call that needs the running session raises before start and
+/// after close (#2819): `BacnetStateError`, `state` `"not_running"`, since
+/// an endpoint starts again after its close.
+pub(crate) fn not_running(message: &str) -> PyErr {
+    crate::errors::lifecycle_error(bacnet_types::error::Lifecycle::NotRunning, message)
+}
+
+/// Admit a registration under the same lock that seals registrations at
+/// startup, against the Device, its declared Network Ports and the pending
+/// set, then keep it. Every kind passes through [`admit`], so a point is
+/// checked as `BACnetServer` checks it, in the same order (#2711). The
+/// object built here only proves the registration; start builds it again.
 pub(super) fn register_pending<S>(
     lifecycle: &super::lifecycle::Lifecycle<S, PendingObject>,
     identity: &DeviceIdentity,
     candidate: PendingObject,
 ) -> PyResult<()> {
-    let (kind, instance, _) = candidate.identity();
-    ObjectIdentifier::new_addressable(kind, instance).map_err(to_py_err)?;
-    candidate.build()?;
+    let ports: Vec<(u32, String)> = identity
+        .network_ports()
+        .iter()
+        .map(|port| (port.instance, port.object_name()))
+        .collect();
     lifecycle
         .with_open_registrations(|objects| {
-            let (_, _, name) = candidate.identity();
-            let check = |other_kind, other_instance, other_name: &str| -> PyResult<()> {
-                if (kind, instance) == (other_kind, other_instance) {
-                    return Err(PyValueError::new_err(format!(
-                        "duplicate object identifier: {kind:?} {instance}"
-                    )));
-                }
-                if name == other_name {
-                    return Err(PyValueError::new_err(format!(
-                        "duplicate object name: {name}"
-                    )));
-                }
-                Ok(())
-            };
-            check(ObjectType::DEVICE, identity.instance(), identity.name())?;
-            for port in identity.network_ports() {
-                check(ObjectType::NETWORK_PORT, port.instance, &port.object_name())?;
-            }
-            for object in objects.iter() {
-                let (kind, instance, name) = object.identity();
-                check(kind, instance, name)?;
-            }
+            let device = (ObjectType::DEVICE, identity.instance(), identity.name());
+            let ports = ports
+                .iter()
+                .map(|(instance, name)| (ObjectType::NETWORK_PORT, *instance, name.as_str()));
+            let kept = objects.iter().map(PendingObject::identity);
+            admit(
+                candidate.identity(),
+                std::iter::once(device).chain(ports).chain(kept),
+                || candidate.check(),
+                || candidate.build(),
+            )?;
             objects.push(candidate);
             Ok(())
         })
         .ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
+            // Registrations are sealed from the start until the close ends:
+            // a call only an unstarted endpoint takes (#2819).
+            crate::errors::lifecycle_error(
+                bacnet_types::error::Lifecycle::AlreadyStarted,
                 "cannot add objects while endpoint is starting, running, or stopping",
             )
         })?
@@ -341,11 +281,19 @@ pub(crate) fn build_pending_boxes(
     params.iter().map(PendingObject::build).collect()
 }
 
-pub(crate) fn lifecycle_error(error: super::lifecycle::LifecycleError<PyErr>) -> PyErr {
+/// What the endpoint owner's start or close failed with: a second start
+/// (`BacnetStateError`), a start that a close cancelled, the start's or
+/// stop's own error, or a worker that ended (`RuntimeError`).
+pub(crate) fn owner_error(error: super::lifecycle::LifecycleError<PyErr>) -> PyErr {
     match error {
-        super::lifecycle::LifecycleError::AlreadyStarted => to_py_err(
-            bacnet_types::error::Error::Encoding("endpoint already started".into()),
-        ),
+        // A lifecycle refusal: BacnetStateError, `state` already_started
+        // (#1833).
+        super::lifecycle::LifecycleError::AlreadyStarted => {
+            to_py_err(bacnet_types::error::Error::state(
+                bacnet_types::error::Lifecycle::AlreadyStarted,
+                "endpoint already started",
+            ))
+        }
         super::lifecycle::LifecycleError::StartupCancelled => {
             pyo3::exceptions::PyRuntimeError::new_err("endpoint startup cancelled by close")
         }
@@ -376,13 +324,14 @@ mod build_database_tests {
     use super::*;
     use bacnet_objects::analog::AnalogInputObject;
     use bacnet_types::enums::EngineeringUnits;
-    use pyo3::Python;
+    use pyo3::prelude::*;
 
     fn point(instance: u32, name: &str) -> Box<dyn BACnetObject> {
         Box::new(AnalogInputObject::new(instance, name, EngineeringUnits::NO_UNITS).unwrap())
     }
 
-    /// Both duplicate kinds surface as ValueError, named for what clashed.
+    /// Both duplicate kinds surface as ValueError, named for what clashed:
+    /// each from its typed protocol error, the only form they take (#1833).
     #[test]
     fn duplicate_names_and_identifiers_are_value_errors() {
         Python::initialize();
@@ -397,7 +346,7 @@ mod build_database_tests {
                 "duplicate object identifier",
             ),
         ] {
-            let Err(error) = build_database(&identity, extra) else {
+            let Err(error) = build_database(&identity, extra, None) else {
                 panic!("{expected}: the database must be refused");
             };
             Python::attach(|py| {
@@ -405,5 +354,24 @@ mod build_database_tests {
                 assert!(error.to_string().contains(expected), "{error}");
             });
         }
+    }
+
+    /// A second start is a lifecycle refusal: `BacnetStateError` with
+    /// `state` "already_started" and the text alone (#1833).
+    #[test]
+    fn a_second_start_raises_the_state_error() {
+        Python::initialize();
+        let error = owner_error(super::super::lifecycle::LifecycleError::<PyErr>::AlreadyStarted);
+        Python::attach(|py| {
+            let class = crate::errors::state_error_type(py).unwrap().bind(py);
+            let value = error.value(py);
+            assert!(value.get_type().is(class));
+            assert_eq!(
+                value.str().unwrap().to_str().unwrap(),
+                "endpoint already started"
+            );
+            let state: String = value.getattr("state").unwrap().extract().unwrap();
+            assert_eq!(state, "already_started");
+        });
     }
 }

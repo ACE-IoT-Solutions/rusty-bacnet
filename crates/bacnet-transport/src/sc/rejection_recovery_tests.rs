@@ -21,8 +21,7 @@ fn config(retries: u32) -> ScReconnectConfig {
     ScReconnectConfig {
         initial_delay_ms: 40,
         max_delay_ms: 40,
-        max_retries: retries,
-        retry_forever: false,
+        max_retries: Some(retries),
     }
 }
 
@@ -94,7 +93,7 @@ async fn rejection_deadline_without_reconnect_does_not_dial_or_consume_failover(
         .with_failover(failover)
         .with_connector(move || {
             count.fetch_add(1, Ordering::SeqCst);
-            async { Err(Error::Encoding("unexpected dial".into())) }
+            async { Err(Error::Transport(std::io::Error::other("unexpected dial"))) }
         });
     let _rx = started(&mut transport, &hub).await;
     expire(&transport, &hub, &observed).await;
@@ -272,7 +271,9 @@ async fn rejection_deadline_fresh_primary_restore_and_outstanding_disconnect_cle
                 if attempt == 1 {
                     Ok(client)
                 } else {
-                    Err(Error::Encoding("scripted dial failure".into()))
+                    Err(Error::Transport(std::io::Error::other(
+                        "scripted dial failure",
+                    )))
                 }
             }
         });
@@ -327,8 +328,7 @@ async fn rejection_deadline_active_failover_expiry_does_not_reuse_or_change_reco
             .with_reconnect(ScReconnectConfig {
                 initial_delay_ms: 500,
                 max_delay_ms: 500,
-                max_retries: 1,
-                retry_forever: false,
+                max_retries: Some(1),
             });
     let (rx, ()) = tokio::join!(
         transport.start(),

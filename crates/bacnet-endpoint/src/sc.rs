@@ -33,10 +33,11 @@ over a `TlsWebSocket` connected to a local constrained-TLS `ScHub` for RB-16 pro
 //! I/O.
 
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_server::server::{__endpoint_start_refused as start_refused, StartError};
 use bacnet_transport::sc::{ScReconnectConfig, ScTransport};
 use bacnet_transport::sc_frame::Vmac;
 use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::session::{EndpointSession, SessionConfig, SessionRole};
@@ -67,6 +68,7 @@ pub struct ScEndpointBuilder {
     role: SessionRole,
     session: SessionConfig,
     database: Option<ObjectDatabase>,
+    device_storage_path: Option<std::path::PathBuf>,
     identity: Option<crate::identity::DeviceIdentity>,
     vmac: Vmac,
     device_uuid: [u8; 16],
@@ -88,6 +90,7 @@ impl ScEndpointBuilder {
             role: SessionRole::Both,
             session: SessionConfig::default(),
             database: None,
+            device_storage_path: None,
             identity: None,
             vmac,
             device_uuid,
@@ -123,7 +126,20 @@ impl ScEndpointBuilder {
         network: u16,
         mac: MacAddr,
     ) -> Self {
-        self.source_audit_routed.push((device, network, mac));
+        self.source_audit_routed.push((device, network, mac, false));
+        self
+    }
+
+    /// [`source_audit_routed_device_binding`](Self::source_audit_routed_device_binding)
+    /// with the address marked one station (#2738); see
+    /// [`EndpointSession::with_source_audit_routed_one_station_binding`].
+    pub fn source_audit_routed_one_station_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: MacAddr,
+    ) -> Self {
+        self.source_audit_routed.push((device, network, mac, true));
         self
     }
 
@@ -155,6 +171,15 @@ impl ScEndpointBuilder {
     /// [`device`](Self::device) so I-Am vs ReadProperty agree.
     pub fn database(mut self, db: ObjectDatabase) -> Self {
         self.database = Some(db);
+        self
+    }
+
+    /// Keeps what peers write to the Device the session builds in the file
+    /// at `path` (#2730), a relative one resolved against the current
+    /// directory here; see [`EndpointSession::with_device_storage_path`].
+    pub fn device_storage_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        self.device_storage_path = Some(std::path::absolute(&path).unwrap_or(path));
         self
     }
 
@@ -193,13 +218,13 @@ impl ScEndpointBuilder {
 
     fn validate(&self) -> Result<(), Error> {
         if self.vmac == [0; 6] || self.vmac == bacnet_transport::sc_frame::BROADCAST_VMAC {
-            return Err(Error::Encoding(
-                "SC endpoint builder: vmac must not be zero or broadcast".into(),
+            return Err(Error::invalid_config(
+                "SC endpoint builder: vmac must not be zero or broadcast",
             ));
         }
         if self.device_uuid == [0; 16] {
-            return Err(Error::Encoding(
-                "SC endpoint builder: device_uuid is required and must not be all zero".into(),
+            return Err(Error::invalid_config(
+                "SC endpoint builder: device_uuid is required and must not be all zero",
             ));
         }
         if let Some(config) = &self.reconnect {
@@ -218,16 +243,21 @@ impl ScEndpointBuilder {
         // here without hub I/O so misconfiguration fails fast at composition
         // time. Duplicated (not imported) to keep the transport seam narrow.
         if !(3_000..=300_000).contains(&self.heartbeat_interval_ms) {
-            return Err(Error::Encoding(format!(
-                "SC endpoint builder: heartbeat interval must be 3000..=300000 ms, got {} ms",
-                self.heartbeat_interval_ms
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new(
+                    "SC endpoint builder: heartbeat interval must be 3000..=300000 ms, got {} ms",
+                )
+                .with_value(self.heartbeat_interval_ms),
+            ));
         }
         if self.heartbeat_timeout_ms <= self.heartbeat_interval_ms {
-            return Err(Error::Encoding(format!(
-                "SC endpoint builder: heartbeat timeout must exceed interval, got interval={} ms timeout={} ms",
-                self.heartbeat_interval_ms, self.heartbeat_timeout_ms
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new(
+                    "SC endpoint builder: heartbeat timeout must exceed interval, \
+                     got interval={} ms timeout={} ms",
+                )
+                .with_values(self.heartbeat_interval_ms, self.heartbeat_timeout_ms),
+            ));
         }
         Ok(())
     }
@@ -236,9 +266,8 @@ impl ScEndpointBuilder {
     ///
     /// Checks VMAC reservation, UUID presence, heartbeat range, reconnect
     /// config, source Audit bindings and the session settings (queue
-    /// capacity, pacing interval). Returns a typed
-    /// [`Error::Encoding`] on the first
-    /// violation, before any dial.
+    /// capacity, pacing interval). Returns [`Error::InvalidConfig`] on the
+    /// first violation, before any dial.
     pub fn validate_only(&self) -> Result<(), Error> {
         self.validate()
     }
@@ -249,11 +278,18 @@ impl ScEndpointBuilder {
     /// no TLS, no hub dial; the caller drives the hub side for handshake in
     /// unit proofs. RB-15 tests prefer [`LoopbackTransport`](bacnet_transport::loopback::LoopbackTransport)
     /// for full session I/O and use this builder for config validation only.
+    ///
+    /// A refusal, any of [`validate_only`](Self::validate_only)'s, hands
+    /// back the database [`database`](Self::database) gave, as given
+    /// ([`StartError`], #2766).
     pub fn build_loopback_session(
-        self,
+        mut self,
         ws: bacnet_transport::sc::LoopbackWebSocket,
-    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc::LoopbackWebSocket>>, Error> {
-        self.validate()?;
+    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc::LoopbackWebSocket>>, StartError>
+    {
+        if let Err(error) = self.validate() {
+            return Err(self.refused(error));
+        }
         let transport = ScTransport::new(ws, self.vmac);
         self.compose(transport, std::convert::identity)
     }
@@ -275,14 +311,19 @@ impl ScEndpointBuilder {
     /// [`reconnect`](Self::reconnect) can only reuse this socket.
     /// [`connect_hub_session`](Self::connect_hub_session) dials the hub
     /// itself and redials it, and a failover hub, after a loss.
+    ///
+    /// A refusal hands back the database [`database`](Self::database)
+    /// gave, as given ([`StartError`], #2766).
     #[cfg(feature = "sc-tls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub fn build_hub_session(
-        self,
+        mut self,
         ws: bacnet_transport::sc_tls::TlsWebSocket,
-    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>, Error> {
-        self.validate()?;
-        self.check_identity()?;
+    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>, StartError>
+    {
+        if let Err(error) = self.validate().and_then(|()| self.check_identity()) {
+            return Err(self.refused(error));
+        }
         let transport = ScTransport::new(ws, self.vmac);
         self.compose(transport, std::convert::identity)
     }
@@ -298,7 +339,9 @@ impl ScEndpointBuilder {
     /// checks, with this builder's [`reconnect`](Self::reconnect)
     /// configuration, which a failover hub needs. With it, the transport redials a lost hub and
     /// moves between the primary and failover hubs as the client's does;
-    /// follow it through [`EndpointSession::sc_link`].
+    /// follow it through [`EndpointSession::sc_link`]. A refusal, a dial
+    /// that fails included, hands back the database
+    /// [`database`](Self::database) gave, as given ([`StartError`], #2766).
     ///
     /// ```no_run
     /// use bacnet_endpoint::sc::ScEndpointBuilder;
@@ -327,7 +370,8 @@ impl ScEndpointBuilder {
     pub async fn connect_hub_session(
         self,
         hubs: bacnet_transport::sc::ScHubDialer,
-    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>, Error> {
+    ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>, StartError>
+    {
         self.connect_hub_session_wrapped(hubs, std::convert::identity)
             .await
     }
@@ -345,12 +389,15 @@ impl ScEndpointBuilder {
         mut self,
         hubs: bacnet_transport::sc::ScHubDialer,
         wrap: impl FnOnce(ScTransport<bacnet_transport::sc_tls::TlsWebSocket>) -> U,
-    ) -> Result<EndpointSession<U>, Error> {
-        self.validate()?;
-        self.check_identity()?;
+    ) -> Result<EndpointSession<U>, StartError> {
+        if let Err(error) = self.validate().and_then(|()| self.check_identity()) {
+            return Err(self.refused(error));
+        }
         let reconnect = self.reconnect.take();
-        let transport = Box::pin(hubs.connect(self.vmac, reconnect)).await?;
-        self.compose(transport, wrap)
+        match Box::pin(hubs.connect(self.vmac, reconnect)).await {
+            Ok(transport) => self.compose(transport, wrap),
+            Err(error) => Err(self.refused(error)),
+        }
     }
 
     /// A composed identity must carry this builder's device UUID and, when
@@ -364,8 +411,8 @@ impl ScEndpointBuilder {
         // otherwise the identity carries no VMAC and the builder VMAC wins.
         // UUID must always agree when both are present (durable-caller-owned).
         if identity.device_uuid() != [0; 16] && identity.device_uuid() != self.device_uuid {
-            return Err(Error::Encoding(
-                "SC endpoint: identity device UUID must equal builder device_uuid".into(),
+            return Err(Error::invalid_config(
+                "SC endpoint: identity device UUID must equal builder device_uuid",
             ));
         }
         let sc_macs: Vec<_> = identity
@@ -378,11 +425,16 @@ impl ScEndpointBuilder {
             .map(|p| p.mac.as_slice().to_vec())
             .collect();
         if !sc_macs.is_empty() && !sc_macs.iter().any(|m| m.as_slice() == self.vmac) {
-            return Err(Error::Encoding(
-                "SC endpoint: identity SC port VMAC must equal builder vmac".into(),
+            return Err(Error::invalid_config(
+                "SC endpoint: identity SC port VMAC must equal builder vmac",
             ));
         }
         Ok(())
+    }
+
+    /// A build refused for `error`, handing back the database (#2766).
+    fn refused(&mut self, error: Error) -> StartError {
+        start_refused(error, self.database.take())
     }
 
     /// Gives `transport` this node's UUID and heartbeat timing, and the
@@ -396,7 +448,7 @@ impl ScEndpointBuilder {
         mut self,
         transport: ScTransport<W>,
         wrap: impl FnOnce(ScTransport<W>) -> U,
-    ) -> Result<EndpointSession<U>, Error> {
+    ) -> Result<EndpointSession<U>, StartError> {
         let mut transport = transport
             .with_device_uuid(self.device_uuid)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
@@ -404,13 +456,21 @@ impl ScEndpointBuilder {
         if let Some(config) = self.reconnect.take() {
             transport = transport.with_reconnect(config);
         }
-        let link = transport.link_monitor();
         let tap = transport.frame_tap().clone();
-        let mut endpoint = EndpointSession::new(wrap(transport), self.role, self.session.clone())?;
+        let link = transport.link_monitor();
+        // `validate` checked the session settings before any dial.
+        let mut endpoint =
+            match EndpointSession::new(wrap(transport), self.role, self.session.clone()) {
+                Ok(endpoint) => endpoint,
+                Err(error) => return Err(self.refused(error)),
+            };
         endpoint.sc_link = Some(link);
         endpoint.frame_tap = Some(tap);
         if let Some(db) = self.database.take() {
             endpoint = endpoint.with_database(db);
+        }
+        if let Some(path) = self.device_storage_path.take() {
+            endpoint = endpoint.with_device_storage_path(path);
         }
         if let Some(id) = self.identity.take() {
             endpoint = endpoint.device(id);

@@ -14,7 +14,7 @@ pub(super) struct DispatchContext<'a, T: TransportPort + 'static> {
     pub(super) cov_tx: &'a broadcast::Sender<COVEvent>,
     pub(super) cov_registry: Option<&'a Arc<cov_registry::Registry>>,
     /// Receive settings for segmented confirmed COV, when enabled.
-    pub(super) cov_segments: Option<&'a request_reassembly::Settings>,
+    pub(super) reassembly_hold: Option<&'a bacnet_endpoint_core::seat::SeatHold>,
     /// Broadcast channel for event notifications.
     pub(super) event_tx: &'a broadcast::Sender<ReceivedEventNotification>,
     /// How confirmed COV notifications are acknowledged.
@@ -27,6 +27,9 @@ pub(super) struct DispatchContext<'a, T: TransportPort + 'static> {
     pub(super) i_have_tx: &'a broadcast::Sender<ReceivedIHave>,
     /// Routes for SegmentAcks awaiting an outgoing segmented request.
     pub(super) seg_ack_senders: &'a Arc<SyncMutex<HashMap<SegAckKey, SegmentAckRoute>>>,
+    /// The routed paths, each with the request open through it: which
+    /// station a routed device's answer must come through (#2831).
+    pub(super) routed_path_limits: &'a RoutedPathLimits,
     /// The client's throttle on warnings for received APDUs and service
     /// requests that fail to decode (#1950).
     pub(super) decode_warning: &'a WarnThrottle,
@@ -49,4 +52,20 @@ pub(super) struct InboundApdu<'a> {
     pub(super) is_group: bool,
     /// Channel for handing a reply to the transport, when it supplied one.
     pub(super) reply_tx: Option<oneshot::Sender<Bytes>>,
+}
+
+/// Where an answer came from and the transaction it answers: what each of
+/// the dispatcher's answer functions takes (#2558). Built in the arm that
+/// calls one, from the values `dispatch_apdu` already holds.
+pub(super) struct AnswerSource<'a> {
+    /// Immediate MAC the APDU arrived from.
+    pub(super) source_mac: &'a [u8],
+    /// The peer's SNET/SADR when the APDU arrived through a router.
+    pub(super) source_network: &'a Option<NpduAddress>,
+    /// Transport provenance snapshot for this APDU.
+    pub(super) provenance: TransportProvenance,
+    /// TSM key MAC of the transaction the answer belongs to.
+    pub(super) tsm_mac: MacAddr,
+    /// Canonical identity of the answering peer.
+    pub(super) canonical_peer: CanonicalPeer,
 }

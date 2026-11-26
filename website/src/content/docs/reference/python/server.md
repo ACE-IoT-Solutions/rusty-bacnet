@@ -21,8 +21,19 @@ Their None defaults preserve non-SC use and positional layout only.
 start() loads the explicit site CA and operational cert/key, each file read
 up to 1 MiB, before dialing or draining registrations. Local TLS
 configuration errors, a larger file included, raise RuntimeError;
-repair the files and retry on the same server. Later startup failures do not
-have a general registration rollback guarantee.
+repair the files and retry on the same server. So does any other refused
+start: a `registered_network_port` that names no Network Port or
+differs from the transport's, an SC hub that refuses the dial, a Device
+that cannot be prepared (#2748), and a refusal inside the Rust server's
+own startup, such as a transport that will not bind (#2752). Only a
+cancel that lands once the registrations are in the Rust server's
+builder drops them: an SC dial and a router lookup wait before that
+hand-off, while a B/IP, B/IPv6 or MS/TP start hands them over at once.
+
+Every `add_*` builder checks its object at the call (#2711, #2748):
+instance 4194303 raises BacnetError; an identifier or name the Device or
+an earlier registration already has raises ValueError. A repeated
+identifier is refused, not replaced: register each object once.
 
 SC also requires keyword-only sc\_device\_uuid: exactly 16 bytes, not all zero,
 copied at construction. Missing, None, wrong length, or all-zero values
@@ -31,9 +42,12 @@ Provision before deployment and durably reuse the same UUID for the device's
 lifetime. No generation, persistence, change detection, or version/variant
 enforcement is provided. Non-SC transports ignore this option.
 
-Segmentation defaults to NO\_SEGMENTATION. When enabled, apdu\_segment\_timeout\_ms must
-be positive; it supplies Device APDU\_SEGMENT\_TIMEOUT, response SegmentACK
-waits, and the 4\*Tseg receive inactivity timer. A separate 16-second
+Segmentation defaults to SEGMENTED\_BOTH, as the Rust server's and the
+endpoints' do (#2617); `segmentation_supported=Segmentation.NO_SEGMENTATION`
+keeps every request and answer to one APDU. While it segments,
+apdu\_segment\_timeout\_ms must be positive; it supplies Device
+APDU\_SEGMENT\_TIMEOUT, response SegmentACK waits, and the 4\*Tseg receive
+inactivity timer. A separate 16-second
 no-progress resource limit aborts abandoned request transfers with OTHER.
 
 `device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
@@ -57,7 +71,9 @@ await server.start()
 ```
 
 For B/IP, `interface` accepts an IPv4 literal or the exact OS interface
-name (the adapter friendly name on Windows), resolved to one usable IPv4 address.
+name (the adapter friendly name on Windows), resolved once, at
+construction, to one usable IPv4 address; `broadcast_address` is not
+derived from it. See "Selecting an interface" in docs/python-api.md.
 
 ### BACnetServer.__init__
 
@@ -125,9 +141,11 @@ def __init__(
     time_sync_policy: TimeSyncPolicy | None = None,
     utc_offset_minutes: int = 0,
     daylight_savings: bool = False,
+    clock_zone_writable: bool = False,
+    device_storage_path: Optional[str] = None,
     share_port_by_address: bool = False,
     share_wildcard_port: bool = False,
-    segmentation_supported: Segmentation = Segmentation.NO_SEGMENTATION,
+    segmentation_supported: Segmentation = Segmentation.SEGMENTED_BOTH,
     apdu_segment_timeout_ms: int = 5000,
     bbmd: Optional[Bbmd] = None,
     foreign_device: Optional[ForeignDevice] = None,
@@ -155,8 +173,14 @@ to the router reach this server, except confirmed COV notifications,
 which go to the client, and confirmed event notifications, which
 reach both with only this server's answer sent; confirmed audit
 notifications reach this server alone. Unconfirmed requests reach
-both. A start refused before the server runs, such as for a
-duplicate object name, leaves the share for the next start.
+both. A start refused before the Rust server's own startup, such as
+a Device that cannot be prepared, leaves the share
+for the next start; one that server refuses after it took the share
+spends it, though the registrations come back (#2752). Its
+local broadcasts, such as its I-Am and an unconfirmed event
+notification to a local-broadcast recipient, go to each of the
+router's networks, isolated ports included (#2601); a recipient
+that names one network's number reaches that network alone.
 `apdu_segment_timeout_ms` must be under 60000. `router` without
 `transport="router"`, or the reverse, raises ValueError.
 
@@ -209,6 +233,35 @@ default 0 and False): the zone the Device clock starts in, as
 construction. Every `start()` begins in it, so the Schedule pass
 that runs as the server starts already judges local time there;
 `set_clock_zone` changes it while the server runs, until `stop()`.
+
+`clock_zone_writable` (keyword-only, default False): let peers
+write the Device's UTC\_Offset and Daylight\_Savings\_Status. Off, both
+are read-only on the wire, as before. On, a WriteProperty or
+WritePropertyMultiple of either moves the clock as
+`set_clock_zone` does, and an Audit Reporter monitoring the Device
+reports it like any write. UTC\_Offset takes a multiple of 15 within
+-1440..=1440 (else VALUE\_OUT\_OF\_RANGE), Daylight\_Savings\_Status a
+BOOLEAN. Without `device_storage_path` a written zone lasts until
+`set_clock_zone`, which is newer, or `stop()`; the next
+`start()` uses the constructor's zone. With it, the written half
+is kept and wins over the constructor's zone at the next start.
+
+`device_storage_path` (keyword-only, default None): the file in
+which the Device keeps what peers write to it (#2730): a written
+Description, and with `clock_zone_writable` a written UTC\_Offset
+and Daylight\_Savings\_Status. Each such write is saved before it is
+answered, and the next server started on the same path serves it
+again. Without it the writes are answered and served until
+`stop()`, then lost. The Device has no Tags row. A relative path
+is resolved against the current directory here. A missing file or
+directory starts with nothing kept; `start()` raises BacnetError,
+naming the path, for a file it can't read or load (damaged, from a
+newer release, or another Device's, which names both Devices: remove
+or move it, or give each instance its own path), and leaves the file
+alone. A write whose save fails is refused with DEVICE /
+OPERATIONAL\_PROBLEM. One server at a time per path; an empty path
+raises BacnetError, as an object's `storage_path` does. The full
+rules are in docs/rust-api.md, "The Device's storage".
 
 `bbmd` / `foreign_device` (at most one, else ValueError): run
 the device as a BBMD (B/IP only), or register it with a BBMD on
@@ -280,6 +333,19 @@ def add_analog_input(
     clear_written_reporting: bool = False,
 ) -> None
 ```
+
+The nine analog, binary and multi-state builders check each
+registration as the endpoints' builders do, in the same order
+(#2711), before anything is kept: instance 4194303 or past raises
+BacnetError; an object identifier or name the Device or an earlier
+registration already has raises ValueError (a repeated identifier
+used to replace the earlier object silently); then the profile
+keywords and the values. A refused registration leaves the others
+for start and touches no `storage_path` file, even with
+`clear_written_reporting=True`. `present_value` must
+be finite: NaN or an infinity raises BacnetProtocolError
+VALUE\_OUT\_OF\_RANGE. A multi-state builder takes 1 to 1024 states;
+another count raises BacnetError.
 
 `tags`, `profile_location` and `profile_name` provision the
 optional Tags, Profile\_Location and Profile\_Name rows; each is served
@@ -1163,7 +1229,10 @@ one is pending or under way, and it answers `(progress, expected, actual)`: `"wa
 the expected and actual levels as `ShedLevel` mappings in the
 requested choice. `stop` (optional, needs `shed`) is called with
 no arguments once a request `shed` was asked about ends, removal
-of the object and a start that fails or is cancelled included. Make
+of the object included, and when a start that asked fails or is
+cancelled. A start that fails keeps the request for the next start
+(#2752); a cancelled one drops the objects, so only the file a
+`storage_path` names keeps it. Make
 it idempotent: it may come with no loads shed, and twice with no
 `shed` between. Without `shed` nothing is shed: a request runs
 SHED\_NON\_COMPLIANT from Start\_Time to its end.
@@ -2181,11 +2250,25 @@ def start(self) -> Awaitable[None]
 
 Start the server and begin accepting BACnet requests.
 
-An added object the database won't take raises ValueError: "duplicate
-object name: ..." for a name another object holds, or "object
-refused: ..." for any other reason, an instance of 4194303 among them
-(#2171). An endpoint's server (`await endpoint.server()`) raises
-RuntimeError: it started with its endpoint.
+Every registration was checked at its `add_*` call, so the database
+takes them all. A refused start keeps them, with the Audit recipient,
+the forwarders' save counters and the forwarding configuration, for
+the next call: a `registered_network_port` that names no port or
+differs from the transport's, an SC hub that refuses the dial, a
+Device that cannot be prepared (#2748), and a refusal from the Rust
+server's own start, such as a port already in use or start-up
+validation (#2752). That last kind spends a router's application
+port: start the router again before the next start. A
+cancel gives the registrations back only before they reach the Rust
+server: an SC dial and a router lookup wait before that, while a
+B/IP, B/IPv6 or MS/TP start hands them over at once, so cancelling it
+once it runs drops them. What a cancelled start gives back returns
+when its future is dropped, so an immediate retry can raise "in
+progress" once. A running
+server raises RuntimeError; so do `add_*`, `set_file_*`, Audit
+selection and a second `start()` while a start is in progress. An endpoint's server
+(`await endpoint.server()`) raises RuntimeError: it started with its
+endpoint.
 
 ### BACnetServer.stop
 
@@ -2761,7 +2844,11 @@ between the zones. Schedules, calendars, Notification Class
 recipient windows and new timestamps follow at their next look at
 the clock; timestamps already recorded stay. A request sees the old
 pair or the new, never one of each. Both properties stay read-only
-to a peer.
+to a peer unless the constructor's `clock_zone_writable` is True;
+a peer's write then moves the clock the same way. With
+`device_storage_path` too, this change, newer, drops a half a peer
+wrote from the file first; a save that fails raises and changes
+nothing.
 
 An offset outside that range or off the 15-minute grid raises
 ValueError when called, and an int past 16 bits OverflowError;

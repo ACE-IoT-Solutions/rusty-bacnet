@@ -23,11 +23,17 @@ impl QueryTarget {
         if *hop != self.hop {
             return false;
         }
-        // The selected next hop can reject forwarding to this DNET.
-        if source.is_none()
-            && let Some(station) = &self.station
+        // Any router on the path that cannot reach the queried network
+        // rejects it, and each router between relays that reject back
+        // toward this client (Clause 6.6.3.5): it comes through the
+        // selected hop, without an SNET from the hop itself and with the
+        // rejecting router's network from one further on. Reason 4 is
+        // never this query's: the query is nine octets, shorter than any
+        // link's limit, so it answers a larger request to the same network.
+        if let Some(station) = &self.station
+            && reject.network == station.network
         {
-            return reject.network == station.network;
+            return reject.reason != RejectMessageReason::MESSAGE_TOO_LONG;
         }
         // A rejection by the destination itself must have its full identity.
         self.answers(hop, source)
@@ -59,6 +65,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             network,
             mac_address: MacAddr::from_slice(mac),
         };
+        // A table query goes to one router, so a station named for a local
+        // broadcast is asked through the router found for it, as one named
+        // by its address alone is.
+        let station = match station {
+            Station::RoutedViaLocalBroadcast { network, mac, .. } => Station::remote(network, &mac),
+            station => station,
+        };
         let hop = match self.with_fixed_route(station) {
             Ok(Station::Routed { router, .. }) => router,
             Ok(Station::Local { mac }) => {
@@ -67,10 +80,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     station: None,
                 });
             }
-            Ok(Station::Remote { .. }) => unreachable!("a fixed route has a next hop"),
+            // A fixed route always names its next hop; were it ever not to,
+            // no hop is known.
+            Ok(Station::Remote { .. } | Station::RoutedViaLocalBroadcast { .. }) => {
+                return Err(RoutingTableError::RouteUnresolved {
+                    network,
+                    candidates: 0,
+                });
+            }
             Err(Error::UnknownDevice { .. }) => {
                 let (routers, lost) = self
-                    .collect_routers(Some(network), None, wait, true)
+                    .collect_routers(None, Some(network), wait, true)
                     .await?;
                 if lost != 0 {
                     return Err(RoutingTableError::DiscoveryIncomplete { network, lost });

@@ -8,10 +8,17 @@
 //! [`DecodeError`], an encoder's [`EncodeError`], a constructor's
 //! [`RangeError`] and a segmenter's [`SegmentationError`] carry static
 //! labels or numbers and build their text when displayed (#1646, #1802).
-//! The variants holding a `String` or a `Box` need `alloc`.
+//! The local refusals ([`Error::State`], [`Error::InvalidConfig`],
+//! [`Error::InvalidArgument`], [`Error::Unsupported`] and
+//! [`Error::LimitReached`], #1833) are there too, with a static
+//! [`Refusal`] whose owned text needs `std`, and so is persisted state
+//! ([`Error::Persistence`]), whose [`PersistenceError`] owns context text
+//! only with `std`. A
+//! structured error's detail needs `alloc`; the variants for I/O and a
+//! client's lookups need `std`. There is no variant for text alone.
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 use core::time::Duration;
 
@@ -22,13 +29,21 @@ use crate::constructed::BACnetObjectPropertyReference;
 use crate::data_link::DataLink;
 #[cfg(feature = "alloc")]
 use crate::enums::PropertyIdentifier;
-use crate::enums::{AbortReason, ErrorClass, ErrorCode, RejectReason};
+use crate::enums::{AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason};
 
 mod decode;
 mod encode;
+#[cfg(feature = "std")]
+mod network_reject;
+mod persistence;
+mod refusal;
 mod remote;
 pub use decode::{DecodeError, DecodingKind, RangeError};
 pub use encode::{EncodeError, SegmentationError};
+#[cfg(feature = "std")]
+pub use network_reject::NetworkReject;
+pub use persistence::{PersistenceError, PersistenceErrorKind};
+pub use refusal::{Lifecycle, Refusal};
 #[cfg(feature = "alloc")]
 use remote::ProtocolText;
 pub use remote::RemoteError;
@@ -56,6 +71,34 @@ impl fmt::Display for NotAdvancing {
     }
 }
 
+/// [`Error::UnexpectedAck`]'s text.
+struct WrongAck {
+    service: ConfirmedServiceChoice,
+    complex: bool,
+}
+
+impl fmt::Display for WrongAck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (came, takes) = if self.complex {
+            ("a Complex-ACK", "a Simple-ACK, with no data")
+        } else {
+            ("a Simple-ACK", "a Complex-ACK carrying its result")
+        };
+        f.write_str("the device acknowledged ")?;
+        remote::write_name(
+            f,
+            self.service.name(),
+            "service",
+            u16::from(self.service.to_raw()),
+        )?;
+        write!(
+            f,
+            " with {came}, but that service is acknowledged with {takes}; whether it \
+             carried out the request is unknown"
+        )
+    }
+}
+
 /// [`Error::InitiationDisabled`]'s text.
 struct Initiation {
     sent: bool,
@@ -73,6 +116,26 @@ impl fmt::Display for Initiation {
                 "not sent: DeviceCommunicationControl has disabled initiation on this device \
                  until it is enabled again",
             )
+        }
+    }
+}
+
+/// [`Error::RequestCutOff`]'s text, which says whether the device may
+/// have carried the request out.
+struct CutOff {
+    sent: bool,
+}
+
+impl fmt::Display for CutOff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "the request ended without an answer: the client stopped, or its link stopped or \
+             lost its connection, ",
+        )?;
+        if self.sent {
+            f.write_str("after it went out, and the device may have carried it out")
+        } else {
+            f.write_str("before it was sent: the device did not get it")
         }
     }
 }
@@ -125,10 +188,64 @@ impl fmt::Display for Candidates<'_> {
 ///
 /// It is `#[non_exhaustive]`, so a `match` on it outside this crate needs a
 /// wildcard arm. Some variants exist only with a feature, and any crate in a
-/// build can turn that on: `Error::Transport`, `Error::AmbiguousDevice`
-/// and `Error::UnknownDevice` need `std`, and the variants that hold a
-/// `String` or a `Box` need `alloc`. Without the attribute a
-/// match written against a smaller build would stop compiling (#1604).
+/// build can turn that on: `Error::Transport`, `Error::NetworkRejected`,
+/// `Error::RouterBusyTimeout`, `Error::AmbiguousDevice` and
+/// `Error::UnknownDevice` need `std`, and `Error::Structured` needs
+/// `alloc`. Without the attribute a match written against a smaller build
+/// would stop compiling (#1604).
+///
+/// # Matching
+///
+/// A caller tells errors apart by variant, never by text (#1833): every
+/// error's text is for a person to read and may change, and a number or
+/// fact a caller acts on has a typed variant or field of its own, as
+/// [`Error::SendTooLong`] carries its length and limit. The variants fall
+/// into these groups:
+///
+/// - A peer's answer: [`Error::Remote`] and `Error::Structured` (an Error,
+///   Reject or Abort PDU; [`Error::remote`] gives either as a
+///   [`RemoteError`]), a router's refusal on the way
+///   ([`Error::RoutedPathTooLong`], `Error::NetworkRejected`), and an
+///   acknowledgement of the wrong kind ([`Error::UnexpectedAck`]).
+/// - No answer: [`Error::Timeout`] and `Error::RouterBusyTimeout`; a
+///   request its client or link stopped under, [`Error::RequestCutOff`];
+///   one DeviceCommunicationControl held back, [`Error::InitiationDisabled`].
+///   The last two say whether the request may have gone out.
+/// - This side's refusal, with nothing sent: [`Error::State`] with its
+///   [`Lifecycle`], [`Error::InvalidConfig`], [`Error::InvalidArgument`],
+///   [`Error::Unsupported`] and [`Error::LimitReached`], each with a
+///   [`Refusal`]; and the ones that carry what a caller acts on:
+///   [`Error::SendTooLong`], [`Error::UnsupportedTransport`],
+///   [`Error::RoutedPathCapacityExceeded`], `Error::AmbiguousDevice` and
+///   `Error::UnknownDevice`.
+/// - A codec's refusal: [`Error::Encode`], [`Error::Decoding`] (with its
+///   offset and [`DecodingKind`]), [`Error::Range`],
+///   [`Error::Segmentation`] and [`Error::BufferTooShort`]; and a
+///   well-formed answer that breaks a rule the client checks:
+///   [`Error::ReadRangeViolation`], [`Error::LogNotAdvancing`].
+/// - I/O the operating system reported, with its error as the source:
+///   `Error::Transport`. That is any OS I/O: a socket's, a serial port's,
+///   and a storage file's, which the stack's own file backends return
+///   this way.
+/// - Persisted state: [`Error::Persistence`], for stored octets that are
+///   damaged, belong to another object or a version this build doesn't
+///   read, or were refused as they were encoded, and for a storage backend
+///   that failed with no OS error behind it. Its
+///   [`PersistenceError::kind`] and [`PersistenceError::is_damage`] say
+///   which.
+///
+/// What a component is built or started with (a value given to a
+/// builder's setter, an option, a table it is configured with, or a value
+/// made to configure it) that it refuses is [`Error::InvalidConfig`],
+/// wherever the check runs, even when the setter is the call that hands the
+/// value over. A value refused at the call that hands it to a component is
+/// [`Error::InvalidArgument`], even when the component would keep it (a
+/// device added to the client's table, a routed path's limit, a server's new
+/// clock zone), and so is text parsed once. There is no variant for text
+/// alone: an application's own code that returns this error (a storage
+/// backend, a hook, a transport) picks the variant for what failed, such as
+/// [`PersistenceError::new`] for its storage or a local refusal with
+/// `Refusal::text` (with `std`) where it names a run-time value.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 // Clippy fails if the attribute above goes.
@@ -166,6 +283,55 @@ pub enum Error {
         dnet: u16,
     },
 
+    /// A router the request went through refused it at the network layer
+    /// by sending back a Reject-Message-To-Network (Clause 6.4.4), so no device
+    /// answered (#2724). The client ends a routed confirmed request this
+    /// way at once for reason 1 (no route to the network), 6 (an address
+    /// length the router found invalid), 0 (other), 5 (a security refusal
+    /// in earlier revisions) and any reason the standard doesn't define.
+    /// A busy router (reason 2) leaves the request to its retries
+    /// ([`Error::RouterBusyTimeout`] when they run out), reason 3 answers a
+    /// network message and never a request, and reason 4 is
+    /// [`Error::RoutedPathTooLong`]. Whether the device can have received
+    /// the request is [`NetworkReject::single_frame`]. Only with `std`,
+    /// which the client needs; the reject is boxed so the rare refusal
+    /// widens no `Result<_, Error>` (on a 32-bit target the error stays 48
+    /// octets).
+    #[cfg(feature = "std")]
+    #[error("{0}")]
+    NetworkRejected(Box<NetworkReject>),
+
+    /// A routed confirmed request ran out of retries with no answer after
+    /// the router it went through said, with a reject of reason 2, that it
+    /// was busy for the station's network (#2724). It is a timeout as the
+    /// client's TSM_TIMEOUT abort is, and the low-level crates' and the
+    /// bindings' timeout handling treat it as one; the reject names the
+    /// router and the network. Whether the device received the request is
+    /// unknown, as after any timeout. Only with `std`, boxed as
+    /// [`Error::NetworkRejected`] is.
+    #[cfg(feature = "std")]
+    #[error("BACnet abort: tsm-timeout; on the way, {}", .0.what())]
+    RouterBusyTimeout(Box<NetworkReject>),
+
+    /// The device acknowledged a confirmed request with the other kind of
+    /// acknowledgement than its service takes (#2721): a Complex-ACK for a
+    /// service whose result carries no data, such as WriteProperty, or a
+    /// Simple-ACK for one whose result does, such as ReadProperty (Clause
+    /// 21 lists the services with a Complex-ACK). The transaction ended
+    /// there, as any final acknowledgement ends it, so the client retries
+    /// nothing and sends the device nothing more; whether the device
+    /// carried out the request is unknown. A service the standard doesn't
+    /// define, or one it removed, takes either.
+    #[error("{}", WrongAck { service: *.service, complex: *.complex })]
+    UnexpectedAck {
+        /// The service the request asked for.
+        service: ConfirmedServiceChoice,
+        /// `true`: a Complex-ACK came for a service acknowledged with a
+        /// Simple-ACK; `false`: a Simple-ACK came for one acknowledged with
+        /// a Complex-ACK.
+        complex: bool,
+    },
+
     /// The client cannot safely allocate state for another routed path.
     #[error("routed path state capacity of {capacity} entries is exhausted")]
     RoutedPathCapacityExceeded {
@@ -196,11 +362,55 @@ pub enum Error {
         limit: usize,
     },
 
-    /// Error encoding a PDU, with a formatted message. Only with `alloc`;
-    /// [`Error::Encode`] is the static form, which the codec crates return.
-    #[cfg(feature = "alloc")]
-    #[error("encoding error: {0}")]
-    Encoding(String),
+    /// A call its component's lifecycle state turns down (#1833), such as
+    /// a second start, a send on a transport that isn't started or has
+    /// stopped, or a send on a BACnet/SC link whose hub connection isn't
+    /// up. Nothing was done. The [`Lifecycle`] says which state; the
+    /// [`Refusal`] is text for a person.
+    #[error("{1}")]
+    State(Lifecycle, Refusal),
+
+    /// What the component is built or started with, refused (#1833): a
+    /// builder setting, an option, a table it is configured with or a value
+    /// made to configure it, such as a timeout outside its range or two
+    /// modes that can't run together.
+    #[error("{0}")]
+    InvalidConfig(Refusal),
+
+    /// A value refused at the call that hands it over, or text parsed once,
+    /// before anything was sent (#1833), such as an address or MAC of the
+    /// wrong form for the link, or a send's options the link can't carry.
+    /// It is so even when the component would keep the value, such as a
+    /// device added to the client's table.
+    #[error("{0}")]
+    InvalidArgument(Refusal),
+
+    /// What was asked isn't offered here (#1833): not on this platform, not
+    /// in this build, or not by this kind of component. A data link that
+    /// can't carry an operation is [`Error::UnsupportedTransport`], which
+    /// names both links.
+    #[error("{0}")]
+    Unsupported(Refusal),
+
+    /// A resource cap was reached (#1833): a table is full, a counter has
+    /// run out, a configuration asks for more than the cap allows, or a
+    /// resource one holder takes at a time is held by another.
+    #[error("{0}")]
+    LimitReached(Refusal),
+
+    /// Persisted state that couldn't be loaded or saved (#1833): stored
+    /// octets that are damaged or cut short, a sound snapshot saved for
+    /// another object or by a build this one can't read, a snapshot refused
+    /// as it was encoded, or a storage backend that failed with no
+    /// operating-system error behind it (an OS I/O failure, a storage
+    /// file's included, is `Error::Transport`). The [`PersistenceError`]
+    /// says which by its [`kind`](PersistenceError::kind), and
+    /// [`is_damage`](PersistenceError::is_damage) says whether a backend
+    /// that keeps two copies should pass over this one for the other. Its
+    /// own text is static, so it exists in every build; with `std`,
+    /// `Error::with_context` can put a path or other context in front.
+    #[error("{0}")]
+    Persistence(PersistenceError),
 
     /// A value an encoder or validator refused, with a static label
     /// (#1802). The encoders and validators of `bacnet-encoding` and
@@ -219,7 +429,9 @@ pub enum Error {
     #[error("transport error: {0}")]
     Transport(#[from] std::io::Error),
 
-    /// Request timed out.
+    /// Request timed out: its peer gave no answer within the wait. A send
+    /// that this side's own link didn't carry before a deadline is an
+    /// `Error::Transport` of kind `TimedOut` instead (#1833).
     #[error("request timed out after {0:?}")]
     Timeout(Duration),
 
@@ -236,12 +448,6 @@ pub enum Error {
         /// Bytes actually available.
         have: usize,
     },
-
-    /// Value out of valid range, with a formatted message. Only with
-    /// `alloc`; [`Error::Range`] is the static form.
-    #[cfg(feature = "alloc")]
-    #[error("value out of range: {0}")]
-    OutOfRange(String),
 
     /// A value a checked constructor refused, with a static label (#1646),
     /// such as an object type or instance
@@ -277,11 +483,12 @@ pub enum Error {
         candidates: Box<[BACnetAddress]>,
     },
 
-    /// A request named a device the client can't place: no address in its
-    /// discovery table claims the instance, and none answered a Who-Is for
-    /// it, or no router is known for a remote network's station. Nothing
-    /// was sent to the device. Only with `std`, as for
-    /// [`Error::AmbiguousDevice`].
+    /// A request named a device that can't be placed: no address in the
+    /// client's discovery table claims the instance, and none answered a
+    /// Who-Is for it, or no router is known for a remote network's station,
+    /// as when a server's audit notification goes to a recipient whose
+    /// router it hasn't learned. Nothing was sent to the device. Only with
+    /// `std`, as for [`Error::AmbiguousDevice`].
     #[cfg(feature = "std")]
     #[error("device {device} is not known to the client; discover it first")]
     UnknownDevice {
@@ -324,6 +531,25 @@ pub enum Error {
         /// device may have carried it out.
         sent: bool,
     },
+
+    /// A request that ended before an answer came because the client or
+    /// its link stopped under it (#2617, #2720, #1833): the client's own
+    /// stop, or the stop or drop of the endpoint or node it runs on, while
+    /// the request waited for its turn at the destination or for its
+    /// answer; or the link stopping, or losing its connection (a BACnet/SC
+    /// link's hub), after the request went out, which refuses its retry or
+    /// a later segment, or drops the wait of a B/IP BVLC management request
+    /// or loses its answer. It is that one request's outcome, not a
+    /// lifecycle state: a call made after the stop gets
+    /// [`Error::State`], with nothing sent. No answer will come for it.
+    #[error("{}", CutOff { sent: *.sent })]
+    RequestCutOff {
+        /// `false`: nothing of the request left, as it was still waiting
+        /// for its turn. `true`: the request, or some of its segments, may
+        /// have gone out, and the device may have carried it out, so a
+        /// write is not to be sent again blindly.
+        sent: bool,
+    },
 }
 
 impl From<RemoteError> for Error {
@@ -353,6 +579,12 @@ impl From<SegmentationError> for Error {
 impl From<RangeError> for Error {
     fn from(error: RangeError) -> Self {
         Self::Range(error)
+    }
+}
+
+impl From<PersistenceError> for Error {
+    fn from(error: PersistenceError) -> Self {
+        Self::Persistence(error)
     }
 }
 
@@ -709,6 +941,50 @@ impl Error {
     /// Create a buffer-too-short error.
     pub fn buffer_too_short(need: usize, have: usize) -> Self {
         Self::BufferTooShort { need, have }
+    }
+
+    /// Create an [`Error::State`] for `state`, described by a static
+    /// `label`.
+    pub const fn state(state: Lifecycle, label: &'static str) -> Self {
+        Self::State(state, Refusal::new(label))
+    }
+
+    /// Create an [`Error::InvalidConfig`] described by a static `label`.
+    pub const fn invalid_config(label: &'static str) -> Self {
+        Self::InvalidConfig(Refusal::new(label))
+    }
+
+    /// Create an [`Error::InvalidArgument`] described by a static `label`.
+    pub const fn invalid_argument(label: &'static str) -> Self {
+        Self::InvalidArgument(Refusal::new(label))
+    }
+
+    /// Create an [`Error::Unsupported`] described by a static `label`.
+    pub const fn unsupported(label: &'static str) -> Self {
+        Self::Unsupported(Refusal::new(label))
+    }
+
+    /// Create an [`Error::LimitReached`] described by a static `label`.
+    pub const fn limit_reached(label: &'static str) -> Self {
+        Self::LimitReached(Refusal::new(label))
+    }
+
+    /// This error with `context` and `: ` in front of its text, keeping its
+    /// variant, for a caller that says where a local refusal or persisted
+    /// state came from, such as a file's path; a persisted-state error keeps
+    /// its kind. Any other error is returned as it is. Only with `std`.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn with_context(self, context: &str) -> Self {
+        match self {
+            Self::State(state, refusal) => Self::State(state, refusal.with_context(context)),
+            Self::InvalidConfig(refusal) => Self::InvalidConfig(refusal.with_context(context)),
+            Self::InvalidArgument(refusal) => Self::InvalidArgument(refusal.with_context(context)),
+            Self::Unsupported(refusal) => Self::Unsupported(refusal.with_context(context)),
+            Self::LimitReached(refusal) => Self::LimitReached(refusal.with_context(context)),
+            Self::Persistence(refused) => Self::Persistence(refused.with_context(context)),
+            other => other,
+        }
     }
 }
 

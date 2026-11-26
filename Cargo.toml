@@ -123,7 +123,8 @@ bacnet-tool = { version = "0.18.0", path = "crates/bacnet-tool" }
 bacnet-mcp = { version = "0.18.0", path = "crates/bacnet-mcp", default-features = false }
 thiserror = { version = "2", default-features = false }
 bitflags = "2"
-bytes = { version = "1", default-features = false }
+# 1.10.1: Bytes::from_owner (1.9) without its to_vec owner leak (#2743).
+bytes = { version = "1.10.1", default-features = false }
 tracing = "0.1"
 tokio = "1.53.3"
 socket2 = "0.6"
@@ -137,6 +138,8 @@ pyo3 = { version = "0.29", features = ["multiple-pymethods"] }
 tokio-tungstenite = "0.29"
 tokio-rustls = "0.26"
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
+# Clears private-key buffers on drop (#2621); already in the lock file via rustls.
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
 futures-core = "0.3"
 futures-util = "0.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

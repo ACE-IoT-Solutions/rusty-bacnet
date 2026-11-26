@@ -322,7 +322,10 @@ class RoutedFileWireTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.sleep(0)
             self.wire.script = lambda request, invoke, service, body: [
                 bytes([0x30, invoke, service]) + stream_ack(0, b"ok", True)]
-            result = await client.atomic_read_file(self.target, FILE_1, "stream", requested_octet_count=2)
+            # A cancelled routed request holds its route for the APDU window.
+            # Address the same peer directly to check immediate socket reuse.
+            result = await asyncio.wait_for(
+                client.atomic_read_file(self.router.address, FILE_1, "stream", requested_octet_count=2), 5)
             self.assertEqual(result["data"], b"ok")
             self.assertEqual((await endpoint.status())["active_leases"], 0)
             self.assertEqual(self.router.received[-1][1], source)
@@ -455,9 +458,9 @@ class LearnedFileRouteTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(self.role.atomic_read_file(
                 silent, FILE_1, "stream", requested_octet_count=8), 10)
         text = str(caught.exception)
-        for words in ("5:0x0B", "station-directed Who-Is", "router=", "discover_routers()"):
+        for words in ("5:0x0B", "a Who-Is addressed to it", "router=", "discover_routers()"):
             self.assertIn(words, text)
-        self.assertEqual(len(self.who_is), 1)
+        self.assertEqual(len(self.who_is), 2)
         # Again, from either file call: at once, with no second Who-Is.
         with self.assertRaisesRegex(rb.BacnetLookupError, "in the last 30 s"):
             await asyncio.wait_for(self.role.atomic_read_file(
@@ -465,7 +468,7 @@ class LearnedFileRouteTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(rb.BacnetLookupError, "in the last 30 s"):
             await asyncio.wait_for(self.role.atomic_write_file(
                 silent, FILE_1, "stream", file_data=b"x"), 1)
-        self.assertEqual(len(self.who_is), 1)
+        self.assertEqual(len(self.who_is), 2)
         self.assertEqual(self.requests, [])
         # Naming the router works at once.
         through = rb.RoutedTarget(5, b"\x0b", router=self.bbmd.address)

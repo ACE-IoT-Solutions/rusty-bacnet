@@ -33,10 +33,7 @@ impl Routed {
         let (near, two, three) = (Bus::new(), Bus::new(), Bus::new());
         let ports = [(&near, 1), (&two, 2), (&three, 3)]
             .into_iter()
-            .map(|(bus, network_number)| RouterPort {
-                transport: bus.port(254),
-                network_number,
-            })
+            .map(|(bus, network_number)| RouterPort::new(bus.port(254), network_number))
             .collect();
         let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
             .await
@@ -440,6 +437,40 @@ async fn a_routed_device_is_asked_for_again_on_its_network() {
     lab.stop().await;
 }
 
+/// A following handle whose router refuses its request (no route to the
+/// device's network, #2724) asks for the device again on that network, as
+/// after a timeout: an I-Am heard through another router would move it
+/// there. The error is the router's reject, unreachable but no timeout.
+#[tokio::test(start_paused = true)]
+async fn a_router_refusal_has_a_following_handle_ask_again() {
+    let bus = Bus::new();
+    bus.rejecter(9);
+    let (client, sent) = client_on(bus.port(1)).await;
+    // Device 2002 is station 6 on network 3, heard through station 9.
+    bus.i_am_from(9, Some((3, &mac(6))), 2002);
+    settle().await;
+    let wide = client.with_resolve_scope(ResolveScope::Global);
+    let device = wide.device(2002).await.unwrap();
+    assert_eq!(device.address(), DeviceAddress::new(3, &mac(6)).unwrap());
+    sent.clear();
+    let error = name_of(&device).await.unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            OpsError::Unreachable {
+                source: bacnet_types::error::Error::NetworkRejected(_),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(error.unreachable() && !error.timed_out());
+    assert_eq!(
+        super::discover_tests::the_who_is(&sent),
+        (super::discover_tests::remote(3), true)
+    );
+}
+
 /// A target naming the client's own network keeps its text and says that
 /// network was asked, with no hint to widen the resolve scope: only a bare
 /// instance gets that. Both go out as local broadcasts.
@@ -491,5 +522,65 @@ async fn a_bare_instance_with_a_remote_row_needs_no_who_is() {
         super::discover_tests::who_is_frames(&lab.sent).is_empty(),
         "no Who-Is"
     );
+    lab.stop().await;
+}
+
+/// The reviewer's recipe U: a routed following handle whose row aged out
+/// (here, the table is cleared) while one I-Am, routed from station 8 on
+/// network 3, names its instance, where a responder answers as it. A write
+/// finds no route and goes nowhere else (#2795); a read asks for station 6
+/// again, which answers, and reads there. Nothing reaches station 8.
+#[tokio::test(start_paused = true)]
+async fn a_routed_write_with_no_route_goes_nowhere_else() {
+    let mut lab = Routed::new(|near| near.port(1)).await;
+    lab.discover().await;
+    let following = lab.client.device("3:1001").await.unwrap();
+    let six = DeviceAddress::new(3, &mac(6)).unwrap();
+    let eight = DeviceAddress::new(3, &mac(8)).unwrap();
+    assert_eq!(following.address(), six);
+    lab.servers
+        .push(server(lab.three.port(8), N, "impostor").await);
+    lab.client.low_level().clear_devices().await;
+    lab.near.i_am_from(254, Some((3, &mac(8))), N);
+    settle().await;
+    lab.sent.clear();
+    let error = following.write("ai:1 oos", "true", None).await.unwrap_err();
+    assert!(
+        matches!(&error, OpsError::NotConfirmed { candidate: Some(c), .. } if *c == eight),
+        "{error:?}"
+    );
+    let write = bacnet_types::enums::ConfirmedServiceChoice::WRITE_PROPERTY;
+    assert_eq!(
+        super::test_bus::requests(&lab.sent, write, 254),
+        0,
+        "nothing sent"
+    );
+    assert_eq!(name_of(&following).await.unwrap(), "on three");
+    assert_eq!(following.address(), six, "station 6 answered again");
+    lab.stop().await;
+}
+
+/// A routed following handle whose row aged out, its station 6 another
+/// device now: the read finds no route, and station 6, asked for again,
+/// doesn't answer as the instance. The read isn't sent there again, where
+/// it would read another device; station 8 names the instance, and the
+/// read goes there.
+#[tokio::test(start_paused = true)]
+async fn a_station_found_again_as_another_device_is_not_read() {
+    let mut lab = Routed::new(|near| near.port(1)).await;
+    lab.discover().await;
+    let following = lab.client.device("3:1001").await.unwrap();
+    let eight = DeviceAddress::new(3, &mac(8)).unwrap();
+    let six = lab.servers.remove(1);
+    stop(vec![six]).await;
+    lab.servers
+        .push(server(lab.three.port(6), N + 1, "reused").await);
+    lab.servers
+        .push(server(lab.three.port(8), N, "moved").await);
+    lab.client.low_level().clear_devices().await;
+    lab.near.i_am_from(254, Some((3, &mac(8))), N);
+    settle().await;
+    assert_eq!(name_of(&following).await.unwrap(), "moved");
+    assert_eq!(following.address(), eight);
     lab.stop().await;
 }

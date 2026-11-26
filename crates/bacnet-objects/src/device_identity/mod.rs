@@ -10,7 +10,7 @@ use crate::{
 };
 use bacnet_types::{
     enums::{NetworkType, ObjectType, PropertyIdentifier as P, Segmentation, ServiceSupported},
-    error::Error,
+    error::{Error, Refusal},
     primitives::{ObjectIdentifier, PropertyValue},
 };
 use core::net::{Ipv4Addr, Ipv6Addr};
@@ -48,9 +48,13 @@ pub struct DeviceIdentity {
 impl DeviceIdentity {
     /// Creates an identity with endpoint-composed defaults.
     ///
-    /// Defaults: `max_apdu = 1476`, `segmentation = NO_SEGMENTATION`,
-    /// `services = [READ_PROPERTY]`, no ports, zero UUID (B/IP-only may keep zeros; SC dial requires
-    /// [`with_device_uuid`](Self::with_device_uuid)). Returns
+    /// Defaults: `max_apdu = 1476`, `segmentation = SEGMENTED_BOTH` with a
+    /// 5000 ms segment timeout (#2617), `services = [READ_PROPERTY]`, no
+    /// ports, zero UUID (B/IP-only may keep zeros; SC dial requires
+    /// [`with_device_uuid`](Self::with_device_uuid)). A device that segments
+    /// neither way, such as one answered by `bacnet-device-core`'s
+    /// `Responder`, says so with
+    /// [`with_segmentation`](Self::with_segmentation). Returns
     /// [`Error::Range`] for an instance past 4194303, or for 4194303 itself,
     /// which no object may have (Clause 12.1.1, #2171).
     pub fn new(instance: u32, vendor_id: u16) -> Result<Self, Error> {
@@ -59,7 +63,7 @@ impl DeviceIdentity {
             instance,
             vendor_id,
             max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NO_SEGMENTATION,
+            segmentation_supported: Segmentation::SEGMENTED_BOTH,
             apdu_segment_timeout_ms: 5000,
             services: vec![ServiceSupported::READ_PROPERTY],
             network_ports: Vec::new(),
@@ -75,23 +79,26 @@ impl DeviceIdentity {
     /// it against the owned transport's stable local receive capacity.
     pub fn with_max_apdu(mut self, max_apdu: u16) -> Result<Self, Error> {
         if max_apdu < 50 {
-            return Err(Error::Encoding(
-                "Device max-APDU must be at least 50".into(),
-            ));
+            return Err(Error::invalid_config("Device max-APDU must be at least 50"));
         }
         self.max_apdu_length = max_apdu;
         Ok(self)
     }
 
-    /// Sets the Device segmentation declaration. A full server and the
-    /// endpoint client's incoming confirmed COV receiver follow this setting.
+    /// Overrides segmentation support (default SEGMENTED_BOTH): the
+    /// Device's Segmentation_Supported and the I-Am's. A full server, and
+    /// both roles of an endpoint session, do what it says, with this
+    /// identity's segment timeout. NO_SEGMENTATION suits a constrained link
+    /// or a device core that can't segment.
     pub fn with_segmentation(mut self, segmentation: Segmentation) -> Self {
         self.segmentation_supported = segmentation;
         self
     }
 
-    /// Sets the Device segment timeout used by the full server and by an
-    /// endpoint client receiving segmented confirmed COV.
+    /// Sets the segment timeout (default 5000 ms): the Device's
+    /// APDU_Segment_Timeout, which a full server and an endpoint session's
+    /// client use while they segment. APDU timeouts and retries stay the
+    /// caller's.
     pub fn with_apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.apdu_segment_timeout_ms = timeout_ms;
         self
@@ -139,10 +146,10 @@ impl DeviceIdentity {
             .iter()
             .any(|e| e.instance == entry.instance)
         {
-            return Err(Error::Encoding(format!(
-                "duplicate Network-Port instance {}",
-                entry.instance
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new("duplicate Network-Port instance {}")
+                    .with_value(u64::from(entry.instance)),
+            ));
         }
         self.network_ports.push(entry);
         Ok(self)
@@ -198,7 +205,7 @@ impl DeviceIdentity {
             .network_ports
             .iter()
             .find(|entry| entry.instance == oid.instance_number())
-            .ok_or_else(|| Error::Encoding("selected Network Port missing from identity".into()))?;
+            .ok_or_else(|| Error::invalid_config("selected Network Port missing from identity"))?;
         entry.build_object()?;
         Ok(entry)
     }
@@ -215,8 +222,8 @@ impl DeviceIdentity {
             || entry.udp_port != config.udp_port
             || entry.network_number != u32::from(config.network_number)
         {
-            return Err(Error::Encoding(
-                "selected identity Network Port differs from database".into(),
+            return Err(Error::invalid_config(
+                "selected identity Network Port differs from database",
             ));
         }
         Ok(())
@@ -238,8 +245,8 @@ impl DeviceIdentity {
             || entry.udp_port != config.udp_port
             || entry.network_number != u32::from(config.network_number)
         {
-            return Err(Error::Encoding(
-                "selected identity Network Port differs from database".into(),
+            return Err(Error::invalid_config(
+                "selected identity Network Port differs from database",
             ));
         }
         Ok(())
@@ -324,20 +331,16 @@ impl DeviceIdentity {
     pub fn validate(&self) -> Result<(), Error> {
         ObjectIdentifier::new_addressable(ObjectType::DEVICE, self.instance)?;
         if self.max_apdu_length < 50 {
-            return Err(Error::Encoding(
-                "Device max-APDU must be at least 50".into(),
-            ));
+            return Err(Error::invalid_config("Device max-APDU must be at least 50"));
         }
         if self.segmentation_supported.to_raw() > Segmentation::NO_SEGMENTATION.to_raw() {
-            return Err(Error::Encoding(
-                "invalid Device segmentation support".into(),
-            ));
+            return Err(Error::invalid_config("invalid Device segmentation support"));
         }
         if self.segmentation_supported != Segmentation::NO_SEGMENTATION
             && self.apdu_segment_timeout_ms == 0
         {
-            return Err(Error::Encoding(
-                "APDU_Segment_Timeout must be positive when segmentation is supported".into(),
+            return Err(Error::invalid_config(
+                "APDU_Segment_Timeout must be positive when segmentation is supported",
             ));
         }
         Ok(())
@@ -347,40 +350,44 @@ impl DeviceIdentity {
     pub fn validate_device(&self, device: &dyn BACnetObject) -> Result<(), Error> {
         self.validate()?;
         if device.object_identifier() != self.device_oid() {
-            return Err(Error::Encoding(
-                "selected Device identifier must match identity".into(),
+            return Err(Error::invalid_config(
+                "selected Device identifier must match identity",
             ));
         }
-        for (property, expected) in [
+        // One whole static message per property, which names it as its
+        // `Debug` form does (#1833).
+        for (property, expected, refusal) in [
             (
                 P::OBJECT_IDENTIFIER,
                 PropertyValue::ObjectIdentifier(self.device_oid()),
+                "selected Device PropertyIdentifier::OBJECT_IDENTIFIER must match identity",
             ),
             (
                 P::VENDOR_IDENTIFIER,
                 PropertyValue::Unsigned(u64::from(self.vendor_id)),
+                "selected Device PropertyIdentifier::VENDOR_IDENTIFIER must match identity",
             ),
             (
                 P::MAX_APDU_LENGTH_ACCEPTED,
                 PropertyValue::Unsigned(u64::from(self.max_apdu_length)),
+                "selected Device PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED must match identity",
             ),
             (
                 P::SEGMENTATION_SUPPORTED,
                 PropertyValue::Enumerated(u32::from(self.segmentation_supported.to_raw())),
+                "selected Device PropertyIdentifier::SEGMENTATION_SUPPORTED must match identity",
             ),
         ] {
             if device.read_property(property, None)? != expected {
-                return Err(Error::Encoding(format!(
-                    "selected Device {property:?} must match identity"
-                )));
+                return Err(Error::invalid_config(refusal));
             }
         }
         if self.segmentation_supported != Segmentation::NO_SEGMENTATION
             && device.read_property(P::APDU_SEGMENT_TIMEOUT, None)?
                 != PropertyValue::Unsigned(self.apdu_segment_timeout_ms)
         {
-            return Err(Error::Encoding(
-                "selected Device APDU_Segment_Timeout must match identity".into(),
+            return Err(Error::invalid_config(
+                "selected Device APDU_Segment_Timeout must match identity",
             ));
         }
         Ok(())
@@ -419,12 +426,7 @@ impl DeviceIdentity {
     /// database's own ([`ObjectDatabase::object_list`]): the Device, then the
     /// ports.
     pub fn build_database(&self) -> Result<ObjectDatabase, Error> {
-        let mut device = DeviceObject::new(DeviceConfig {
-            identity: self.clone(),
-            firmware_revision: env!("CARGO_PKG_VERSION").into(),
-            application_software_version: env!("CARGO_PKG_VERSION").into(),
-            ..DeviceConfig::default()
-        })?;
+        let mut device = DeviceObject::new(stock_config(self))?;
         device.set_services_supported(&self.services);
         device.set_device_uuid(self.device_uuid);
 
@@ -466,12 +468,43 @@ pub fn build_database_with_extra(
     identity: &DeviceIdentity,
     extra: Vec<Box<dyn crate::traits::BACnetObject>>,
 ) -> Result<ObjectDatabase, Error> {
-    let mut device = DeviceObject::new(DeviceConfig {
+    let device = DeviceObject::new(stock_config(identity))?;
+    assemble(identity, device, extra)
+}
+
+/// [`build_database_with_extra`], with the Device built on `persistence`
+/// ([`DeviceObject::with_tags_persistence`]), so it keeps what peers write
+/// to it across a restart (#2730): a written Description and, where the
+/// server lets peers write the clock's zone, a written UTC_Offset and
+/// Daylight_Savings_Status. The Device has no Tags row, as one built
+/// without storage has none. Fails as `with_tags_persistence` does on
+/// storage it can't load.
+pub fn build_database_with_tags_persistence(
+    identity: &DeviceIdentity,
+    persistence: alloc::sync::Arc<dyn crate::object_profile::TagsPersistence>,
+    extra: Vec<Box<dyn crate::traits::BACnetObject>>,
+) -> Result<ObjectDatabase, Error> {
+    let device = DeviceObject::with_tags_persistence(stock_config(identity), persistence)?;
+    assemble(identity, device, extra)
+}
+
+/// The stock Device's configuration for `identity`.
+fn stock_config(identity: &DeviceIdentity) -> DeviceConfig {
+    DeviceConfig {
         identity: identity.clone(),
         firmware_revision: env!("CARGO_PKG_VERSION").into(),
         application_software_version: env!("CARGO_PKG_VERSION").into(),
         ..DeviceConfig::default()
-    })?;
+    }
+}
+
+/// The database holding `device`, given `identity`'s services and UUID, the
+/// identity's ports and `extra`, refusing a repeated identifier.
+fn assemble(
+    identity: &DeviceIdentity,
+    mut device: DeviceObject,
+    extra: Vec<Box<dyn crate::traits::BACnetObject>>,
+) -> Result<ObjectDatabase, Error> {
     device.set_services_supported(&identity.services);
     device.set_device_uuid(identity.device_uuid);
     let device_oid = device.object_identifier();

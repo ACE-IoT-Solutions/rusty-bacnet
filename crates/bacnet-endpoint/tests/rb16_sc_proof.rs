@@ -235,7 +235,7 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     let mut peer = ControlledPeer::dial(hub_port, ca.node_tls.clone(), peer_vmac, peer_uuid).await;
 
     // Outbound (endpoint→peer): peer asserts VMAC source + verified provenance.
-    let client = endpoint.cloned_client_handle().unwrap();
+    let client = endpoint.client().unwrap();
     let peer_mac = peer.mac();
     let out = tokio::spawn(async move {
         client
@@ -337,13 +337,13 @@ async fn sc_one_node_bidirectional_with_provenance_and_admin() {
     assert!(status.listening);
     assert!(status.client_count >= 2, "hub sees endpoint + peer");
     assert!(endpoint.is_running());
-    let _ = endpoint.policy_counters().await;
+    let _ = endpoint.policy_counters();
     assert_eq!(endpoint.active_leases(), 0);
     assert!(endpoint.identity().is_some());
 
     // Role-attempt-to-stop-transport fails: roles expose no stop/transport;
     // session stop-once holds; post-stop role calls fail closed.
-    let detached = endpoint.cloned_client_handle().unwrap();
+    let detached = endpoint.client().unwrap();
     endpoint.stop().await.unwrap();
     assert!(endpoint.stop().await.is_err());
     assert!(
@@ -384,7 +384,7 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
         .unwrap();
     s1.start().await.unwrap();
     let mut peer = ControlledPeer::dial(hub_port, ca.node_tls.clone(), [0x05; 6], [0x44; 16]).await;
-    let c1 = s1.cloned_client_handle().unwrap();
+    let c1 = s1.client().unwrap();
     let pm = peer.mac();
     let t = tokio::spawn(async move {
         c1.read_property(
@@ -415,13 +415,12 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
         .reconnect(ScReconnectConfig {
             initial_delay_ms: 100,
             max_delay_ms: 1_000,
-            max_retries: 3,
-            retry_forever: false,
+            max_retries: Some(3),
         })
         .build_hub_session(ws2)
         .unwrap();
     s2.start().await.unwrap();
-    let c2 = s2.cloned_client_handle().unwrap();
+    let c2 = s2.client().unwrap();
     let pm2 = peer.mac();
     let t2 = tokio::spawn(async move {
         c2.read_property(
@@ -456,7 +455,7 @@ async fn sc_kill_reconnect_preserves_vmac_uuid_vs_transient() {
         .build_hub_session(ws3)
         .unwrap();
     s3.start().await.unwrap();
-    let c3 = s3.cloned_client_handle().unwrap();
+    let c3 = s3.client().unwrap();
     let pm3 = peer.mac();
     let t3 = tokio::spawn(async move {
         c3.read_property(

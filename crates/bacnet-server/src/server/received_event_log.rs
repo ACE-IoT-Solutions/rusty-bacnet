@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use bacnet_encoding::constructed::decode_event_notification_tolerant;
 use bacnet_endpoint_core::coordinator::CanonicalPeer;
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_types::sync::MutexExt;
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -124,7 +125,7 @@ impl ReceivedEventLog {
     /// Spend one of `source`'s records at `now`, or say there are none left.
     ///
     /// A source is keyed by the network address it sent from, as the stack
-    /// reads every request's sender ([`CanonicalPeer::from_source`], #1465),
+    /// reads every request's sender ([`CanonicalPeer::from_source`], #1404),
     /// not by the Initiating Device Identifier in the notification. That
     /// identifier is whatever the sender writes, so a node keyed by it could
     /// claim a new one for each notification and take a fresh allowance
@@ -134,10 +135,7 @@ impl ReceivedEventLog {
     fn admit(&self, source: &CanonicalPeer, now: Instant) -> bool {
         // Never held across an await; a poisoned lock only means a panic
         // elsewhere, and the allowances stay usable.
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take(source, now)
+        self.0.locked().take(source, now)
     }
 }
 

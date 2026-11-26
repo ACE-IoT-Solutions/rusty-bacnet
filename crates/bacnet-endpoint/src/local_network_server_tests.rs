@@ -94,7 +94,7 @@ async fn the_full_server_serves_the_sessions_registered_port() {
         encoded(PropertyValue::Unsigned(THIS_NETWORK.into())),
         "the learned number is in the server's database"
     );
-    let counters = endpoint.session.policy_counters().await;
+    let counters = endpoint.session.policy_counters();
     assert_eq!(counters.no_server_role, 0);
     endpoint.stop().await;
 }
@@ -140,6 +140,7 @@ fn multicast_endpoint() -> Endpoint {
                 .try_send(Sent {
                     link: frame.mac,
                     npdu: frame.npdu,
+                    attributes: frame.attributes,
                 })
                 .expect("bounded send observation");
             async { Ok(()) }
@@ -150,6 +151,7 @@ fn multicast_endpoint() -> Endpoint {
             .unwrap(),
         inbound,
         sent,
+        client: std::sync::OnceLock::new(),
     }
 }
 

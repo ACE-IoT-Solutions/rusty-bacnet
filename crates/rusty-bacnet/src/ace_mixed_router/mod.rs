@@ -1,5 +1,6 @@
 //! Python-composable BACnet/IP and BACnet/SC router.
 
+use bacnet_types::sync::MutexExt as _;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -79,10 +80,7 @@ impl HealthSource {
                 monitor,
                 projection,
             } => {
-                let metadata = projection
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .clone();
+                let metadata = projection.locked().clone();
                 if let Some(monitor) = monitor {
                     snapshots::port_health_from_status(
                         config_index,
@@ -224,7 +222,7 @@ impl PyAceMixedRouter {
                     (Arc::clone(&active.router), indices)
                 })
                 .await
-                .ok_or_else(|| PyRuntimeError::new_err("router not started"))?;
+                .map_err(|state| crate::errors::lifecycle_error(state, "router not started"))?;
             let router = router.lock().await;
             indices
                 .into_iter()
@@ -238,16 +236,13 @@ impl PyAceMixedRouter {
         let lifecycle = self.lifecycle.clone();
         let last = Arc::clone(&self.last_health);
         crate::py_async::future_into_py(py, async move {
-            if let Some(health) = lifecycle
+            if let Ok(health) = lifecycle
                 .inspect(|session| health_snapshot(&session.active().health))
                 .await
             {
                 return Ok(health);
             }
-            Ok(last
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("internal health lock poisoned"))?
-                .clone())
+            Ok(last.locked().clone())
         })
     }
 
@@ -255,17 +250,14 @@ impl PyAceMixedRouter {
         let lifecycle = self.lifecycle.clone();
         let last = Arc::clone(&self.last_routes);
         crate::py_async::future_into_py(py, async move {
-            if let Some(router) = lifecycle
+            if let Ok(router) = lifecycle
                 .inspect(|session| Arc::clone(&session.active().router))
                 .await
             {
                 let router = router.lock().await;
                 return Ok(route_snapshot(&router));
             }
-            Ok(last
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("internal route lock poisoned"))?
-                .clone())
+            Ok(last.locked().clone())
         })
     }
 
@@ -273,7 +265,7 @@ impl PyAceMixedRouter {
         let lifecycle = self.lifecycle.clone();
         let last = Arc::clone(&self.last_counters);
         crate::py_async::future_into_py(py, async move {
-            if let Some((router, health)) = lifecycle
+            if let Ok((router, health)) = lifecycle
                 .inspect(|session| {
                     let active = session.active();
                     (Arc::clone(&active.router), active.health.clone())
@@ -283,10 +275,7 @@ impl PyAceMixedRouter {
                 let router = router.lock().await;
                 return Ok(counter_snapshot(&router, &health));
             }
-            Ok(last
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("internal counter lock poisoned"))?
-                .clone())
+            Ok(last.locked().clone())
         })
     }
 }
@@ -361,8 +350,7 @@ fn spawn_background(
             loop {
                 match events.recv().await {
                     Ok(event) => {
-                        let mut health =
-                            projection.lock().unwrap_or_else(|error| error.into_inner());
+                        let mut health = projection.locked();
                         health.apply(event);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -492,10 +480,7 @@ async fn build_router_port(
             }
             Ok(BuiltPort {
                 tap: transport.frame_tap().clone(),
-                port: RouterPort {
-                    transport: MixedTransport::Bip(Box::new(transport)),
-                    network_number,
-                },
+                port: RouterPort::new(MixedTransport::Bip(Box::new(transport)), network_number),
                 health: HealthSource::Bip {
                     identity: format!("{}:{}", config.interface, config.port),
                 },
@@ -517,8 +502,7 @@ async fn build_router_port(
             let reconnect = ScReconnectConfig {
                 initial_delay_ms: config.reconnect_initial_delay_ms,
                 max_delay_ms: config.reconnect_max_delay_ms,
-                max_retries: config.reconnect_max_retries,
-                retry_forever: config.reconnect_forever,
+                max_retries: (!config.reconnect_forever).then_some(config.reconnect_max_retries),
             };
             let mut hubs = ScHubDialer::new(&primary, tls)
                 .connect_timeout_ms(SC_DIAL_TIMEOUT.as_millis() as u64);
@@ -546,10 +530,7 @@ async fn build_router_port(
             let monitor = transport.link_monitor();
             Ok(BuiltPort {
                 tap: transport.frame_tap().clone(),
-                port: RouterPort {
-                    transport: MixedTransport::Sc(Box::new(transport)),
-                    network_number,
-                },
+                port: RouterPort::new(MixedTransport::Sc(Box::new(transport)), network_number),
                 health: HealthSource::Sc {
                     identity: primary,
                     state,

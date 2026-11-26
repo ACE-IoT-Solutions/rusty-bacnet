@@ -99,7 +99,9 @@ async fn a_device_refusing_rpm_is_polled_by_readproperty() {
     let from = Instant::now();
     tokio::time::sleep(Duration::from_secs(10)).await;
     assert_eq!(lab.sent(RPM, from), 0, "{:?}", lab.services());
-    assert_eq!(lab.sent(RP, from), 2, "one property a point");
+    // One property a point, and once the device's name by the wildcard
+    // instance, as these polls can't ask which device answers.
+    assert_eq!(lab.sent(RP, from), 3, "one property a point");
     lab.stop().await;
 }
 
@@ -115,7 +117,11 @@ async fn a_failed_batch_is_read_one_property_at_a_time() {
     lab.quirks.fail_rpm.store(true, Ordering::Relaxed);
     let from = Instant::now();
     tokio::time::sleep(Duration::from_secs(11)).await;
-    assert_eq!(lab.sent(RPM, from), 1);
+    // Asked again without the question of which device answers, in case
+    // that was what failed it, then one property at a time.
+    assert_eq!(lab.sent(RPM, from), 2);
+    // The device isn't asked its name: failing the row, it was taken as
+    // refusing the wildcard.
     assert_eq!(lab.sent(RP, from), 3 * POINT_PROPERTIES.len());
     assert!(!lab.client.refused_rpm(&lab_at()));
     for lease in &leases {
@@ -123,7 +129,9 @@ async fn a_failed_batch_is_read_one_property_at_a_time() {
         assert_eq!((snapshot.polls, snapshot.state), (1, Phase::Live));
     }
     tokio::time::sleep(Duration::from_secs(10)).await;
-    assert_eq!(lab.sent(RPM, from), 2, "RPM again at the next poll");
+    // The question of which device answers isn't put to it again.
+    assert!(lab.client.wildcard_refused(&lab_at()));
+    assert_eq!(lab.sent(RPM, from), 3, "RPM again at the next poll");
     lab.stop().await;
 }
 
@@ -189,10 +197,11 @@ async fn an_unanswered_subscription_is_retried_after_its_backoff() {
     assert_eq!(snapshot.note, None);
     assert_eq!(snapshot.why, None, "subscribed: nothing to explain");
     assert_eq!(lab.table().await.len(), 1);
-    // Polled meanwhile; the retry read the point again first.
+    // Polled meanwhile; the retry read the point again first, and the
+    // first subscription read the device's restart time.
     let services = lab.services();
     assert_eq!(services.iter().filter(|s| **s == SUBSCRIBE_COV).count(), 2);
-    assert_eq!(&services[services.len() - 2..], [RPM, SUBSCRIBE_COV]);
+    assert_eq!(&services[services.len() - 3..], [RPM, SUBSCRIBE_COV, RP]);
     assert!(
         services.iter().filter(|s| **s == RPM).count() >= 3,
         "{services:?}"
@@ -274,7 +283,7 @@ async fn a_missing_device_can_be_given_up() {
     };
     let lab = Lab::start(options).await;
     let point = Point {
-        device: routed_at(),
+        device: Binding::At(routed_at()),
         ..object(ai(1))
     };
     let lease = lab.hub.watch(point).unwrap();
@@ -307,8 +316,8 @@ async fn the_value_reads_name_units_and_state_texts_first() {
     settle().await;
     assert_eq!(
         lab.services(),
-        [RPM, RPM, SUBSCRIBE_COV, RPM, SUBSCRIBE_COV],
-        "texts for the binary object only"
+        [RPM, RPM, SUBSCRIBE_COV, RP, RPM, SUBSCRIBE_COV, RP],
+        "texts for the binary object only; the device's name and restart time once"
     );
     let has = |lease: &Lease, property| lease.snapshot().rows.iter().any(|(p, _)| *p == property);
     for property in [
@@ -533,7 +542,7 @@ fn from(instance: u32, mac: &[u8], routed: Option<(u16, &[u8])>) -> ReceivedCOVN
 fn a_routed_device_is_matched_by_its_address() {
     const DEVICE: u32 = 2001;
     let point = Point {
-        device: DeviceAddress::new(10, &[3]).unwrap(),
+        device: Binding::At(DeviceAddress::new(10, &[3]).unwrap()),
         ..object(ai(1))
     };
     let target = Station::routed(&[2], 10, &[3]);

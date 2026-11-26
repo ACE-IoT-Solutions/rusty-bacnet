@@ -44,16 +44,23 @@ impl NetworkPortObject {
 
     /// Reserve the built-in object for a live owner. Until the owner
     /// publishes, the port reads as NORMAL with its configured number.
+    ///
+    /// Refused, with one text, by why the port can't take it (#1833): a
+    /// port with no IP configuration is no B/IP port (`Unsupported`); one
+    /// another owner holds is a one-holder resource taken (`LimitReached`);
+    /// one the application left Out_Of_Service is refused as the database
+    /// it started the owner with (`InvalidConfig`).
     pub(crate) fn reserve_internal(&mut self, lease: &Arc<()>) -> Result<(), Error> {
-        let Some(config) = self
-            .ip
-            .as_ref()
-            .filter(|_| !self.is_bound() && !self.out_of_service)
-        else {
-            return Err(Error::Encoding(
-                "Network Port is unavailable for B/IP registration".into(),
-            ));
+        const UNAVAILABLE: &str = "Network Port is unavailable for B/IP registration";
+        let Some(config) = self.ip.as_ref() else {
+            return Err(Error::unsupported(UNAVAILABLE));
         };
+        if self.is_bound() {
+            return Err(Error::limit_reached(UNAVAILABLE));
+        }
+        if self.out_of_service {
+            return Err(Error::invalid_config(UNAVAILABLE));
+        }
         self.network_number =
             NetworkNumber::configured(config.network_number()).expect("validated Network Number");
         self.mode = bip_mode::LiveMode::Normal;
@@ -62,6 +69,32 @@ impl NetworkPortObject {
         self.activation = false;
         self.binding = Arc::downgrade(lease);
         Ok(())
+    }
+
+    /// What a publication replaces, as the reservation leaves it.
+    pub(crate) fn reserved_internal(&self) -> Reserved {
+        Reserved {
+            ip: self.ip.clone(),
+            mac_address: self.mac_address.clone(),
+            apdu_length: self.apdu_length,
+        }
+    }
+
+    /// Put the port back as its reservation left it, after an owner that
+    /// published went without starting (#2752), so the next reservation
+    /// matches the configured address and UDP port again.
+    pub(crate) fn withdraw_internal(&mut self, reserved: Reserved) {
+        if let Some(config) = &reserved.ip {
+            self.network_number = NetworkNumber::configured(config.network_number())
+                .expect("validated Network Number");
+        }
+        self.ip = reserved.ip;
+        self.mac_address = reserved.mac_address;
+        self.apdu_length = reserved.apdu_length;
+        self.mode = bip_mode::LiveMode::Normal;
+        self.pending = Default::default();
+        self.multicast = Default::default();
+        self.activation = false;
     }
 
     /// Publish the matching owner's actual bind, supported capacity and
@@ -79,14 +112,14 @@ impl NetworkPortObject {
             .upgrade()
             .is_some_and(|current| Arc::ptr_eq(&current, lease))
         {
-            return Err(Error::Encoding(
-                "Network Port registration owner mismatch".into(),
+            return Err(Error::invalid_argument(
+                "Network Port registration owner mismatch",
             ));
         }
         let config = self
             .ip
             .as_ref()
-            .ok_or_else(|| Error::Encoding("not B/IP".into()))?
+            .ok_or_else(|| Error::unsupported("not B/IP"))?
             .with_bind(bind, capacity)?;
         config.validate(self.oid.instance_number())?;
         let mode = bip_mode::LiveMode::from_port(mode)?;
@@ -122,4 +155,12 @@ impl NetworkPortObject {
     pub(super) fn is_bound(&self) -> bool {
         self.binding.strong_count() != 0
     }
+}
+
+/// The configured bind, MAC address and APDU length a reserved port held
+/// before its owner published, for [`NetworkPortObject::withdraw_internal`].
+pub(crate) struct Reserved {
+    ip: Option<IpConfig>,
+    mac_address: MacAddr,
+    apdu_length: u32,
 }

@@ -135,7 +135,7 @@ async fn connect(
                 .await
             }
             None => {
-                failed(&sink, Error::Encoding("no MS/TP port to monitor".into())).await;
+                failed(&sink, Error::invalid_config("no MS/TP port to monitor")).await;
                 Ok(())
             }
         };
@@ -267,7 +267,7 @@ async fn connect(
         TransportKind::Sc => {
             failed(
                 &sink,
-                Error::Encoding("BACnet/SC requires the 'sc-tls' feature".into()),
+                Error::unsupported("BACnet/SC requires the 'sc-tls' feature"),
             )
             .await;
         }
@@ -545,6 +545,11 @@ async fn serve_with<T: TransportPort + 'static>(
                         }
                         Some(Command::MonitorScan(request)) => {
                             sink.deliver(WorkerEvent::MonitorScan(crate::tui::monitor::scan::ScanReport::Rejected { id: request.id(), cancel: matches!(request, crate::tui::monitor::scan::ScanCommand::Cancel { .. }), reason: "only a receive-only MS/TP monitor can scan".into() })).await;
+                        }
+                        // A setting of this client, after a look in its
+                        // discovery table for a device's path: nothing sent.
+                        Some(Command::PathLimit(change)) => {
+                            sink.deliver(WorkerEvent::PathLimit(change.apply(&client).await)).await;
                         }
                         Some(Command::Disconnect) => break,
                         Some(Command::Connect { .. } | Command::JoinTrunk { .. } | Command::Reconnect | Command::Profile(_) | Command::CaptureExport(_)) => {}

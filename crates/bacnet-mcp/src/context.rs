@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bacnet_client::client::{DeviceEventKind, DiscoveredRouter};
@@ -15,6 +15,7 @@ use bacnet_ops::watch::hub::Hub;
 use bacnet_ops::{Client, DeviceAddress, OpsError};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::sync::MutexExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -53,6 +54,14 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// Object names and descriptions read by `bacnet_find_object`, by the
     /// device's address, so its later pages don't read them again.
     pub(crate) names: Mutex<HashMap<DeviceAddress, CachedNames>>,
+    /// For each device a batch of several point records outlasted a
+    /// call's budget on, the most properties a batch asks it for: half the
+    /// properties of the batch let go, so the next attempt asks for fewer
+    /// objects, down to one (#2785, `tools::batches`). Each is forgotten
+    /// [`LIST_TTL`] after it was learned, or once the device at the address
+    /// has another instance; at most [`LIST_CAP`] devices, the oldest going
+    /// first.
+    pub(crate) slow: Mutex<HashMap<DeviceAddress, SlowLimit>>,
     /// What Who-Is-Router-To-Network queries found, and when the last one
     /// went; at most one goes a minute for the principal.
     pub(crate) routers: Arc<Mutex<Routers>>,
@@ -107,7 +116,7 @@ pub(crate) type Points = Arc<Mutex<HashMap<Point, usize>>>;
 
 /// One session fewer holding `point` among the principal's `points`.
 pub(crate) fn let_go(points: &Points, point: &Point) {
-    let mut points = points.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut points = points.locked();
     if points.get_mut(point).is_some_and(|n| {
         *n = n.saturating_sub(1);
         *n == 0
@@ -222,6 +231,17 @@ pub(crate) const PARTIAL_TTL: Duration = Duration::from_secs(600);
 /// The most devices whose lists are kept; past it the oldest goes.
 pub(crate) const LIST_CAP: usize = 64;
 
+/// A device's slow limit ([`Ctx::slow`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SlowLimit {
+    /// The most properties a batch asks the device for.
+    pub(crate) properties: usize,
+    /// The instance the device at the address had.
+    pub(crate) instance: u32,
+    /// When the limit was last learned.
+    pub(crate) learned: Instant,
+}
+
 /// One tool call's budget and tally.
 pub(crate) struct Call {
     pub(crate) started: Instant,
@@ -257,15 +277,11 @@ impl Call {
     }
 
     pub(crate) fn reached(&self, address: &DeviceAddress, instance: u32) {
-        *self.device.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some((address.clone(), instance));
+        *self.device.locked() = Some((address.clone(), instance));
     }
 
     pub(crate) fn device(&self) -> Option<(DeviceAddress, u32)> {
-        self.device
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.device.locked().clone()
     }
 
     /// The `cost` block every result carries.
@@ -281,7 +297,8 @@ impl Call {
 }
 
 /// A device argument: an instance, `dnet:instance`, or an address (`ip:port`,
-/// `dnet:0xMAC` and the target grammar's other station forms), as a string,
+/// `dnet:0xMAC`, `dnet:0xMAC:one-station` and the target grammar's other
+/// station forms), as a string,
 /// or an instance as a number.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -327,6 +344,20 @@ pub(crate) async fn pinned<T: TransportPort + 'static>(
 }
 
 const DISCOVER_HINT: &str = "call bacnet_discover first (with a range or network that includes it)";
+
+/// Why the tools refuse `text`, a routed station at a MAC that is the
+/// broadcast on an MS/TP network, `shown` as the address (#2738). They name
+/// the suffix, but only to hand the question to the operator: it asserts
+/// knowledge the agent doesn't have.
+fn lifted_refusal(text: &str, shown: &str) -> String {
+    format!(
+        "'{text}': {shown} is the broadcast on an MS/TP network, so it is refused as a \
+         station. On a link that numbers that address as a single station (ARCNET, or a \
+         gateway's virtual network) the operator can name it {shown}:{suffix}, which asserts \
+         that knowledge. Ask the operator; do not add the suffix yourself",
+        suffix = target::ONE_STATION_SUFFIX
+    )
+}
 
 /// The ambiguity error for `instance`, claimed by every row of `claims`.
 fn ambiguous(instance: u32, claims: &[DiscoveredDevice]) -> OpsError {
@@ -374,6 +405,28 @@ impl<T: TransportPort + 'static> Ctx<T> {
             error => ToolError::Failed(format!("{text}: {error}")),
         };
         let parsed = target::parse_target(&text).map_err(|e| ToolError::invalid("device", e))?;
+        // A station at a MAC the one-station mark lifts, named without it:
+        // the refusal is the agent's to pass to the operator (#2738).
+        if let Target::RoutedMac {
+            dnet,
+            mac,
+            one_station: false,
+        } = &parsed
+            && target::lifted_by_one_station(mac)
+        {
+            return Err(ToolError::invalid(
+                "device",
+                lifted_refusal(
+                    &text,
+                    &format!("{dnet}:0x{}", bacnet_ops::octets::hex_upper(mac)),
+                ),
+            ));
+        }
+        // The handle an address made, when the call named an address: for
+        // a station at a MAC the one-station mark lifts, the row has no
+        // `DeviceAddress` of its own, so it is the only handle there is
+        // (#2738).
+        let mut named = None;
         let entry = match parsed {
             Target::Instance(instance) => match client.low_level().get_device(instance).await {
                 Ok(Some(entry)) => entry,
@@ -394,11 +447,13 @@ impl<T: TransportPort + 'static> Ctx<T> {
                 // there.
                 let handle = client.device(text.as_str()).await.map_err(failed)?;
                 let at = handle.address();
-                client
+                let row = client
                     .low_level()
                     .get_device_at(at.network(), at.mac())
                     .await
-                    .ok_or_else(unknown)?
+                    .ok_or_else(unknown)?;
+                named = Some(handle);
+                row
             }
             Target::Bip6(_) => {
                 return Err(ToolError::invalid(
@@ -407,7 +462,15 @@ impl<T: TransportPort + 'static> Ctx<T> {
                 ));
             }
         };
-        let handle = client.device(&entry).await.map_err(failed)?;
+        let handle = match named {
+            Some(handle) => handle,
+            // An instance whose claimant answered from an address only the
+            // operator's mark lifts has no handle by instance (#2738).
+            None if DeviceAddress::of(&entry).is_none() => {
+                return Err(self.lifted_claim(&text, &entry).unwrap_or_else(unknown));
+            }
+            None => client.device(&entry).await.map_err(failed)?,
+        };
         let address = handle.address();
         let device = Device {
             instance: entry.object_identifier.instance_number(),
@@ -420,6 +483,22 @@ impl<T: TransportPort + 'static> Ctx<T> {
         self.remember(&device.entry);
         call.reached(&device.address, device.instance);
         Ok(device)
+    }
+
+    /// The refusal for a device `row` that answered from an address only the
+    /// operator's one-station mark lifts, named by the instance `text`
+    /// (#2738); `None` for any other row.
+    fn lifted_claim(&self, text: &str, row: &DiscoveredDevice) -> Option<ToolError> {
+        let form = DeviceAddress::one_station_form(row)?;
+        let shown = form.trim_end_matches(&format!(":{}", target::ONE_STATION_SUFFIX));
+        Some(ToolError::invalid(
+            "device",
+            format!(
+                "device {text} answered from {shown}, an address that is the broadcast on an \
+                 MS/TP network, so no tool names it by its instance. {}",
+                lifted_refusal(shown, shown)
+            ),
+        ))
     }
 
     /// The rows of the discovery table claiming `instance`, on `network`
@@ -459,10 +538,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
     pub(crate) fn remember(&self, found: &DiscoveredDevice) {
         if let Some(address) = DeviceAddress::of(found) {
             let instance = found.object_identifier.instance_number();
-            self.known
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(address, instance);
+            self.known.locked().insert(address, instance);
         }
     }
 
@@ -478,7 +554,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
     /// one that does.
     pub(crate) fn reach_check(&self, instance: u32) -> Result<(), ToolError> {
         let claims: Vec<DeviceAddress> = {
-            let known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+            let known = self.known.locked();
             let mut claims: Vec<DeviceAddress> = known
                 .iter()
                 .filter(|(_, claimed)| **claimed == instance)
@@ -509,7 +585,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
     /// The one known address claiming `instance`; `None` when none or two
     /// or more do.
     pub(crate) fn known_at(&self, instance: u32) -> Option<DeviceAddress> {
-        let known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = self.known.locked();
         let mut claims = known
             .iter()
             .filter(|(_, claimed)| **claimed == instance)
@@ -523,13 +599,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
     /// The known instances in reach, in order: each claimed by one address
     /// the policy allows.
     pub(crate) fn known_in_reach(&self) -> Vec<u32> {
-        let mut instances: Vec<u32> = self
-            .known
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .copied()
-            .collect();
+        let mut instances: Vec<u32> = self.known.locked().values().copied().collect();
         instances.sort_unstable();
         instances.dedup();
         instances.retain(|instance| self.reach_check(*instance).is_ok());
@@ -551,10 +621,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
         loop {
             if resync {
                 let devices = client.devices().await;
-                self.known
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear();
+                self.known.locked().clear();
                 for found in &devices {
                     self.remember(found);
                 }
@@ -575,10 +642,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
             match event {
                 Ok(event) if event.kind == DeviceEventKind::Lost => {
                     if let Some(address) = DeviceAddress::of(&event.device) {
-                        self.known
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .remove(&address);
+                        self.known.locked().remove(&address);
                     }
                 }
                 Ok(event) => self.remember(&event.device),
@@ -648,7 +712,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
             "read call"
         );
         if let Some((address, instance)) = reached {
-            let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut reads = self.reads.locked();
             let entry = reads.entry(address).or_insert((instance, 0, 0));
             entry.0 = instance;
             entry.1 += 1;
@@ -658,7 +722,7 @@ impl<T: TransportPort + 'static> Ctx<T> {
 
     /// Log the read counts per device, at shutdown.
     pub(crate) fn log_summary(&self) {
-        let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        let reads = self.reads.locked();
         for (address, (device, calls, requests)) in reads.iter() {
             tracing::info!(
                 target: "bacnet_mcp::reads",

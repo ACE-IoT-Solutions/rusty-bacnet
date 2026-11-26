@@ -457,9 +457,11 @@ pub(crate) fn attach<T: KeepsReporting>(
         None => ReportingWriteConfig::default(),
         Some(WriteConfigSnapshot::Reporting(saved)) => saved,
         Some(_) => {
-            return Err(Error::Encoding(
-                "saved write configuration is not reporting settings".into(),
-            ));
+            return Err(bacnet_types::error::PersistenceError::new(
+                bacnet_types::error::PersistenceErrorKind::OtherObject,
+                "saved write configuration is not reporting settings",
+            )
+            .into());
         }
     };
     description::check_saved(saved.description.as_deref())?;
@@ -472,17 +474,18 @@ pub(crate) fn attach<T: KeepsReporting>(
     let invalid = crate::snapshot::write_config::reporting_invalid(&saved)
         .or_else(|| parameter_format::invalid(oid.object_type(), &saved.algorithm));
     if let Some(reason) = invalid {
-        return Err(Error::Encoding(format!(
-            "saved reporting settings {reason}"
-        )));
+        return Err(crate::snapshot::damaged(reason)
+            .in_format("saved reporting settings")
+            .into());
     }
     if saved
         .notify_type
         .is_some_and(|notify_type| !object.takes_notify_type(notify_type))
     {
-        return Err(Error::Encoding(
-            "saved reporting settings hold a Notify_Type this object refuses".into(),
-        ));
+        return Err(crate::snapshot::damaged(
+            "saved reporting settings hold a Notify_Type this object refuses",
+        )
+        .into());
     }
     object.restore_reporting_rows(&saved);
     // A multi-state object works its Reliability out again when State_Text

@@ -224,9 +224,9 @@ async fn discovery_projects_claims_by_canonical_station_and_instance() {
     let stale = [(address.clone(), N + 1)].into();
     let (own, rows) = low.localized_device_snapshot();
     assert_eq!(own, Some(5));
-    assert!(discovery_results(rows.clone(), stale, own).is_empty());
+    assert!(discovery_results(&Scope::Local, rows.clone(), stale, own).is_empty());
     let heard: std::collections::BTreeSet<_> = [(address, N + 1), (at(2), N)].into();
-    let only = discovery_results(rows, heard.clone(), own);
+    let only = discovery_results(&Scope::Local, rows, heard.clone(), own);
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].address, at(2));
     assert_eq!(only[0].instance, N);
@@ -235,7 +235,7 @@ async fn discovery_projects_claims_by_canonical_station_and_instance() {
     bus.i_am(3, N);
     settle().await;
     let (own, rows) = low.localized_device_snapshot();
-    let duplicated = discovery_results(rows, heard, own);
+    let duplicated = discovery_results(&Scope::Local, rows, heard, own);
     assert_eq!(duplicated.len(), 1);
     assert!(duplicated[0].duplicate);
 }
@@ -243,12 +243,15 @@ async fn discovery_projects_claims_by_canonical_station_and_instance() {
 /// The one rule for which answers a scope covers, a Who-Is's and a
 /// Who-Has's alike: a network named by this client's own number takes the
 /// local stations; a local scope takes no routed station, and takes one
-/// reported with the client's own network number, which is local.
+/// reported with the client's own network number, which is local. On a
+/// router's application (no number of its own, networks 1 and 5), a local
+/// scope takes a station on either network and no other (#2601).
 #[test]
 fn a_scope_covers_stations_by_where_they_are() {
     let local = at(2);
     let routed = super::DeviceAddress::new(9, &[7]).unwrap();
     let own_routed = super::DeviceAddress::new(5, &mac(2)).unwrap();
+    let on_one = super::DeviceAddress::new(1, &mac(3)).unwrap();
     for (scope, own, address, covered) in [
         (Scope::Network(5), Some(5), &local, true),
         (Scope::Network(5), None, &local, false),
@@ -269,9 +272,24 @@ fn a_scope_covers_stations_by_where_they_are() {
         (Scope::Global, None, &routed, true),
     ] {
         assert_eq!(
-            scope.covers(address, own),
+            scope.covers(address, own, own.as_slice()),
             covered,
             "{scope:?} {own:?} {address}"
+        );
+    }
+    let router_app = [1, 5];
+    for (scope, address, covered) in [
+        (Scope::Local, &on_one, true),
+        (Scope::Local, &own_routed, true),
+        (Scope::Local, &routed, false),
+        (Scope::Network(1), &on_one, true),
+        (Scope::Network(1), &own_routed, false),
+        (Scope::Global, &routed, true),
+    ] {
+        assert_eq!(
+            scope.covers(address, None, &router_app),
+            covered,
+            "{scope:?} on a router application: {address}"
         );
     }
 }
@@ -330,5 +348,66 @@ async fn a_refused_local_broadcast_names_its_destination() {
     assert!(
         !refused.to_string().contains("broadcast address"),
         "{refused}"
+    );
+}
+
+/// A router discovery broadcasts one Who-Is-Router-To-Network unless it
+/// names a router, which takes one unicast and no broadcast. A router
+/// address that names no one station, or a reserved network, is refused
+/// with nothing sent. A deadline ends the wait early.
+#[tokio::test(start_paused = true)]
+async fn a_router_discovery_broadcasts_unless_it_names_a_router() {
+    use crate::client::RouterDiscovery;
+
+    let who_is_router = |log: &SendLog| -> Vec<SentFrame> {
+        let frames = log.frames();
+        log.clear();
+        frames
+            .into_iter()
+            .filter(|frame| {
+                frame.decode_npdu().message_type
+                    == Some(bacnet_npdu::NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
+            })
+            .collect()
+    };
+    assert_eq!(RouterDiscovery::default(), RouterDiscovery::local());
+    assert_eq!(RouterDiscovery::local().router(), None);
+    let bus = Bus::new();
+    let (client, sent) = client(&bus).await;
+    let quick = |request: RouterDiscovery| request.wait(Duration::ZERO);
+    let found = client
+        .discover_routers(quick(RouterDiscovery::local().network(5)))
+        .await
+        .unwrap();
+    assert!(found.is_empty());
+    let [frame] = who_is_router(&sent).try_into().unwrap();
+    assert!(frame.broadcast);
+    assert_eq!(&frame.npdu[2..], [0, 0, 5]);
+
+    let directed = RouterDiscovery::directed(&mac(2));
+    assert_eq!(directed.router(), Some(&mac(2)[..]));
+    client.discover_routers(quick(directed)).await.unwrap();
+    let [frame] = who_is_router(&sent).try_into().unwrap();
+    assert!(!frame.broadcast);
+    assert_eq!(frame.mac.as_slice(), mac(2));
+
+    for refused in [
+        RouterDiscovery::directed(&[]),
+        RouterDiscovery::local().network(0),
+        RouterDiscovery::directed(&mac(2)).network(0xFFFF),
+    ] {
+        assert!(client.discover_routers(quick(refused)).await.is_err());
+    }
+    assert!(who_is_router(&sent).is_empty(), "nothing was sent");
+
+    let start = tokio::time::Instant::now();
+    let request = RouterDiscovery::local()
+        .wait(Duration::from_secs(60))
+        .deadline(start + Duration::from_secs(1));
+    client.discover_routers(request).await.unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
     );
 }

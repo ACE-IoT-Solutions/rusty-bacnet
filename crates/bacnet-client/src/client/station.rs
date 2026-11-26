@@ -23,8 +23,16 @@ use bacnet_types::constructed::BACnetAddress;
 /// type every typed call takes in its [`ToStation`] form.
 ///
 /// A [`BACnetAddress`] and a MAC are stations too, and a call takes them as
-/// they are; this type adds a router named by the caller. The three forms
-/// are all there are, so a caller can match every one.
+/// they are; this type adds a router named by the caller, the one local
+/// broadcast that reaches a network while no router to it is known, and
+/// the one-station mark ([`Station::one_station`]). The four forms are all
+/// there are, so a caller can match every one.
+///
+/// A remote station's MAC is checked against the forms a router delivers
+/// to every station of its network, or to a group of them
+/// ([`RemoteBroadcast`]): a confirmed request to one is refused before
+/// anything is sent (#2709), unless the address is marked one station and
+/// the mark lifts its form (#2738).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Station {
     /// A station on this link, at its MAC.
@@ -40,17 +48,37 @@ pub enum Station {
         network: u16,
         /// Its MAC on that network.
         mac: MacAddr,
+        /// Its address is marked one station ([`Station::one_station`]).
+        one_station: bool,
     },
     /// A station on another network, through the router at `router` on this
     /// link, with no table lookup. A network this client has learned is its
     /// own is this link, and the request goes to `mac` there.
     Routed {
-        /// The MAC of the router on this link.
+        /// The MAC of the router on this link: one station, never this
+        /// link's broadcast or a group address (#2722).
         router: MacAddr,
         /// The station's network, 1 to 65534.
         network: u16,
         /// Its MAC on that network.
         mac: MacAddr,
+        /// Its address is marked one station ([`Station::one_station`]).
+        one_station: bool,
+    },
+    /// A station on another network, reached by one broadcast on this link
+    /// whose NPDU names the station's network and MAC, for when no router
+    /// to that network is known (Clause 6.5.3): the router that serves the
+    /// network passes it on, and the station's answer comes back through
+    /// that router. Each attempt goes this way, and nothing about the route
+    /// is learned from it. A network this client has learned is its own is
+    /// this link, and the request goes to `mac` there.
+    RoutedViaLocalBroadcast {
+        /// The station's network, 1 to 65534.
+        network: u16,
+        /// Its MAC on that network.
+        mac: MacAddr,
+        /// Its address is marked one station ([`Station::one_station`]).
+        one_station: bool,
     },
 }
 
@@ -60,7 +88,9 @@ impl Station {
     pub fn address(&self) -> (u16, &[u8]) {
         match self {
             Self::Local { mac } => (0, mac),
-            Self::Remote { network, mac } | Self::Routed { network, mac, .. } => (*network, mac),
+            Self::Remote { network, mac, .. }
+            | Self::Routed { network, mac, .. }
+            | Self::RoutedViaLocalBroadcast { network, mac, .. } => (*network, mac),
         }
     }
 
@@ -77,6 +107,7 @@ impl Station {
         Self::Remote {
             network,
             mac: MacAddr::from_slice(mac),
+            one_station: false,
         }
     }
 
@@ -86,6 +117,118 @@ impl Station {
             router: MacAddr::from_slice(router),
             network,
             mac: MacAddr::from_slice(mac),
+            one_station: false,
+        }
+    }
+
+    /// The station at `mac` on `network`, reached by one broadcast on this
+    /// link while no router to `network` is known
+    /// ([`Station::RoutedViaLocalBroadcast`]). Once a router is known, name
+    /// it ([`Station::routed`]; [`BACnetClient::discover_routers`] finds
+    /// them): the broadcast reaches every node on this link, and only the
+    /// router to `network` keeps it.
+    pub fn routed_via_local_broadcast(network: u16, mac: &[u8]) -> Self {
+        Self::RoutedViaLocalBroadcast {
+            network,
+            mac: MacAddr::from_slice(mac),
+            one_station: false,
+        }
+    }
+
+    /// This station, its address marked one station: an explicit opt-in
+    /// (#2738) for a remote address that is a broadcast or group form on
+    /// some links and a station on others. The client can't see a remote
+    /// network's link, so by default it refuses a confirmed request to every
+    /// [`RemoteBroadcast`] form. Marked, it sends one to the one octet
+    /// `0xFF` (station 255 on ARCNET, Clause 8) and to two octets starting
+    /// `0x00` or `0xFF` (a gateway's virtual network that numbers its
+    /// stations in two octets), but for `0x0000` and `0xFFFF`; three and six
+    /// octets are checked as unmarked (the table in [`RemoteBroadcast`]'s
+    /// docs). The mark only lifts: it refuses nothing the unmarked check
+    /// takes, so the one octet `0x00` goes either way, and an ARCNET
+    /// network's broadcast there is not caught. A station on this link is
+    /// returned unchanged: the link's own group rule judges its MAC.
+    #[must_use]
+    pub fn one_station(self) -> Self {
+        match self {
+            Self::Local { mac } => Self::Local { mac },
+            Self::Remote { network, mac, .. } => Self::Remote {
+                network,
+                mac,
+                one_station: true,
+            },
+            Self::Routed {
+                router,
+                network,
+                mac,
+                ..
+            } => Self::Routed {
+                router,
+                network,
+                mac,
+                one_station: true,
+            },
+            Self::RoutedViaLocalBroadcast { network, mac, .. } => Self::RoutedViaLocalBroadcast {
+                network,
+                mac,
+                one_station: true,
+            },
+        }
+    }
+
+    /// Whether the station's address is marked one station
+    /// ([`Station::one_station`]); never for a station on this link.
+    pub fn is_one_station(&self) -> bool {
+        match self {
+            Self::Local { .. } => false,
+            Self::Remote { one_station, .. }
+            | Self::Routed { one_station, .. }
+            | Self::RoutedViaLocalBroadcast { one_station, .. } => *one_station,
+        }
+    }
+
+    /// The checks a confirmed request to this station makes before anything
+    /// is sent that need no link: a MAC that names one station; for a remote
+    /// one a network a router carries to one station (1 to 65534) and a MAC
+    /// of at most [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) octets that is
+    /// none of [`RemoteBroadcast`]'s forms, as the one-station mark has them
+    /// ([`Station::one_station`]); and a named router that isn't
+    /// empty. Each typed call makes them itself. A caller that looks a
+    /// station up before calling (the Python binding, bacnet-ops) makes them
+    /// first, so a refused station is never asked for or remembered as one.
+    /// Whether a local MAC or a named router is a broadcast or group address
+    /// on this link depends on the link, and is checked when the request is
+    /// made.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`], saying which check failed.
+    pub fn check_confirmed(&self) -> Result<(), Error> {
+        match self {
+            Self::Local { mac } => check_station(0, mac),
+            Self::Remote {
+                network,
+                mac,
+                one_station,
+            }
+            | Self::RoutedViaLocalBroadcast {
+                network,
+                mac,
+                one_station,
+            } => {
+                check_station(*network, mac)?;
+                send_checks::check_remote_station(*network, mac, *one_station)
+            }
+            Self::Routed {
+                router,
+                network,
+                mac,
+                one_station,
+            } => {
+                check_station(*network, mac)?;
+                send_checks::check_remote_station(*network, mac, *one_station)?;
+                send_checks::check_router_named(router)
+            }
         }
     }
 }
@@ -100,6 +243,7 @@ impl From<BACnetAddress> for Station {
             network => Self::Remote {
                 network,
                 mac: address.mac_address,
+                one_station: false,
             },
         }
     }
@@ -115,6 +259,7 @@ impl From<&DiscoveredDevice> for Station {
                 router: device.mac_address.clone(),
                 network,
                 mac: mac.clone(),
+                one_station: false,
             },
             _ => Self::Local {
                 mac: device.mac_address.clone(),
@@ -149,7 +294,9 @@ impl Station {
         };
         match self {
             Self::Local { mac } => local_from(mac),
-            Self::Remote { network, mac } | Self::Routed { network, mac, .. } => {
+            Self::Remote { network, mac, .. }
+            | Self::Routed { network, mac, .. }
+            | Self::RoutedViaLocalBroadcast { network, mac, .. } => {
                 (source_network == Some(*network) && source_address == Some(mac))
                     || ((*network == 0 || local_network == Some(*network)) && local_from(mac))
             }
@@ -162,7 +309,10 @@ impl Station {
 /// takes a [`ToStation`] instead (`who_is_directed` and the like).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Broadcast {
-    /// Every station on this network.
+    /// Every station on this network. On a router's application port,
+    /// which is on each of the router's networks, every station on each of
+    /// them: the port sends one copy to each, which no router passes on
+    /// (#2601).
     Local,
     /// Every station on one remote network, 1 to 65534, through the router
     /// to it. Once the client knows its own network's number, that number
@@ -178,20 +328,22 @@ pub enum Broadcast {
 impl Broadcast {
     /// Whether an answer heard from `source_network`, the SNET it carried
     /// (`None` when it came from this network with none), is one this
-    /// scope's broadcast asked for, `own` being the client's network number
-    /// once known: every answer for [`Broadcast::Global`]; for
-    /// [`Broadcast::Local`], one from this network; for
+    /// scope's broadcast asked for, `local` being the networks the client's
+    /// local broadcast reaches ([`BACnetClient::local_networks`]: its own
+    /// network's number once known, or a router application's networks):
+    /// every answer for [`Broadcast::Global`]; for [`Broadcast::Local`],
+    /// one from this network, with no SNET or one of `local`; for
     /// [`Broadcast::Network`], one from that network. An answer a router
-    /// relays back from `own` is from this network, so a broadcast to
-    /// `own` takes the local answers too. An answer from elsewhere during
-    /// the wait, unasked or another's, is no answer to this one.
-    pub fn answered_from(&self, source_network: Option<u16>, own: Option<u16>) -> bool {
-        let from = source_network.filter(|network| Some(*network) != own);
+    /// relays back from one of `local` is from this network, so a
+    /// broadcast to such a network takes the local answers too. An answer
+    /// from elsewhere during the wait, unasked or another's, is no answer
+    /// to this one.
+    pub fn answered_from(&self, source_network: Option<u16>, local: &[u16]) -> bool {
         match *self {
             Self::Global => true,
-            Self::Local => from.is_none(),
-            Self::Network(network) => match from {
-                None => own == Some(network),
+            Self::Local => source_network.is_none_or(|from| local.contains(&from)),
+            Self::Network(network) => match source_network {
+                None => local.contains(&network),
                 Some(from) => from == network,
             },
         }
@@ -214,12 +366,14 @@ mod sealed {
 
     /// How a request reaches a station in one of its forms.
     pub trait Sealed {
-        /// One confirmed request to the station, its answer's service data.
+        /// One confirmed request to the station, its answer's service data,
+        /// every frame of it carrying `attributes` (#2723).
         fn confirmed<'a, T: TransportPort + 'static>(
             &'a self,
             client: &'a BACnetClient<T>,
             service_choice: ConfirmedServiceChoice,
             service_data: &'a [u8],
+            attributes: Attributes<'a>,
         ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a;
 
         /// One unconfirmed request to the station.
@@ -241,11 +395,13 @@ mod sealed {
             client: &'a BACnetClient<T>,
             service_choice: ConfirmedServiceChoice,
             service_data: &'a [u8],
+            attributes: Attributes<'a>,
         ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
             client.confirmed_request_inner(
                 ConfirmedTarget::Local { mac: self },
                 service_choice,
                 service_data,
+                attributes,
             )
         }
 
@@ -272,8 +428,9 @@ mod sealed {
                     client: &'a BACnetClient<T>,
                     service_choice: ConfirmedServiceChoice,
                     service_data: &'a [u8],
+                    attributes: Attributes<'a>,
                 ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
-                    self[..].confirmed(client, service_choice, service_data)
+                    self[..].confirmed(client, service_choice, service_data, attributes)
                 }
 
                 fn unconfirmed<'a, T: TransportPort + 'static>(
@@ -304,8 +461,9 @@ mod sealed {
             client: &'a BACnetClient<T>,
             service_choice: ConfirmedServiceChoice,
             service_data: &'a [u8],
+            attributes: Attributes<'a>,
         ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
-            (**self).confirmed(client, service_choice, service_data)
+            (**self).confirmed(client, service_choice, service_data, attributes)
         }
 
         fn unconfirmed<'a, T: TransportPort + 'static>(
@@ -328,12 +486,15 @@ mod sealed {
             client: &'a BACnetClient<T>,
             service_choice: ConfirmedServiceChoice,
             service_data: &'a [u8],
+            attributes: Attributes<'a>,
         ) -> impl Future<Output = Result<Bytes, Error>> + Send + 'a {
             client.confirmed_at(
                 self.network_number,
                 &self.mac_address,
+                false,
                 service_choice,
                 service_data,
+                attributes,
             )
         }
 
@@ -362,26 +523,61 @@ mod sealed {
             client: &'a BACnetClient<T>,
             service_choice: ConfirmedServiceChoice,
             service_data: &'a [u8],
+            attributes: Attributes<'a>,
         ) -> Result<Bytes, Error> {
             match self {
-                Station::Local { mac } => mac.confirmed(client, service_choice, service_data).await,
-                Station::Remote { network, mac } => {
+                Station::Local { mac } => {
+                    mac.confirmed(client, service_choice, service_data, attributes)
+                        .await
+                }
+                Station::Remote {
+                    network,
+                    mac,
+                    one_station,
+                } => {
                     client
-                        .confirmed_at(*network, mac, service_choice, service_data)
+                        .confirmed_at(
+                            *network,
+                            mac,
+                            *one_station,
+                            service_choice,
+                            service_data,
+                            attributes,
+                        )
                         .await
                 }
                 Station::Routed {
                     router,
                     network,
                     mac,
+                    one_station,
                 } => {
+                    // An empty router would be the local broadcast form's
+                    // mark below: it names no router.
+                    send_checks::check_router_named(router)?;
                     let target = ConfirmedTarget::Routed {
                         router_mac: router,
                         dest_network: *network,
                         dest_mac: mac,
+                        one_station: *one_station,
                     };
                     client
-                        .confirmed_request_inner(target, service_choice, service_data)
+                        .confirmed_request_inner(target, service_choice, service_data, attributes)
+                        .await
+                }
+                Station::RoutedViaLocalBroadcast {
+                    network,
+                    mac,
+                    one_station,
+                } => {
+                    let target = ConfirmedTarget::Routed {
+                        router_mac: VIA_LOCAL_BROADCAST,
+                        dest_network: *network,
+                        dest_mac: mac,
+                        one_station: *one_station,
+                    };
+                    client
+                        .confirmed_request_inner(target, service_choice, service_data, attributes)
                         .await
                 }
             }
@@ -397,7 +593,7 @@ mod sealed {
                 Station::Local { mac } => {
                     mac.unconfirmed(client, service_choice, service_data).await
                 }
-                Station::Remote { network, mac } => {
+                Station::Remote { network, mac, .. } => {
                     client
                         .unconfirmed_at(*network, mac, service_choice, service_data)
                         .await
@@ -406,9 +602,15 @@ mod sealed {
                     router,
                     network,
                     mac,
+                    ..
                 } => {
                     client
-                        .unconfirmed_via(router, *network, mac, service_choice, service_data)
+                        .unconfirmed_via(Some(router), *network, mac, service_choice, service_data)
+                        .await
+                }
+                Station::RoutedViaLocalBroadcast { network, mac, .. } => {
+                    client
+                        .unconfirmed_via(None, *network, mac, service_choice, service_data)
                         .await
                 }
             }
@@ -420,16 +622,28 @@ mod sealed {
     }
 }
 
+/// The `router_mac` of a [`ConfirmedTarget::Routed`] sent by one broadcast
+/// on this link ([`Station::RoutedViaLocalBroadcast`]): no router. Such a
+/// request takes no routed path ([`ConfirmedTarget::routed_path`]): a path
+/// is a router and a network, and a router's reject names the router, so
+/// none could be matched to it. It is sized by the device and the link, as
+/// a local one is.
+pub(super) const VIA_LOCAL_BROADCAST: &[u8] = &[];
+
 /// Routing target for confirmed requests.
 #[derive(Clone, Copy)]
 pub(super) enum ConfirmedTarget<'a> {
     Local {
         mac: &'a [u8],
     },
+    /// Through `router_mac`, or by one local broadcast when it is
+    /// [`VIA_LOCAL_BROADCAST`].
     Routed {
         router_mac: &'a [u8],
         dest_network: u16,
         dest_mac: &'a [u8],
+        /// Its address is marked one station ([`Station::one_station`]).
+        one_station: bool,
     },
 }
 
@@ -444,6 +658,20 @@ impl<'a> ConfirmedTarget<'a> {
                 dest_mac,
                 ..
             } => (dest_network, dest_mac),
+        }
+    }
+
+    /// The routed path a request to this target takes, its named router and
+    /// the station's network; `None` for a local target and for one sent by
+    /// local broadcast, which names no router.
+    pub(super) fn routed_path(&self) -> Option<(&'a [u8], u16)> {
+        match *self {
+            Self::Routed {
+                router_mac,
+                dest_network,
+                ..
+            } if router_mac != VIA_LOCAL_BROADCAST => Some((router_mac, dest_network)),
+            _ => None,
         }
     }
 
@@ -469,26 +697,36 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// A confirmed request to the station at `mac` on `network` (0 for this
     /// link): at its MAC on this link or this client's own network, else
     /// through the router the discovery table's row at the address names.
+    /// A remote broadcast form is refused before the table is read, so it
+    /// fails as what it is, not as an unknown device.
     async fn confirmed_at(
         &self,
         network: u16,
         mac: &[u8],
+        one_station: bool,
         service_choice: ConfirmedServiceChoice,
         service_data: &[u8],
+        attributes: Attributes<'_>,
     ) -> Result<Bytes, Error> {
+        if network != 0 && Some(network) != self.network.local_network_number().get() {
+            check_station(network, mac)?;
+            send_checks::check_remote_station(network, mac, one_station)?;
+        }
         match self.route_to(network, mac)? {
             Route::Local => {
                 let target = ConfirmedTarget::Local { mac };
-                self.confirmed_request_inner(target, service_choice, service_data)
+                self.confirmed_request_inner(target, service_choice, service_data, attributes)
                     .await
             }
             Route::Via(router) => {
+                send_checks::check_router_named(&router)?;
                 let target = ConfirmedTarget::Routed {
                     router_mac: &router,
                     dest_network: network,
                     dest_mac: mac,
+                    one_station,
                 };
-                self.confirmed_request_inner(target, service_choice, service_data)
+                self.confirmed_request_inner(target, service_choice, service_data, attributes)
                     .await
             }
         }
@@ -537,12 +775,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
-    /// An unconfirmed request through the router at `router` to the station
-    /// at `mac` on `network`, or to `mac` on this link when `network` is
-    /// this client's own.
+    /// An unconfirmed request through the router at `router`, or by one
+    /// broadcast on this link with none, to the station at `mac` on
+    /// `network`, or to `mac` on this link when `network` is this client's
+    /// own.
     async fn unconfirmed_via(
         &self,
-        router: &[u8],
+        router: Option<&[u8]>,
         network: u16,
         mac: &[u8],
         service_choice: UnconfirmedServiceChoice,
@@ -554,7 +793,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 .unconfirmed_own_network(network, mac, service_choice, service_data)
                 .await;
         }
-        self.unconfirmed_request_routed(Some(router), network, mac, service_choice, service_data)
+        self.unconfirmed_request_routed(router, network, mac, service_choice, service_data)
             .await
     }
 
@@ -568,10 +807,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         service_data: &[u8],
     ) -> Result<(), Error> {
         if self.network.transport().is_group_destination(mac) {
-            return Err(Error::Encoding(format!(
+            return Err(Error::InvalidArgument(Refusal::text(format!(
                 "{} names this network's broadcast or a group, not one station",
                 station_text(network, mac)
-            )));
+            ))));
         }
         self.unconfirmed_local(mac, service_choice, service_data)
             .await
@@ -598,8 +837,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             && let Some(router) = router
             && !self.network.is_local_unicast_station(router).await?
         {
-            return Err(Error::Encoding(
-                "a directed Who-Is needs a unicast router on this link".into(),
+            return Err(Error::invalid_argument(
+                "a directed Who-Is needs a unicast router on this link",
             ));
         }
         self.ask_before(service_choice).await?;
@@ -621,15 +860,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// The checks every address takes before any request state: a MAC that
     /// names one station, and for a remote network one a router can carry.
     pub(super) fn station_of(network: u16, mac: &[u8]) -> Result<(), Error> {
-        if mac.is_empty() {
-            return Err(Error::Encoding(format!(
-                "network {network} with an empty MAC is a broadcast, not one station"
-            )));
-        }
-        if network != 0 {
-            check_routed_unicast(network, mac.len())?;
-        }
-        Ok(())
+        check_station(network, mac)
     }
 
     /// `to` with its route fixed now, as [`Station::Local`] or
@@ -641,12 +872,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// anything is sent.
     pub(super) fn with_fixed_route(&self, to: Station) -> Result<Station, Error> {
         match to {
-            Station::Remote { network, mac } => match self.route_to(network, &mac)? {
+            Station::Remote {
+                network,
+                mac,
+                one_station,
+            } => match self.route_to(network, &mac)? {
                 Route::Local => Ok(Station::Local { mac }),
                 Route::Via(router) => Ok(Station::Routed {
                     router,
                     network,
                     mac,
+                    one_station,
                 }),
             },
             other => Ok(other),
@@ -671,8 +907,28 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     }
 }
 
+/// The checks every address takes before any request state: a MAC that
+/// names one station, and for a remote network one a router can carry.
+/// [`check_station`]'s refusal, out of line from the request path (#1833).
+#[cold]
+#[inline(never)]
+fn empty_mac(network: u16) -> Error {
+    let label = "network {} with an empty MAC is a broadcast, not one station";
+    Error::InvalidArgument(Refusal::new(label).with_value(u64::from(network)))
+}
+
+fn check_station(network: u16, mac: &[u8]) -> Result<(), Error> {
+    if mac.is_empty() {
+        return Err(empty_mac(network));
+    }
+    if network != 0 {
+        check_routed_unicast(network, mac.len())?;
+    }
+    Ok(())
+}
+
 /// `2:0x05`: a station as the CLI's target grammar writes it.
-fn station_text(network: u16, mac: &[u8]) -> String {
+pub(super) fn station_text(network: u16, mac: &[u8]) -> String {
     let hex: String = mac.iter().map(|octet| format!("{octet:02X}")).collect();
     format!("{network}:0x{hex}")
 }

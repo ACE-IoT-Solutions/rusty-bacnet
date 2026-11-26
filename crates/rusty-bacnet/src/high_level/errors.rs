@@ -23,9 +23,10 @@
 use bacnet_ops::error::PagingFault;
 use bacnet_ops::label::{kebab, object_label};
 use bacnet_ops::target::AddressStyle;
+use bacnet_ops::watch::WatchError;
 use bacnet_ops::{OpsError, Scope, WriteDenied, Written};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::{Error, RemoteError};
+use bacnet_types::error::{Error, Lifecycle, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -33,8 +34,8 @@ use pyo3::prelude::*;
 
 use super::priorities::PyWritten;
 use crate::errors::{
-    BacnetError, BacnetProtocolError, BacnetTimeoutError, DETAIL_ATTRIBUTES, Lookup, lookup_error,
-    set_enum_attr, to_py_err,
+    BacnetError, BacnetProtocolError, BacnetTimeoutError, DETAIL_ATTRIBUTES, Lookup,
+    lifecycle_error, lookup_error, set_enum_attr, to_py_err,
 };
 use crate::types::{PyObjectIdentifier, PyPropertyIdentifier};
 
@@ -64,7 +65,20 @@ pub(crate) fn ops_err(error: OpsError, style: AddressStyle) -> PyErr {
     // A request that timed out, however the client reported it (the
     // transaction state machine's abort included), is a timeout.
     if error.timed_out() {
-        return BacnetTimeoutError::new_err(message);
+        let timeout = BacnetTimeoutError::new_err(message);
+        // After a router said it was busy, the timeout names it (#2724).
+        if let OpsError::Unreachable {
+            source: Error::RouterBusyTimeout(busy),
+            ..
+        }
+        | OpsError::Client(Error::RouterBusyTimeout(busy)) = &error
+        {
+            let _ = crate::py_async::attach(|py| {
+                crate::errors::set_busy(timeout.value(py).as_any(), busy);
+                Ok(())
+            });
+        }
+        return timeout;
     }
     match error {
         OpsError::Parse { reason, .. } => PyValueError::new_err(super::link_hint(reason)),
@@ -93,12 +107,46 @@ pub(crate) fn ops_err(error: OpsError, style: AddressStyle) -> PyErr {
             ),
         ),
         OpsError::ObjectList { source, .. } => object_list(message, *source, style),
+        // A write through a following handle not sent (#2795): its
+        // addresses in the link's own form in the message, and as
+        // (network, MAC) in `at` and `candidate`, an unconfirmed hint kept
+        // out of `candidates`, which are real choices.
+        OpsError::NotConfirmed {
+            instance,
+            at,
+            candidate,
+        } => {
+            let mut text = format!(
+                "device {instance} isn't confirmed at {}, where the handle reaches it \
+                 (another device or none answers there, or no route to it is known), and a \
+                 write never goes elsewhere on its own",
+                at.styled(style)
+            );
+            if let Some(candidate) = &candidate {
+                text.push_str(&format!(
+                    "; the discovery table has it at {}",
+                    candidate.styled(style)
+                ));
+            }
+            text.push_str(": read through the handle first, which looks for the device");
+            lookup_error(
+                text,
+                Lookup {
+                    target: Some(instance.to_string()),
+                    instance: Some(instance),
+                    ambiguous: false,
+                    candidates: Vec::new(),
+                    at: Some((at.network(), at.mac().to_vec())),
+                    candidate: candidate.map(|address| (address.network(), address.mac().to_vec())),
+                },
+            )
+        }
         OpsError::UnknownDevice { target, asked } => lookup_error(
             match asked {
                 // Ops' own text names the Rust call that widens the scope.
                 Some(Scope::Local) => format!(
-                    "device {target} did not answer a Who-Is on this network, the only one \
-                     asked: name its network in the target ('5:{target}' for network 5), or \
+                    "device {target} did not answer a local Who-Is, the only one asked: \
+                     name its network in the target ('5:{target}' for network 5), or \
                      give BACnetClient resolve_scope='global' or a network number"
                 ),
                 _ => message,
@@ -106,9 +154,13 @@ pub(crate) fn ops_err(error: OpsError, style: AddressStyle) -> PyErr {
             Lookup::unknown(target),
         ),
         OpsError::Paging(fault) => paging(message, fault),
+        // A hub shut or a watch closed: the binding's own lifecycle state
+        // (#2819), `BacnetStateError`, still a RuntimeError.
+        OpsError::Watch(WatchError::Closed | WatchError::Shut) => {
+            lifecycle_error(Lifecycle::Closed, message)
+        }
         // The hub's own limit, or no runtime: nothing was watched, and the
-        // device said nothing. The state errors of this binding are
-        // RuntimeError ("client not started").
+        // device said nothing.
         OpsError::Watch(_) => PyRuntimeError::new_err(message),
         OpsError::Denied(denied) => write_denied(&denied),
         // As the binding's own SC startup reports TLS material it refused.
@@ -133,20 +185,6 @@ pub(crate) fn ops_err(error: OpsError, style: AddressStyle) -> PyErr {
         // mapped here, so a new one is noticed when that list is updated.
         _ => BacnetError::new_err(message),
     }
-}
-
-/// BacnetLookupError for a bare `instance` a router's application hasn't
-/// heard from and has nowhere to ask for: it was given no `resolve_scope`.
-pub(super) fn unasked(instance: u32) -> PyErr {
-    lookup_error(
-        format!(
-            "device {instance} is not known to the client, and a client on \
-             transport='router' has no network of its own to ask on: name its network in \
-             the target ('5:{instance}' for network 5), or give BACnetClient \
-             resolve_scope='global' or a network number"
-        ),
-        Lookup::unknown(instance.to_string()),
-    )
 }
 
 /// An [`OpsError::ObjectList`]: the exception its `source` raises, of the

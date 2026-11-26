@@ -8,12 +8,12 @@ use bacnet_endpoint::mstp::MstpEndpointBuilder;
 use bacnet_endpoint::session::SessionRole;
 use bacnet_transport::mstp::{Echo, MstpConfig, SerialPort};
 use bacnet_transport::mstp_serial::{SerialConfig, TokioSerialPort};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    PendingObject, build_database, build_identity, build_pending_boxes, not_running, owner_error,
     parse_device_uuid, parse_segmentation, pending_group,
 };
 use crate::endpoint::lifecycle::Lifecycle;
@@ -125,15 +125,14 @@ impl MstpEndpointConfig {
             port_name: self.serial_port.clone(),
             baud_rate: self.baud,
         };
+        // A port that doesn't open is BacnetTransportError (#1833).
         #[cfg(not(test))]
-        let serial = TokioSerialPort::open(&serial_config)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let serial = TokioSerialPort::open(&serial_config).map_err(crate::errors::to_py_err)?;
         #[cfg(test)]
         let serial = match &self.serial_opener {
             Some(open) => open(&serial_config)?,
             None => lifecycle_tests::TestSerial::Real(
-                TokioSerialPort::open(&serial_config)
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+                TokioSerialPort::open(&serial_config).map_err(crate::errors::to_py_err)?,
             ),
         };
         Ok(serial.with_echo(self.echo))
@@ -143,7 +142,7 @@ impl MstpEndpointConfig {
         let config = self;
         let serial = config.open_serial()?;
         let boxes = build_pending_boxes(&objects)?;
-        let mut db = build_database(&config.identity, boxes)?;
+        let mut db = build_database(&config.identity, boxes, config.server.device_storage())?;
         if let Some(source) = &config.source_audit {
             source.provision(&config.identity, &mut db)?;
         }
@@ -162,7 +161,8 @@ impl MstpEndpointConfig {
                     transport,
                 ))
             })
-            .map_err(to_py_err)?;
+            // The next start builds the objects again (#2766).
+            .map_err(|refused| to_py_err(refused.into()))?;
         let session = match &config.source_audit {
             Some(source) => source.select(session),
             None => session,
@@ -205,8 +205,9 @@ impl PyMstpEndpoint {
     ///     max_apdu: Raw receive ceiling, at least 50 bytes and no more than
     ///         480, or 1476 with ``mstp_extended_frames=True``. Request headers
     ///         use the largest supported code that does not exceed it.
-    ///     segmentation / device_uuid: Identity knobs (UUID zeros allowed;
-    ///         stored into DEVICE_UUID).
+    ///     segmentation / apdu_segment_timeout_ms / device_uuid: Identity
+    ///         knobs, as for BIP (the segment timeout keyword-only; UUID
+    ///         zeros allowed; stored into DEVICE_UUID).
     ///     queue_capacity / apdu_timeout_ms / apdu_retries: Session tuning
     ///         (queue_capacity default 256; a full queue drops and counts,
     ///         see `status()`'s `*_full_drops`). The APDU timeout and
@@ -239,11 +240,13 @@ impl PyMstpEndpoint {
     ///         (default None), as on `BipEndpoint` (#2617): without
     ///         `mutation_policy` the server is read-only, and without
     ///         `time_sync_policy` time synchronization is off.
+    ///     device_storage_path: Keyword-only (default None), as on
+    ///         `BipEndpoint` (#2730).
     ///     source_audit_reporter / audit_recipient / audit_device_bindings:
     ///         Keyword-only, as on `BipEndpoint` (#2348, #2357), each binding
     ///         address a station in decimal digits (`"2"`), as
-    ///         `local_address()` gives it, or a routed `"network:0xMAC"`
-    ///         (#2371). An address `audit_recipient` takes
+    ///         `local_address()` gives it, or a routed `"network:0xMAC[:one-station]"` or
+    ///         `RoutedTarget` (#2371, #2738). An address `audit_recipient` takes
     ///         another station: never 255 or this endpoint's own.
     #[new]
     #[pyo3(signature = (
@@ -262,6 +265,7 @@ impl PyMstpEndpoint {
         apdu_timeout_ms=6000,
         apdu_retries=3,
         *,
+        apdu_segment_timeout_ms=5000,
         read_work_limit=256,
         min_request_interval_ms=0,
         mstp_extended_frames=false,
@@ -276,6 +280,7 @@ impl PyMstpEndpoint {
         mutation_policy=None,
         cov_policy=None,
         time_sync_policy=None,
+        device_storage_path=None,
         source_audit_reporter=None,
         audit_recipient=None,
         audit_device_bindings=None
@@ -295,6 +300,7 @@ impl PyMstpEndpoint {
         queue_capacity: usize,
         apdu_timeout_ms: u64,
         apdu_retries: u8,
+        apdu_segment_timeout_ms: u64,
         read_work_limit: usize,
         min_request_interval_ms: u64,
         mstp_extended_frames: bool,
@@ -309,9 +315,15 @@ impl PyMstpEndpoint {
         mutation_policy: Option<&Bound<'_, PyAny>>,
         cov_policy: Option<&Bound<'_, PyDict>>,
         time_sync_policy: Option<&Bound<'_, PyDict>>,
+        device_storage_path: Option<String>,
         source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
         audit_recipient: Option<&Bound<'_, PyAny>>,
-        audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
+        audit_device_bindings: Option<
+            Vec<(
+                crate::types::PyObjectIdentifier,
+                super::source_audit::BindingAddress,
+            )>,
+        >,
     ) -> PyResult<Self> {
         let server = super::server_role::ServerKeywords::parse(
             mutation_policy,
@@ -321,7 +333,8 @@ impl PyMstpEndpoint {
             on_reinitialize,
             after_reinitialize,
             reinit_password,
-        )?;
+        )?
+        .with_device_storage_path(device_storage_path)?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -370,6 +383,7 @@ impl PyMstpEndpoint {
             vendor_id,
             max_apdu,
             segmentation,
+            apdu_segment_timeout_ms,
             uuid,
         )?;
         let source_audit = super::source_audit::SourceAuditKeywords::parse(
@@ -438,7 +452,7 @@ impl PyMstpEndpoint {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -447,7 +461,7 @@ impl PyMstpEndpoint {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let lifecycle = self.lifecycle.clone();
         crate::py_async::future_into_py(py, async move {
-            lifecycle.close().await.map_err(lifecycle_error)?;
+            lifecycle.close().await.map_err(owner_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
         })
     }
@@ -465,7 +479,7 @@ impl PyMstpEndpoint {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
                 .await
-                .map_err(lifecycle_error)?;
+                .map_err(owner_error)?;
             Ok(self_ref)
         })
     }
@@ -530,8 +544,8 @@ impl PyMstpEndpoint {
                 let guard = inner.read().await;
                 let session = guard
                     .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-                let counters = session.policy_counters().await;
+                    .ok_or_else(|| not_running("endpoint not started"))?;
+                let counters = session.policy_counters();
                 let leases = session.active_leases();
                 let running = session.is_running();
                 (counters, leases, running, session.seat_counts())
@@ -565,7 +579,7 @@ impl PyMstpEndpoint {
         let future = async move {
             let guard = inner.read().await;
             let session = guard.as_ref().ok_or_else(|| {
-                PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+                not_running("endpoint not started — use 'async with' or await start()")
             })?;
             session.broadcast_i_am().await.map_err(to_py_err)?;
             Ok(())

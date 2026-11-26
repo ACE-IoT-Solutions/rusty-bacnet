@@ -78,7 +78,9 @@ impl WebSocketPort for GateSocket {
         self.observed.calls.lock().unwrap().push(data.to_vec());
         self.flush_buffer().await?;
         if data[0] == 0 && self.observed.fail_nak.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("scripted immediate NAK send error".into()));
+            return Err(Error::Transport(std::io::Error::other(
+                "scripted immediate NAK send error",
+            )));
         }
         if data[0] == 0 && self.observed.hold_nak.load(Ordering::SeqCst) {
             self.observed.nak_started.fetch_add(1, Ordering::SeqCst);
@@ -204,9 +206,9 @@ async fn wait_for_state(
     .await
 }
 
-async fn abort_and_join(transport: &mut ScTransport<GateSocket>) {
+async fn abort_and_join(transport: &ScTransport<GateSocket>) {
     let (recv, restore) = transport.abort_background_tasks();
-    transport.abort_background_task_and_drop_sockets();
+    transport.abort_and_release();
     if let Some(task) = recv {
         let _ = task.await;
     }
@@ -229,7 +231,7 @@ async fn rejection_deadline_held_naks_disconnect_and_drop_future() {
         let expired = wait_for_state(&transport, ScConnectionState::Disconnected).await;
         // Genuine RED must not detach the receive task or hang in stop().
         if expired.is_err() {
-            abort_and_join(&mut transport).await;
+            abort_and_join(&transport).await;
         }
         expired.expect("held rejection NAK failed to publish Disconnected by heartbeat budget");
         assert!(

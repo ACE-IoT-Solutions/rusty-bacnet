@@ -1,4 +1,3 @@
-use bacnet_types::error::RemoteError;
 use bacnet_types::map_hash::BuildMapHasher;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -7,8 +6,8 @@ use std::sync::Arc;
 
 use bacnet_encoding::apdu::Apdu;
 use bacnet_endpoint_core::coordinator::{
-    Admission, AdmissionKind, AdmissionOutcome, CanonicalPeer, LeaseMetadata, LeaseOwner,
-    LeaseToken, OutboundTransactionCoordinator, ReserveError, TerminalPolicy,
+    AdmissionKind, AdmissionOutcome, CanonicalPeer, LeaseMetadata, LeaseToken,
+    OutboundTransactionCoordinator, ReserveError, TerminalPolicy,
 };
 use bacnet_types::MacAddr;
 use bacnet_types::enums::ConfirmedServiceChoice;
@@ -81,9 +80,10 @@ impl fmt::Display for CoordinatedRegistrationError {
             Self::Diverted => {
                 formatter.write_str("the node's source Audit carries out this request")
             }
-            Self::Reserve(ReserveError::Exhausted) => {
-                formatter.write_str("all invoke IDs exhausted for destination")
-            }
+            // A standalone client's share is the whole pool; a node with a
+            // server role keeps that role's reserve out of it (#2617).
+            Self::Reserve(ReserveError::Exhausted) => formatter
+                .write_str("invoke IDs exhausted: none free in the client's share of the pool"),
             Self::Reserve(error) => write!(formatter, "invoke ID coordinator failed: {error}"),
             Self::DuplicateInvokeId => {
                 formatter.write_str("coordinator reserved an invoke ID already pending in the TSM")
@@ -115,14 +115,43 @@ pub(crate) enum CoordinatedTerminalPhase {
 
 impl From<CoordinatedRegistrationError> for bacnet_types::error::Error {
     /// The typed [`Error::InitiationDisabled`](bacnet_types::error::Error::InitiationDisabled)
-    /// for a refusal DeviceCommunicationControl caused; the text of the
-    /// others.
+    /// for a refusal DeviceCommunicationControl caused, and a local refusal
+    /// with the text of each other (#1833): a coordinator gone or broken
+    /// by a panic is closed for good, invoke IDs or lease generations run
+    /// out, or one still pending, a limit reached, and a request the node's
+    /// source Audit carries out isn't one this client sends itself.
     fn from(error: CoordinatedRegistrationError) -> Self {
-        match error {
+        use bacnet_types::error::{Lifecycle, Refusal};
+        let refusal = Refusal::new(match error {
             CoordinatedRegistrationError::InitiationRestricted => {
-                Self::InitiationDisabled { sent: false }
+                return Self::InitiationDisabled { sent: false };
             }
-            other => Self::Encoding(other.to_string()),
+            CoordinatedRegistrationError::CoordinatorUnavailable => {
+                "coordinator is unavailable for client transaction"
+            }
+            CoordinatedRegistrationError::Diverted => {
+                "the node's source Audit carries out this request"
+            }
+            CoordinatedRegistrationError::Reserve(ReserveError::Exhausted) => {
+                "invoke IDs exhausted: none free in the client's share of the pool"
+            }
+            CoordinatedRegistrationError::Reserve(ReserveError::GenerationExhausted) => {
+                "invoke ID coordinator failed: lease generation exhausted"
+            }
+            CoordinatedRegistrationError::Reserve(ReserveError::StatePoisoned) => {
+                "invoke ID coordinator failed: coordinator state is poisoned"
+            }
+            CoordinatedRegistrationError::DuplicateInvokeId => {
+                "coordinator reserved an invoke ID already pending in the TSM"
+            }
+        });
+        match error {
+            CoordinatedRegistrationError::CoordinatorUnavailable
+            | CoordinatedRegistrationError::Reserve(ReserveError::StatePoisoned) => {
+                Self::State(Lifecycle::Closed, refusal)
+            }
+            CoordinatedRegistrationError::Diverted => Self::Unsupported(refusal),
+            _ => Self::LimitReached(refusal),
         }
     }
 }
@@ -309,152 +338,6 @@ impl Tsm {
                 Err(CoordinatedRegistrationError::DuplicateInvokeId)
             }
         }
-    }
-
-    /// Mark the transaction just registered under `invoke_id` as the narrow
-    /// endpoint requester's, which shares its coordinator with a full
-    /// client on the endpoint's seat (#2617).
-    pub(crate) fn mark_endpoint_requester(&self, invoke_id: u8) {
-        if let Some(coordinator) = self.coordinator.as_ref() {
-            let _ = coordinator.mark_endpoint_requester(invoke_id);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn complete_pre_admitted_terminal_response(
-        &mut self,
-        source_mac: &[u8],
-        admission: &Admission,
-        apdu: &Apdu,
-        response: TsmResponse,
-    ) -> CoordinatedCompletion {
-        self.complete_pre_admitted_terminal_response_for_peer(
-            &MacAddr::from_slice(source_mac),
-            &CanonicalPeer::direct(source_mac),
-            admission,
-            apdu,
-            response,
-        )
-    }
-
-    pub(crate) fn complete_pre_admitted_terminal_response_for_peer(
-        &mut self,
-        tsm_mac: &MacAddr,
-        peer: &CanonicalPeer,
-        admission: &Admission,
-        apdu: &Apdu,
-        response: TsmResponse,
-    ) -> CoordinatedCompletion {
-        if admission.kind() != AdmissionKind::Terminal
-            || admission.metadata().owner() != LeaseOwner::Requester
-            || admission.metadata().peer() != peer
-        {
-            return CoordinatedCompletion::Rejected;
-        }
-
-        let invoke_id = admission.token().invoke_id();
-        let key = (MacAddr::from_slice(tsm_mac), invoke_id);
-        let Some(pending) = self.pending.get(&key) else {
-            return CoordinatedCompletion::Rejected;
-        };
-        if pending.lease != PendingLease::Coordinated(admission.token())
-            || pending.expected_service_choice != admission.metadata().service_choice()
-            || !matches!(pending.phase, TransactionPhase::AwaitingResponse)
-        {
-            return CoordinatedCompletion::Rejected;
-        }
-        let owner = pending.owner.clone();
-
-        let observed_service_choice = match (apdu, &response) {
-            (Apdu::SimpleAck(pdu), TsmResponse::SimpleAck) if pdu.invoke_id == invoke_id => {
-                Some(pdu.service_choice)
-            }
-            (Apdu::ComplexAck(pdu), TsmResponse::ComplexAck { .. })
-                if !pdu.segmented && pdu.invoke_id == invoke_id =>
-            {
-                Some(pdu.service_choice)
-            }
-            (
-                Apdu::Error(pdu),
-                TsmResponse::Remote {
-                    error: RemoteError::Error { .. },
-                    ..
-                },
-            ) if pdu.invoke_id == invoke_id => Some(pdu.service_choice),
-            (
-                Apdu::Reject(pdu),
-                TsmResponse::Remote {
-                    error: RemoteError::Reject { .. },
-                    ..
-                },
-            ) if pdu.invoke_id == invoke_id => None,
-            (
-                Apdu::Abort(pdu),
-                TsmResponse::Remote {
-                    error: RemoteError::Abort { .. },
-                    ..
-                },
-            ) if pdu.invoke_id == invoke_id => None,
-            _ => return CoordinatedCompletion::Rejected,
-        };
-        if observed_service_choice
-            .is_some_and(|observed| observed != admission.metadata().service_choice())
-        {
-            return CoordinatedCompletion::ServiceChoiceMismatch {
-                expected: admission.metadata().service_choice(),
-                observed: observed_service_choice.expect("observed service exists"),
-            };
-        }
-
-        CoordinatedCompletion::Completed(self.complete_transaction_inner(
-            tsm_mac.as_slice(),
-            invoke_id,
-            Some(&owner),
-            observed_service_choice,
-            response,
-            PendingRelease::Complete,
-        ))
-    }
-
-    pub(crate) fn reject_pre_admitted_segmented_response_for_peer(
-        &mut self,
-        tsm_mac: &MacAddr,
-        peer: &CanonicalPeer,
-        admission: &Admission,
-        apdu: &Apdu,
-    ) -> bool {
-        if admission.kind() != AdmissionKind::NonTerminal
-            || admission.metadata().owner() != LeaseOwner::Requester
-            || admission.metadata().peer() != peer
-        {
-            return false;
-        }
-
-        let Apdu::ComplexAck(ack) = apdu else {
-            return false;
-        };
-        let invoke_id = admission.token().invoke_id();
-        if !ack.segmented
-            || ack.invoke_id != invoke_id
-            || ack.sequence_number != Some(0)
-            || ack.service_choice != admission.metadata().service_choice()
-        {
-            return false;
-        }
-
-        let key = (MacAddr::from_slice(tsm_mac), invoke_id);
-        let Some(pending) = self.pending.get(&key) else {
-            return false;
-        };
-        if pending.lease != PendingLease::Coordinated(admission.token())
-            || pending.expected_service_choice != admission.metadata().service_choice()
-            || !matches!(pending.phase, TransactionPhase::AwaitingResponse)
-        {
-            return false;
-        }
-        let owner = pending.owner.clone();
-        self.abort_invalid_apdu_in_current_state(tsm_mac.as_slice(), invoke_id, &owner);
-        true
     }
 
     pub(crate) fn complete_coordinated_terminal_response(
@@ -739,8 +622,10 @@ impl Tsm {
         self.cancel_all_transactions();
         self.coordinator = None;
         self.leasing = None;
-        if let Some(reassembly) = &self.request_reassembly {
-            reassembly.abort();
+        // Stop the worker immediately. An explicit client stop can still
+        // claim its handle and wait for cancellation to finish.
+        if let Some(worker) = &self.request_reassembly {
+            worker.abort();
         }
     }
 

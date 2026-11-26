@@ -209,12 +209,18 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                 for prop, expected in (
                     (P.BACNET_IPV6_MODE, V.enumerated(1)),
                     (P.FD_SUBSCRIPTION_LIFETIME, V.unsigned(60)),
-                    (P.FD_BBMD_ADDRESS, V.tagged(self.bbmd.host_n_port())),
+                    # A host and port, read as a BDT row shows its BBMD (#2710).
+                    (P.FD_BBMD_ADDRESS,
+                     V._typed_element("host_n_port", self.bbmd.host_n_port())),
                 ):
                     with self.subTest(property=prop):
                         read = await asyncio.wait_for(
                             client.read_property(address, PORT, prop), 10)
                         self.assertEqual(read, expected)
+                read = await client.read_property(address, PORT, P.FD_BBMD_ADDRESS)
+                self.assertEqual((read.tag, read.value, read.octets),
+                                 ("host_n_port", f"[::1]:{self.bbmd.port}",
+                                  self.bbmd.host_n_port()))
         finally:
             await server.stop()
 
@@ -294,10 +300,13 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                               ("unusable_address", "no_ipv6_address"))
                 # With no BBMD, a broadcast is refused, and counted: the
                 # What-Is-Network-Number the client asks before its first
-                # Who-Is (#2572), then the Who-Is.
+                # Who-Is (#2572), then the Who-Is. The refusal is the
+                # device's own state, as on B/IP, not a link failure (#1833).
                 self.assertEqual(status["broadcasts_refused"], 0)
-                with self.assertRaises(OSError):
+                with self.assertRaises(rusty_bacnet.BacnetStateError) as caught:
                     await client.who_is(low=INSTANCE, high=INSTANCE)
+                self.assertEqual(caught.exception.state, "not_connected")
+                self.assertNotIsInstance(caught.exception, OSError)
                 status = await client.foreign_registration()
                 self.assertEqual(status["broadcasts_refused"], 2)
         await rerun_on_lost_port(run)

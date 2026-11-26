@@ -20,6 +20,7 @@ reported separately from protocol failures via skips/explicit asserts.
 from __future__ import annotations
 
 import asyncio
+import errno
 import socket
 import tempfile
 import unittest
@@ -32,6 +33,8 @@ from rusty_bacnet import (
     BacnetAbortError,
     BacnetError,
     BacnetProtocolError,
+    BacnetStateError,
+    BacnetTransportError,
     BACnetClient,
     BACnetServer,
     BipEndpoint,
@@ -317,6 +320,13 @@ class BipLifecycleTests(unittest.IsolatedAsyncioTestCase):
         results = await asyncio.gather(endpoint.start(), endpoint.start(), return_exceptions=True)
         self.assertEqual(sum(result is None for result in results), 1)
         self.assertEqual(sum(isinstance(result, BacnetError) for result in results), 1)
+        # The second start is a lifecycle refusal (#1833): BacnetStateError,
+        # still a BacnetError and a RuntimeError.
+        refused = next(result for result in results if result is not None)
+        self.assertIsInstance(refused, BacnetStateError)
+        self.assertIsInstance(refused, RuntimeError)
+        self.assertEqual(refused.state, "already_started")
+        self.assertEqual(str(refused), "endpoint already started")
         try:
             port = address_port(await endpoint.local_address())
             self.assertIs(await endpoint.__aenter__(), endpoint)
@@ -737,12 +747,15 @@ class FailedStartPreservationTests(unittest.IsolatedAsyncioTestCase):
             endpoint.add_analog_output(
                 instance=1, name="Retry", units=62, present_value=7.5
             )
+            endpoint.add_analog_input(
+                instance=1, name="Retry input", units=62, present_value=6.5
+            )
             pending = getattr(endpoint, "_pending_registration_count")
-            self.assertEqual(pending(), 1)
+            self.assertEqual(pending(), 2)
             with self.assertRaises(BacnetError):
                 await asyncio.wait_for(endpoint.start(), 10)
-            # Failed start drops nothing: retry after the fix serves the object.
-            self.assertEqual(pending(), 1)
+            # Failed start drops nothing: retry after the fix serves the objects.
+            self.assertEqual(pending(), 2)
             await asyncio.wait_for(holder.close(), 5)
             await asyncio.wait_for(endpoint.start(), 10)
             try:
@@ -753,16 +766,19 @@ class FailedStartPreservationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(reader.start(), 10)
                 try:
                     rc = await reader.client()
-                    oid = ObjectIdentifier(ObjectType.ANALOG_OUTPUT, 1)
-                    value = await asyncio.wait_for(
-                        rc.read_property(
-                            f"127.0.0.1:{port}",
-                            oid,
-                            PropertyIdentifier.PRESENT_VALUE,
-                        ),
-                        10,
-                    )
-                    self.assertEqual(value.value, 7.5)
+                    for object_type, expected in (
+                        (ObjectType.ANALOG_OUTPUT, 7.5),
+                        (ObjectType.ANALOG_INPUT, 6.5),
+                    ):
+                        value = await asyncio.wait_for(
+                            rc.read_property(
+                                f"127.0.0.1:{port}",
+                                ObjectIdentifier(object_type, 1),
+                                PropertyIdentifier.PRESENT_VALUE,
+                            ),
+                            10,
+                        )
+                        self.assertEqual(value.value, expected)
                 finally:
                     await asyncio.wait_for(reader.close(), 5)
             finally:
@@ -840,18 +856,24 @@ class FailedStartPreservationTests(unittest.IsolatedAsyncioTestCase):
 
 class MstpStartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_nonexistent_serial_fails_as_setup_not_protocol(self):
-        endpoint = MstpEndpoint(
-            device_instance=8001,
-            serial_port="/tmp/rusty-bacnet-nonexistent-serial",
-            mstp_mac=3,
+        # In a directory that isn't there, on every platform.
+        path = str(
+            Path(tempfile.gettempdir()) / "rusty-bacnet-nonexistent" / "serial"
         )
-        # Native-dependency/setup failure: RuntimeError from serial open,
-        # distinct from BacnetError protocol failures. Pending preserved.
+        endpoint = MstpEndpoint(device_instance=8001, serial_port=path, mstp_mac=3)
+        # A serial port that fails to open is a transport error (#1833):
+        # BacnetTransportError, an OSError naming the port, not a protocol
+        # failure. Pending preserved.
         endpoint.add_analog_input(instance=1, name="Pending serial")
         startup = endpoint.start()
         self.assertTrue(asyncio.isfuture(startup))
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(BacnetTransportError) as caught:
             await asyncio.wait_for(startup, 10)
+        self.assertEqual(caught.exception.errno, errno.ENOENT)
+        self.assertTrue(
+            caught.exception.strerror.startswith(f"Serial open failed for {path}: "),
+            caught.exception.strerror,
+        )
         self.assertEqual(endpoint._pending_registration_count(), 1)
         self.assertIsNone(await asyncio.wait_for(endpoint.close(), 5))
 

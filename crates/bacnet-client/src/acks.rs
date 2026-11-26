@@ -170,8 +170,8 @@ mod tests {
                          Err(Error::Decoding(fault)) if fault == inner)
         );
         assert!(
-            matches!(decode::<()>(&bytes, "test ACK", |_| Err(Error::Encoding("request".into()))),
-                         Err(Error::Encoding(message)) if message == "request")
+            matches!(decode::<()>(&bytes, "test ACK", |_| Err(Error::invalid_argument("request"))),
+                         Err(Error::InvalidArgument(reason)) if reason.to_string() == "request")
         );
     }
 

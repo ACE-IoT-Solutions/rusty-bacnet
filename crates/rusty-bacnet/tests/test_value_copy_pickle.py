@@ -27,6 +27,7 @@ from rusty_bacnet import (
     BACnetServer,
     BACnetTimeStamp,
     BitString,
+    FieldNode,
     FrameSummary,
     IAmArrival,
     Multicast,
@@ -40,6 +41,7 @@ from rusty_bacnet import (
     Value,
     WritePolicy,
     decode_frame,
+    decode_frame_tree,
 )
 
 P = PropertyIdentifier
@@ -75,6 +77,16 @@ def samples() -> dict[type, list[Any]]:
     one = [PropertyValue.real(1.0), PropertyValue.double(1.0),
            PropertyValue.unsigned(1), PropertyValue.enumerated(1)]
     return {
+        rusty_bacnet.PropertyReadContext: [
+            rusty_bacnet.PropertyReadContext._restore(oid, 85, None),
+            rusty_bacnet.PropertyReadContext._restore(oid, 4194303, 4294967295),
+        ],
+        rusty_bacnet.PropertyDecodeResult: [
+            rusty_bacnet.decode_property_as(b"\x21\x02", "unsigned", value_names={2: "two"}),
+            rusty_bacnet.decode_property_as(b"\x21\x02", "unsigned", "array"),
+            rusty_bacnet.decode_property_as(b"\x81\x05", "bit_string"),
+            rusty_bacnet.decode_property_as(b"", "null", "list"),
+        ],
         ObjectIdentifier: [
             oid,
             ObjectIdentifier(ObjectType.DEVICE, 4194303),  # the wildcard instance
@@ -132,19 +144,28 @@ def samples() -> dict[type, list[Any]]:
             decode_frame(bytes.fromhex("8202000b00010201001008"), "ipv6"),
             decode_frame(bytes.fromhex("55ff000201000073"), "mstp"),
         ],
+        # Copied by its fields, children included (#2633): each root of a
+        # decoded request, a leaf deep in it, and a node with device text.
+        FieldNode: [
+            *decode_frame_tree(bytes.fromhex("810a001101000005010c0c02000312194b"), "bip"),
+            decode_frame_tree(bytes.fromhex("810a001101000005010c0c02000312194b"),
+                              "bip")[2].children[-1].children[0],
+            FieldNode._rebuild(  # type: ignore[attr-defined]
+                'Character string: "Fan"', (0, 5), (), True),
+        ],
         # Copied by its fields (#2612): a direct I-Am at the low edges, and
         # a routed, forwarded one with every field at its high edge.
         IAmArrival: [
             IAmArrival._rebuild(  # type: ignore[attr-defined]
                 0.0, 0.0, "bip", ObjectIdentifier(ObjectType.DEVICE, 0), 50,
                 Segmentation.NO_SEGMENTATION, 0, "127.0.0.1:47808", "127.0.0.1:47808",
-                None, False, None, None, False, "127.0.0.1:47808", 0,
+                None, False, None, None, None, None, False, "127.0.0.1:47808", 0,
             ),
             IAmArrival._rebuild(  # type: ignore[attr-defined]
                 1.5e9, -0.5, "ipv6", ObjectIdentifier(ObjectType.from_raw(1023), 4194303),
                 2**32 - 1, Segmentation.from_raw(255), 65535, "[2001:db8::1]:65535",
                 "bip6:0xFFFFFF", "[2001:db8::3]:47808", True, 65534, bytes(range(18)),
-                True, "65534:0x000102030405060708090A0B0C0D0E0F1011", 2**64 - 1,
+                65535, bytes(range(18)), True, "65534:0x000102030405060708090A0B0C0D0E0F1011", 2**64 - 1,
             ),
         ],
         Multicast: [

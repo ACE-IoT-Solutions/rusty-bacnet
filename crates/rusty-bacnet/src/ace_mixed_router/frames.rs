@@ -3,7 +3,7 @@
 use super::{NativeRouter, PyAceMixedRouter, PyRouterPortConfig, bip_endpoint};
 use crate::frames::{FrameContext, FrameSubscriptions};
 use bacnet_transport::tap::FrameTap;
-use pyo3::exceptions::{PyIndexError, PyRuntimeError};
+use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 
 pub(super) struct RouterFrames {
@@ -76,7 +76,7 @@ impl PyAceMixedRouter {
                     ))
                 })
                 .await
-                .ok_or_else(|| PyRuntimeError::new_err("router not started"))?
+                .map_err(|state| crate::errors::lifecycle_error(state, "router not started"))?
         })
     }
 }

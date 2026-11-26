@@ -91,9 +91,11 @@ pub struct AuditedOutcome {
     pub result: Result<Bytes, Error>,
     /// The invoke ID it went with, once a transaction was registered.
     pub invoke_id: Option<u8>,
-    /// Whether the request reached its target: it was sent, or the device
-    /// answered. A request refused before anything went, or cut off by a
-    /// stop of the client or its node, reports nothing.
+    /// Whether the request may have reached its target: it was sent, or
+    /// the device answered, or a stop of the client or its node cut it off
+    /// after it may have gone out (#1833). A request refused before
+    /// anything went, its transport not started or stopped among them, or
+    /// cut off before it went, reports nothing.
     pub attempted: bool,
     /// One entry per target to report, in the request's order, with its
     /// Result: `None` for a success. A ReadPropertyMultiple answer that
@@ -231,18 +233,24 @@ pub(super) fn decode(
         _ => return None,
     };
     Some(decoded.map_err(|error| {
-        Error::Encoding(format!(
+        // The caller's request, refused before anything is sent (#1833).
+        Error::InvalidArgument(Refusal::text(format!(
             "an audited request must decode, to report what it names: {error}"
-        ))
+        )))
     }))
 }
 
-/// Whether a request that ended with `result` reached its target, given
-/// that it registered a transaction. A peer's answer, a timeout, a
-/// transport failure while sending, and a request sent before the node's
-/// DeviceCommunicationControl withheld its retry did; a refusal before
-/// anything was sent, and a request whose transaction its client's or
-/// node's stop ended, did not.
+/// Whether a request that ended with `result` may have reached its target,
+/// given that it registered a transaction. A peer's answer (an
+/// acknowledgement of the wrong kind included, #2721), a timeout, a
+/// transport failure while sending, a router's refusal of a request that
+/// went out (#2724), a request sent before the node's
+/// DeviceCommunicationControl withheld its retry, and one whose transaction
+/// its client, node or link stopping ended after it may have gone out
+/// ([`Error::RequestCutOff`] with `sent: true`, #1833) did. A refusal
+/// before anything was sent did not: a transport that isn't started or has
+/// stopped ([`Error::State`], #1833) and every other local refusal, and a
+/// request cut off before it went out.
 pub(super) fn attempted(result: &Result<Bytes, Error>) -> bool {
     match result {
         Ok(_) => true,
@@ -251,10 +259,14 @@ pub(super) fn attempted(result: &Result<Bytes, Error>) -> bool {
             Error::Remote(_)
                 | Error::Structured { .. }
                 | Error::RoutedPathTooLong { .. }
+                | Error::NetworkRejected(_)
+                | Error::RouterBusyTimeout(_)
+                | Error::UnexpectedAck { .. }
                 | Error::Timeout(_)
                 | Error::Transport(_)
                 | Error::Segmentation(_)
                 | Error::InitiationDisabled { sent: true }
+                | Error::RequestCutOff { sent: true }
         ),
     }
 }
@@ -264,7 +276,13 @@ pub(super) fn attempted(result: &Result<Bytes, Error>) -> bool {
 /// its COMMUNICATION code, and the client's own wait for an answer running
 /// out as TIMEOUT. The client reports that wait as an Abort for a TSM
 /// timeout, which a peer's Abort for that reason can't be told from; both
-/// say the device didn't answer in time. A request whose retry the node's
+/// say the device didn't answer in time, and so does a timeout after a
+/// router said it was busy (#2724). A router's network reject is the
+/// COMMUNICATION code Clause 18 gives its reason
+/// ([`NetworkReject::error_code`](bacnet_types::error::NetworkReject::error_code)).
+/// An acknowledgement of the wrong kind for the service (#2721), whose
+/// outcome is unknown, is OTHER, and so is a request that went out before
+/// the client or its link stopped under it (#1833). A request whose retry the node's
 /// DeviceCommunicationControl withheld is SERVICES, COMMUNICATION_DISABLED,
 /// the pair the standard uses for a device whose communication that
 /// control turned off.
@@ -279,12 +297,14 @@ pub(crate) fn audit_result(error: &Error) -> (ErrorClass, ErrorCode) {
             return (ErrorClass::SERVICES, ErrorCode::COMMUNICATION_DISABLED);
         }
         Error::Timeout(_)
+        | Error::RouterBusyTimeout(_)
         | Error::Remote(RemoteError::Abort {
             reason: AbortReason::TSM_TIMEOUT,
         }) => ErrorCode::TIMEOUT,
         Error::Remote(RemoteError::Abort { reason }) => abort_code(*reason),
         Error::Remote(RemoteError::Reject { reason }) => reject_code(*reason),
         Error::RoutedPathTooLong { .. } => ErrorCode::MESSAGE_TOO_LONG,
+        Error::NetworkRejected(reject) => reject.error_code(),
         _ => ErrorCode::OTHER,
     };
     (ErrorClass::COMMUNICATION, code)

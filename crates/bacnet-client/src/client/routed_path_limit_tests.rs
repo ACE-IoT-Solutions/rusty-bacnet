@@ -53,7 +53,9 @@ pub(super) fn harness(
                         npdu: frame.npdu,
                         destination: frame.mac,
                     })
-                    .map_err(|_| Error::Encoding("capture observer closed".into()));
+                    .map_err(|_| {
+                        Error::Transport(std::io::Error::other("capture observer closed"))
+                    });
                 async move { sent }
             })
             .build(),
@@ -127,7 +129,7 @@ pub(super) async fn inject_apdu(
         .unwrap();
 }
 
-async fn inject_control(
+pub(super) async fn inject_control(
     inbound: &mpsc::Sender<ReceivedNpdu>,
     immediate_source: &[u8],
     message_type: NetworkMessageType,
@@ -265,7 +267,6 @@ async fn routed_sizing_uses_conservative_and_configured_forwarded_envelopes() {
 
     client
         .configure_routed_path_max_npdu(&router, DNET, 1497)
-        .await
         .unwrap();
     let configured_task = routed_request(
         Arc::clone(&client),
@@ -296,7 +297,6 @@ async fn subminimum_path_cap_fails_before_registration_or_emission() {
         .unwrap();
     client
         .configure_routed_path_max_npdu(&router, DNET, 70)
-        .await
         .unwrap();
 
     let result = client
@@ -329,7 +329,6 @@ async fn configured_capacity_exhaustion_fails_before_registration_or_emission() 
         let path = u16::try_from(path).unwrap();
         client
             .configure_routed_path_max_npdu(&path.to_be_bytes(), path, 1497)
-            .await
             .unwrap();
     }
 
@@ -376,7 +375,6 @@ async fn reason_4_completes_exact_caller_learns_bound_and_does_not_retry() {
     );
     client
         .configure_routed_path_max_npdu(&router, DNET, 1497)
-        .await
         .unwrap();
 
     let rejected_task = routed_request(
@@ -420,7 +418,6 @@ async fn reason_4_completes_exact_caller_learns_bound_and_does_not_retry() {
     // An explicit override deliberately resets learned negative evidence.
     client
         .configure_routed_path_max_npdu(&router, DNET, 1497)
-        .await
         .unwrap();
     let reset_task = routed_request(
         Arc::clone(&client),
@@ -454,7 +451,6 @@ async fn unmatched_controls_and_direct_requests_do_not_change_path_policy() {
     );
     client
         .configure_routed_path_max_npdu(&router, DNET, 1497)
-        .await
         .unwrap();
 
     let task = routed_request(
@@ -630,7 +626,6 @@ async fn cancelled_generation_quarantines_delayed_reason_4_before_next_send() {
     );
     client
         .configure_routed_path_max_npdu(&router, DNET, 1497)
-        .await
         .unwrap();
 
     let cancelled = routed_request(

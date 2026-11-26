@@ -159,22 +159,25 @@ async fn atomic_write_file_all_builders_validate_before_start_or_dial() {
             TestTransport::never_start(),
         )
         .await
+        .map_err(Error::from)
         .err();
         let generic = BACnetServer::generic_builder()
             .transport(TestTransport::never_start())
             .atomic_write_file_budget(budget)
             .build()
             .await
+            .map_err(Error::from)
             .err();
         let bip = BACnetServer::bip_builder()
             .port(0)
             .atomic_write_file_budget(budget)
             .build()
             .await
+            .map_err(Error::from)
             .err();
         for result in [direct, generic, bip] {
             assert!(
-                matches!(result, Some(Error::Encoding(m)) if m.contains("atomic_write_file_max_"))
+                matches!(result, Some(Error::InvalidConfig(m)) if m.to_string().contains("atomic_write_file_max_"))
             );
         }
         #[cfg(feature = "sc-tls")]
@@ -186,9 +189,10 @@ async fn atomic_write_file_all_builders_validate_before_start_or_dial() {
                 .atomic_write_file_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             assert!(
-                matches!(result, Some(Error::Encoding(m)) if m.contains("atomic_write_file_max_"))
+                matches!(result, Some(Error::InvalidConfig(m)) if m.to_string().contains("atomic_write_file_max_"))
             );
         }
     }

@@ -300,8 +300,9 @@ if let Error::Structured { detail, .. } = &e {
     assert_eq!(**detail, ErrorDetail::FirstFailedElementNumber(2));
 }
 
-// Other variants: Timeout, RoutedPathTooLong, RoutedPathCapacityExceeded,
-// UnsupportedTransport, Encoding, etc.
+// Other variants: Timeout, RoutedPathTooLong, NetworkRejected,
+// UnexpectedAck, RoutedPathCapacityExceeded, UnsupportedTransport, State,
+// InvalidConfig, Persistence, etc.
 ```
 
 `RemoteError` has three arms, one per PDU: `Error { class, code }`,
@@ -360,6 +361,59 @@ decode that way. A decoder that names a fault the table doesn't, such as
 GetEnrollmentSummary's undefined enumerations, returns its `Error::reject(reason)`
 itself. A decoding error met once a service runs keeps its Error PDU.
 
+A call the stack turns down on its own side, before or without any exchange
+with a peer, is a local refusal with a variant per kind (#1833), so a caller
+matches the kind without reading text: `Error::State(Lifecycle, Refusal)` for
+a lifecycle state (`AlreadyStarted`, `NotRunning`, `Stopping`,
+`NotConnected`, `Closed`), `Error::InvalidConfig` for what the component is
+built or started with (a value given to a builder's setter, an option, a table
+it is configured with), even when a setter is the call that refuses it,
+`Error::InvalidArgument` for a value refused at a running component's call
+that hands it over, even one the component would keep (an address or MAC of the wrong form
+for the link, a device added to the client's table, a routed path's limit),
+or text parsed once, `Error::Unsupported` for what this platform, build or
+component doesn't offer, and `Error::LimitReached` for a resource cap,
+including a one-holder resource (a lock, a lease, a seat) another holds. A
+`Refusal` is the text for a person and not API: a static label with as many
+numbers as it has placeholders (`Refusal::new(label)`, then `.with_value(v)` or
+`.with_values(a, b)`, as for `RangeError`), built when displayed, or with `std` owned text where it names a run-time
+value (`Refusal::text`). A number or fact a caller acts on has a typed variant
+or field of its own, as `Error::SendTooLong` has. Each displays as its text
+alone; `Error::with_context` puts context in front and keeps the variant.
+`Error::state`, `Error::invalid_config`, `Error::invalid_argument`,
+`Error::unsupported` and `Error::limit_reached` build one from a static
+label. Every crate, the CLI and the bindings report their refusals this
+way. Any I/O the operating system reported is `Error::Transport`, with
+the OS error kept as the source: a socket's, a serial port's, and a storage
+file's, which the stack's own file backends return this way. An NPDU too
+long for the link is `Error::SendTooLong`. Persisted state is
+`Error::Persistence(PersistenceError)`: stored octets that are damaged or
+cut short, a sound snapshot of another object or of a version this build
+doesn't read, a snapshot refused as it is encoded, or a storage backend that
+failed with no OS error behind it. Its `kind()` says which, and
+`is_damage()` whether a backend keeping two copies falls back to the other.
+It is opaque, with static text in every build; with `std`,
+`Error::with_context` puts a path or other context in front and keeps the
+kind. There is no catch-all text variant: the untyped `Error::Encoding` and
+`Error::OutOfRange` are gone (#1833), and the codecs' own refusals are the
+static `Error::Encode`, `Error::Decoding` and `Error::Range`. An
+endpoint session or ingress that is not running says why with its
+`Lifecycle`: `NotRunning` before its start, `Stopping` while a stop runs, and
+`Closed` once stopped or shut, since each starts once. A stopped server's
+broadcaster and a closed client seat are `Closed` too. A request that
+ended because the client or its link stopped under it is no lifecycle
+refusal but its own outcome, `Error::RequestCutOff { sent }`: so is a
+request that went out before its link stopped, whose retry or later segment
+the stopped link then refused. A server answers each of its own refusals
+with the Error PDU SERVICES / OTHER, as it answered their text. A send on a
+transport that isn't started, or has stopped, is a lifecycle refusal too: `NotRunning`
+before start and after the stop of a transport that starts again, `Closed`
+after the stop of one that doesn't, and a second start `AlreadyStarted`
+(below). Nothing of such a send was attempted, and nothing of its request had gone out: the client's source Audit
+doesn't count it, `bacnet-ops` treats it as the client's own failure rather
+than a device that stopped answering, a router draws no reject from it, and
+the bindings raise `BacnetStateError`.
+
 `Error::UnsupportedTransport { required, actual }` reports an operation the
 endpoint's data link cannot carry, such as a BBMD request through an
 `AnyTransport` that is not B/IP. Both fields are a
@@ -369,6 +423,43 @@ endpoint's data link cannot carry, such as a BBMD request through an
 
 `Error::RoutedPathTooLong { dnet }` identifies the destination network from a
 matching network-layer rejection; it does not claim an exact supported length.
+`Error::NetworkRejected(Box<NetworkReject>)` (with `std`, as the client builds
+it; boxed so the rare refusal widens no `Result`) is a routed request the router it went
+through refused at the network layer, its reason one that ends a request at
+once (#2724): `NetworkReject` holds the router's MAC (`router`, a
+`bacnet_npdu::Mac`), the client's `link`, the `network`, the `reason` (a
+`bacnet_npdu::RejectMessageReason`), `refused_by` (the network and MAC of a
+farther router that sent it, when the reject came through the first one) and
+`single_frame`: `true` when the request had sent one frame, so the device
+never received it; `false` after a retry or a segment, when an earlier
+attempt may have reached the device and a write may have taken effect. Its
+text names the router in the link's own form (`10.0.0.1:47808`, `mstp:5`,
+`bip6:0x0004D2`, hex on BACnet/SC), the network, the reason by name and
+number, and which of those holds, such as "Reject-Message-To-Network from
+router mstp:2: no route to network 7 (not-directly-connected, reason 1); the
+request never reached the device"; `router()` writes the router alone,
+`what()` the text without the last clause, and `error_code()` gives the
+COMMUNICATION code Clause 18 pairs with the reason (`NOT_ROUTER_TO_DNET` for
+reason 1), which a source audit record carries.
+`Error::RouterBusyTimeout(Box<NetworkReject>)` is a routed request that ran out of
+retries after its router said, with a reason-2 reject, that it was busy for
+the network: a timeout, which `bacnet_ops::raw::timed_out` and the bindings
+treat as the TSM_TIMEOUT abort it stands for, whose text adds the router and
+the network ("BACnet abort: tsm-timeout; on the way, Reject-Message-To-Network
+from router mstp:2: busy for network 7 (router-busy, reason 2)").
+`Error::UnexpectedAck { service, complex }` is a device's acknowledgement of
+the other kind than the service takes (#2721): a Complex-ACK for a service
+acknowledged with a Simple-ACK (`complex` true, such as WriteProperty), or a
+Simple-ACK where a Complex-ACK carries the result (ReadProperty). The
+transaction ends there, nothing more is sent, and whether the device carried
+the request out is unknown. ConfirmedPrivateTransfer takes either at the
+transaction (vendor devices answer it both ways); its typed call reports a
+Simple-ACK, which carries none of the acknowledgement's numbers, as this
+error. For a device found in the field that acknowledges writes with a
+Complex-ACK, `ClientConfig::accept_complex_ack_for_simple_services` (each
+builder's `accept_complex_ack_for_simple_services(true)`, and
+`SessionConfig`'s field of that name for an endpoint's client) takes such an
+acknowledgement as success; a Simple-ACK where data is due stays an error.
 `Error::RoutedPathCapacityExceeded { capacity }` reports that all bounded path
 state is protected by a held/waiting gate or configured/learned evidence, so a
 new path was rejected before transaction registration or frame emission.
@@ -794,7 +885,7 @@ use bacnet_services::who_has::{WhoHasRequest, WhoHasObject, IHaveRequest};
 and 16.10, #1483). A range holds both limits, so a request with one alone can't
 be built, and `DeviceInstanceRange::new` refuses a low limit above the high one,
 or a limit past `ObjectIdentifier::MAX_INSTANCE` (4194303), with
-`Error::OutOfRange`. `DeviceInstanceRange::single(n)` asks one instance,
+`Error::Range`. `DeviceInstanceRange::single(n)` asks one instance,
 `DeviceInstanceRange::device(oid)` one device's instance, and
 `DeviceInstanceRange::from_limits(low, high)` turns two optional limits into a
 range, refusing one without the other. Both decoders refuse a request with one
@@ -968,8 +1059,10 @@ Transport-layer implementations. All implement the `TransportPort` trait.
 `TransportPort::stop` takes `&self` (#2617), and so does `NetworkLayer::stop`:
 the owner of a link stops it while a client or another holder of the
 `Arc<NetworkLayer>` still has it. Once a stop returns, every send fails with
-an `Error::Transport` of kind `NotConnected`, the kind a send before start
-gets (`bacnet_transport::port::stopped()` makes one); the receiver `start`
+an `Error::State` (#1833): `NotRunning`, the state a send before start finds,
+for a transport that starts again (`bacnet_transport::port::stopped()` makes
+one), and `Closed` for one that doesn't (`port::stopped_for_good()`); a
+second start while it runs is `AlreadyStarted`. The receiver `start`
 returned yields what was queued and then ends; the background tasks are joined;
 and sockets and Network Port leases are let go of, so the port can be bound
 again at once. A send already under way may finish. A stop is idempotent, and
@@ -977,6 +1070,20 @@ one called while another runs waits for it. B/IP and B/IPv6 start again after
 a stop, as before; MS/TP, BACnet/SC, the loopback and a router's application
 port do not. A custom transport keeps what its stop takes behind a lock that
 only start and stop use, and fails every later send.
+
+`TransportPort::abort` takes `&self` too, and so does the new
+`NetworkLayer::abort` (#2617): the owner of a link ends it from a `Drop`
+while others still hold it, as a dropped `EndpointSession` does under a
+live `client()`. An abort never waits and needs no runtime: the background
+tasks are aborted, not joined, so their sockets close as the runtime drops
+them; the transport lets go of what it holds itself; every later send fails
+with the same `Error::State` as after a stop; and nothing graceful
+goes out (no BACnet/SC Disconnect-Request). The aborted tasks stay with
+the transport: a stop after an abort joins them, and until that stop a
+start is refused; after it, B/IP, B/IPv6 and Ethernet start again as after
+any stop, and MS/TP, BACnet/SC and the loopback do not. Dropping a
+`NetworkLayer` aborts it. A custom transport's abort does what its stop
+does at once, through the same locks, and leaves its tasks for the stop.
 
 ### Throttled peer warnings
 
@@ -1019,8 +1126,8 @@ default identity. Endpoint generation requires an explicit `.device(identity)`;
 an identity-free endpoint invents no Device. For both, an explicit
 `.database(ObjectDatabase::new())` stays empty and emits no I-Am until the
 configured Device identifier exists. The full-server default is Device 1,
-vendor 0, APDU 1476, unsegmented, with a 5000 ms segment timeout; standard
-MS/TP resolves to 480.
+vendor 0, APDU 1476, segmented both ways (#2617) with a 5000 ms segment
+timeout; standard MS/TP resolves to 480.
 
 A supplied database is preserved, including custom Device and backup/profile
 state. Its initially selected Device must match the resolved identifier,
@@ -1053,6 +1160,8 @@ Endpoint sessions also keep the raw receive ceiling and floor their request
 headers. The existing standalone `ClientConfig` accepts only table values, so
 `bacnet_endpoint::identity::client_config` floors the configuration itself for
 that adapter; a raw 1474 identity produces standalone client capacity 1024.
+It also gives the client the identity's segmentation, as an endpoint
+session's client has it (#2617).
 
 Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
 or 1476 with extended frames on (`MstpConfig::extended_frames`).
@@ -1091,7 +1200,8 @@ no bytes were queued or written. The router counts that refusal in
 `counters().egress_too_long` and `refused`, then returns reason 4 to an eligible
 origin, naming the original DNET and preserving the arrival's data attributes
 (#1716). BACnet/SC uses this error for its NPDU and encoded-frame bounds,
-including forwarded attributes and direct-peer limits. Forwarded rejects,
+including forwarded attributes and direct-peer limits, and B/IP, MS/TP and
+Ethernet for an NPDU too long for their frames (#1833). Forwarded rejects,
 global broadcasts and control fan-outs never draw a reply. The reply enters
 the existing bounded priority queue; refusing that reply cannot start a loop.
 Other failures do not imply a length refusal, even if the port's limit changed.
@@ -1157,6 +1267,38 @@ unicast alike, in the order they arrive, and the receive loop takes unicast
 only to the interface address (or, for `0.0.0.0`, to one of the host's
 addresses, below). Sends leave from it, so the OS picks their source address
 by route.
+
+The interface is an `Ipv4Addr`. To take an OS interface name as well, as the
+Python bindings do, resolve it first with
+`bacnet_transport::bip::resolve_interface_ipv4(&str) -> io::Result<Ipv4Addr>`.
+A literal, `0.0.0.0` included, is returned as is without asking the OS.
+A name (the netdev name on Unix, the adapter's exact, case-sensitive
+friendly name on Windows) must have one usable IPv4 address on an interface
+that is up; a link-local address (169.254.0.0/16) is used only when the
+interface has nothing else. An unknown name fails with `NotFound`, a name
+without a usable address with `AddrNotAvailable`, several candidates with
+`InvalidInput` listing them, and text that looks like a mistyped address
+(`"10.0.0.300"`, `"127.0.0.1/8"`, `"::1"`) and names no interface with
+`InvalidInput` too. It lists the host's interfaces, which blocks, so call it from a
+blocking thread in async code. The name is resolved once: the transport
+keeps the address, not the name, and doesn't follow a DHCP change. It
+doesn't derive the broadcast address from the interface either.
+
+With a loopback interface on the wildcard socket (any start without
+`set_share_port_by_address(true)`, except a Linux B/IP-M member with its
+group on its own requested port, which binds its address), a local broadcast to 255.255.255.255
+would leave through whichever interface the host routes it to, usually a
+LAN. So such a send fails with `Error::Transport` carrying
+`LoopbackBroadcastRefused` (find it with `LoopbackBroadcastRefused::from_error`)
+and counts in `send_counters().loopback_limited_broadcast`; `start()` warns
+once for that configuration (#2691). Pass the loopback subnet's broadcast
+address, `Ipv4Addr::new(127, 255, 255, 255)`, as the third argument of
+`BipTransport::new` instead (Linux delivers it to the other loopback
+sockets; see the Python guide's
+[loopback section](python-api.md#loopback-interfaces-and-broadcasts) for
+other systems). A BBMD on such an interface still forwards its own
+broadcasts and those it receives to its BDT peers and foreign devices; only
+the local rebroadcast is refused, counted the same way.
 
 #### Claiming the port
 
@@ -1338,7 +1480,7 @@ I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
 `send_unicast` to one of those group destinations fails with
-`Error::Encoding` and sends nothing (#1677). An Original-Unicast-NPDU goes to
+`Error::InvalidArgument` and sends nothing (#1677, #1833). An Original-Unicast-NPDU goes to
 one node's own address, and a receiver that checks where a datagram was sent,
 as this transport does, drops one sent to a group, so the caller finds out
 instead of losing the message; `send_broadcast` reaches the link, and
@@ -1364,7 +1506,13 @@ unspecified address, port 0 or the node itself), which gets no NAK (#1622); a
 Forwarded-NPDU from outside a BBMD's BDT; a Forwarded-NPDU a foreign device
 takes from no one but its BBMD by unicast, the one way a BBMD hands it the
 network's broadcasts (`forwarded_untrusted`, #1622; a node in normal mode
-takes one from any sender); and an NPDU the network-layer
+takes one from any sender); a Forwarded-NPDU for this link whose APDU is an
+answer to a confirmed request or a confirmed request, which no broadcast
+carries, so that another station can't complete a request by sending the
+answer itself in a forward that names the device as its origin
+(`forwarded_not_broadcast`, #2829; a BBMD still forwards it, and a
+broadcast inside a forward is still handed up as its origin's, unchecked);
+and an NPDU the network-layer
 channel couldn't take because it was full or, once the network layer stopped
 reading, closed. Each drop counts once, and the totals survive a restart. A
 header that fails to decode and a malformed BVLC response, which used to log a
@@ -1375,7 +1523,7 @@ warning.
 
 The transport sends NPDUs up to 1497 octets, the most a B/IP data link
 carries (Table 6-1); a BBMD's Forwarded-NPDU of one is a 1507-octet datagram.
-A longer NPDU, unicast or broadcast, fails with `Error::Encoding` before
+A longer NPDU, unicast or broadcast, fails with `Error::SendTooLong` before
 anything is sent, and counts in `send_counters().npdu_too_long`, whose totals
 survive a restart (#1622). A router doesn't hand such an NPDU to a B/IP port:
 it answers the sender with Reject-Message-To-Network reason 4 instead (#1665,
@@ -1437,7 +1585,7 @@ address found becomes the registration's once the start succeeds: a start that
 fails later keeps the name, and the next start looks it up again. On an
 explicit interface the start goes ahead and the device waits: no registration, no
 Address-Resolution, no Forwarded-NPDU or Forwarded-Address-Resolution taken, and its
-broadcasts are refused (`NotConnected`) and counted, since B/IPv6 keeps no hold
+broadcasts are refused (`Error::State` of `NotConnected`, as B/IP's before its BBMD is known) and counted, since B/IPv6 keeps no hold
 queue. The name is tried again 30 seconds after the newest failure, and the first
 usable answer registers at once. A stop ends the retry; a restart looks the name up
 at once.
@@ -1510,7 +1658,11 @@ Length; an unknown function; a payload that doesn't fit its function; a
 destination VMAC that isn't this node's; a function that doesn't fit the
 address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
 from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
-malformed; an origin or asker address unusable without a scope ID; a request
+malformed, or for this link carries an answer to a confirmed request or a
+confirmed request, as on B/IP (`forwarded_not_broadcast`, #2829: on B/IPv6
+every frame's source virtual address is the sender's own claim, so this
+keeps the two links' rule the same rather than closing a gap); an origin
+or asker address unusable without a scope ID; a request
 from an unanswerable source or this node's own address; this node's own
 echo, a Forwarded-NPDU that names it as the origin included; a frame from
 another address that names this node's VMAC as its sender's, and an NPDU
@@ -1685,13 +1837,23 @@ let transport = ScTransport::new(ws, vmac)
     .with_heartbeat_timeout_ms(60_000);
 ```
 
+Private-key memory: the `ScNodeTlsConfig` and `ScHubTlsConfig` constructors
+clear the key file's text and every decoded key when they finish, error paths
+included, and rustls's key loader clears each copy it is handed. The
+configuration keeps no copy of the key's PEM or DER: it holds the parsed private
+key inside the TLS library, whose memory aws-lc clears when the configuration
+drops. They cannot clear the PEM decoder's transient buffers or buffers you
+hold: the bytes given to `from_pem`, or a `PrivateKeyDer` given to `from_der`
+that borrows static bytes. An owned `PrivateKeyDer` is taken by value and
+cleared; earlier copies of it are yours to clear (`zeroize`).
+
 Production BACnet/SC transports validate heartbeat settings at `start()`: the interval must be
 `3_000..=300_000` ms, and the disconnect timeout must be greater than the interval.
 
 **Raw transport startup migration:** `new(ws, vmac)` remains two-argument and
 infallible, with a zero UUID placeholder while unstarted. `with_device_uuid` is
 required before `start()`: omitted/all-zero UUIDs and reserved all-zero/all-ff
-local VMACs return clear `Error::Encoding` configuration errors. Error precedence
+local VMACs return clear `Error::InvalidConfig` configuration errors. Error precedence
 is reconnect configuration, heartbeat timing, then identity. No UUID version or
 variant bits, EUI-48 shape, or Random-48 shape are enforced by this guard.
 
@@ -1775,9 +1937,10 @@ answering the hub's Disconnect-Request, after a BVLC-Result NAK that ends the
 connection, and after a Connect-Request NAK. A hub that leaves a heartbeat or
 the Connect-Request unanswered, or answers it with a malformed or unexpected
 reply or sends a malformed BVLC-Result, gets a close with no status, the
-peer's fault. The one socket that gets no close is a lost hub's own when
-recovery will send its next Connect-Request on it, as it does with reconnect
-on and no connector for that hub. `abort()` and dropping the transport cannot
+peer's fault. The one socket that gets no close at once is a lost hub's own
+when recovery will send its next Connect-Request on it, as it does with
+reconnect on and no connector for that hub; if that Connect fails, the
+socket is closed as above. `abort()` and dropping the transport cannot
 wait, so they send nothing.
 `WebSocketPort::close(status)` is the hook: `TlsWebSocket` writes the frame,
 and the default, for an in-memory port such as `LoopbackWebSocket`, sends
@@ -1794,9 +1957,26 @@ the connection, so poll it as often as a UI redraws.
 
 `with_initial_hub(ScActiveHub::Failover)` starts the transport on the
 failover hub when the WebSocket given to `new` reaches it; with a primary
-connector and reconnect configuration the primary is restored later. Losing
-the failover hub makes each reconnect attempt dial the primary first, then
-the failover hub.
+connector and reconnect configuration the primary is restored later.
+
+Recovery after losing either hub runs in rounds (`ScReconnectConfig`). Each
+round waits its jittered backoff once, then dials the primary and, when that
+fails, the failover hub, so the failover hub gets its turn in round 1
+(Annex AB.5.2); both `ReconnectAttempt` events carry the round's number and
+backoff. `max_retries: Some(n)` bounds the rounds and `None` keeps going while
+a hub can still be dialled, with the round number saturating at `u32::MAX`.
+`Some(0)` turns recovery off: the first loss ends the transport, while the
+start-up dial and primary restoration still run. Unlimited recovery needs
+`initial_delay_ms` of at least 1,000
+(`ScReconnectConfig::UNLIMITED_MIN_INITIAL_DELAY_MS`), and `max_delay_ms` is
+at most 600,000 (`ScReconnectConfig::MAX_DELAY_MS`, ten minutes: Annex AB.6.1
+lets the reconnect wait grow, but never past 600 seconds); `validate()`,
+`start()` and the builders refuse anything else. A response that forbids further retries and `stop()`
+end recovery in either mode, and so does a raw transport with nothing left to
+dial: a lost socket recovery reuses gets one Connect-Request, and is closed
+and dropped when that fails. When a failover connector's dial fails and an
+unused preconfigured failover socket is left, the attempt goes on with that
+socket, so one `ReconnectAttempt` may read two `ConnectFailed` events.
 
 `with_advertised_uris` configures known direct-connection URIs; it does not enable
 accepting connections. Address-Resolution requests receive an ACK (with a
@@ -2275,7 +2455,7 @@ retired with no public unchecked escape.
 **Hub identity source/runtime break:** `ScHub::start(bind, tls, vmac, uuid)` now
 requires the fourth UUID argument. All four public starts reject an all-zero
 16-byte UUID or reserved UNKNOWN (all-zero)/BROADCAST (all-ff) local VMAC with
-`Error::Encoding` before `TcpListener::bind`, through one shared enforcement point.
+`Error::InvalidConfig` before `TcpListener::bind`, through one shared enforcement point.
 The other three method names, argument order and return contracts are unchanged.
 No UUID version/variant or general VMAC bit-shape policy is added. Provision the
 hosting device UUID before deployment and durably reuse it for its lifetime
@@ -2418,7 +2598,7 @@ match ScNodeTlsConfig::from_pem_files("site-ca.pem", "node.pem", "node.key") {
 text, in `Debug` or `Display`, and a path's control characters are escaped in the
 text; the key and its PEM text are not zeroized, as with DER.
 `From<ScTlsConfigError>` is implemented for `bacnet_types::error::Error` (as
-`Error::Encoding` with the text) and, with `sc-tls`, for `bacnet_ops::OpsError` (as
+`Error::InvalidConfig` with the text) and, with `sc-tls`, for `bacnet_ops::OpsError` (as
 the typed `OpsError::Tls`), so `?` works in functions returning either.
 `bacnet_ops` re-exports `ScNodeTlsConfig`, `ScTlsConfigError` and the types its
 variants name, so an application on `bacnet_ops` alone loads the files:
@@ -2450,7 +2630,7 @@ formed throughout, for `bacnet sc-check` and the inspection API too
 
 MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)). Firmware can drive the core directly. Its time is `bacnet-time`'s `Instant` and `Duration`, in nanoseconds from an epoch the caller picks, the same types `bacnet-bip-core` takes, so one clock feeds both.
 
-`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate, from which the Clause 9 timers are derived, and the transmit-latency pad for a port without a drain (see [Auto-Direction](#auto-direction-usb-rs-485-adapters) below). Three timers that Clause 9.5.3 lets a station lengthen are lengthened on every host port, since a USB adapter delivers what it receives late (16 ms by default on FTDI parts) and can't be told from a native UART on every platform: T_frame_abort is fixed at its 100 ms maximum (`HOST_FRAME_ABORT_MS`), and `usage_timeout` (T_usage_timeout, 20 to 35 ms) and `reply_timeout` (T_reply_timeout, 255 to 300 ms) default to their maxima, `HOST_USAGE_TIMEOUT` and `HOST_REPLY_TIMEOUT`. With the minimums, a successor that used the token or answered a poll as late as T_usage_delay lets it, or a peer that answered a request as late as T_reply_delay lets it, could still be in the adapter when the station gave up: it would send the token again, poll the next address, or pass the token, over an answer already on the wire. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay), the two timeouts within their ranges, and a pad of at most T_usage_delay (15 ms): what the station hears while the pad runs reaches the core only after it, so a longer pad would make it answer a token or poll late. The core's transmit watchdog is lengthened by the pad where it would not otherwise cover the longest padded frame. The Python bindings take all three as `mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and `mstp_reply_timeout_ms`, and `MstpEndpointBuilder` as `transmit_latency_pad`, `usage_timeout` and `reply_timeout`; the client and server builders take the whole `MstpConfig` with the transport. Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate, from which the Clause 9 timers are derived, and the transmit-latency pad for a port without a drain (see [Auto-Direction](#auto-direction-usb-rs-485-adapters) below). Three timers that Clause 9.5.3 lets a station lengthen are lengthened on every host port, since a USB adapter delivers what it receives late (16 ms by default on FTDI parts) and can't be told from a native UART on every platform: T_frame_abort is fixed at its 100 ms maximum (`HOST_FRAME_ABORT_MS`), and `usage_timeout` (T_usage_timeout, 20 to 35 ms) and `reply_timeout` (T_reply_timeout, 255 to 300 ms) default to their maxima, `HOST_USAGE_TIMEOUT` and `HOST_REPLY_TIMEOUT`. With the minimums, a successor that used the token or answered a poll as late as T_usage_delay lets it, or a peer that answered a request as late as T_reply_delay lets it, could still be in the adapter when the station gave up: it would send the token again, poll the next address, or pass the token, over an answer already on the wire. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay), the two timeouts within their ranges, and a pad of at most T_usage_delay (15 ms): what the station hears while the pad runs reaches the core only after it, so a longer pad would make it answer a token or poll late. The core's transmit watchdog is lengthened by the pad where it would not otherwise cover the longest padded frame. The Python bindings take all three as `mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and `mstp_reply_timeout_ms`, and `MstpEndpointBuilder` as `transmit_latency_pad`, `usage_timeout` and `reply_timeout`; the client and server builders take the whole `MstpConfig` with the transport. Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::SendTooLong`) is refused at once.
 
 `MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames, as an `ExtendedStorage` bundle holds them (1497-octet delivery and queue slots and 1516 octets of receive storage). On a host each port's queues reserve 512 slots, 768 KiB with the flag on (1536-octet slots) against 272 KiB without (544-octet slots), resident as the queues fill, and the core's action buffers take about 13 KiB either way. `MstpEndpointBuilder::extended_frames(true)` turns the flag on for an endpoint, whose identity may then advertise a Max_APDU_Length_Accepted of up to 1476.
 
@@ -3647,17 +3827,49 @@ described below (`network_control_receiver_with_admission()` for a tracked
 one). The start returns a `StartedRouter` holding the router, the
 local APDU receiver and, when asked for, the network-control receiver.
 
-To allow each SC hub to reach a shared B/IP network while keeping the hubs
-separate, select their zero-based positions in the input port list. With
-ports ordered as B/IP, SC A, SC B, use
-`RouterOptions::new().isolated_ports([1, 2])`. The router blocks transit
-between those two ports, including routed broadcasts and learned routes.
-The router filters its own discovery replies and route announcements, and
-the broadcast route and congestion lists it relays. It forwards the contents
-of third-party messages addressed across permitted links unchanged.
-The router's local application retains access to all ports. The policy
-applies to traffic crossing this router. Other routers on a shared network
-make their own forwarding decisions. The default selection is empty.
+A port is `RouterPort::new(transport, network_number)`. To let each SC hub
+reach a shared B/IP network while keeping the hubs apart, mark the hub ports
+where they are declared: `RouterPort::new(hub_a, 2).isolated(true)`. No port
+is isolated unless marked, and one isolated port alone changes nothing.
+
+Between two isolated ports the router blocks transit, by direct and learned
+routes and for routed broadcasts, and hides each from the other in what it
+generates and relays: its startup announcements, its answers to
+Who-Is-Router-To-Network and to routing table queries, and the network lists
+of the I-Am-Router-To-Network, Router-Busy and Router-Available messages it
+passes on. What differs on the wire from a plain router:
+
+- A message from an isolated port for one node behind another isolated port
+  draws a reject (Reject-Message-To-Network, reason 1) out of the arrival port,
+  as a network the router doesn't reach does (Clauses 6.4.4 and 6.6.3.5),
+  and starts no search. A broadcast for such a network is dropped without a
+  reject. Both count in `Counters::isolated_drops`.
+- An isolated port cannot capture a shared route. An
+  I-Am-Router-To-Network, a routing table update or a table Ack that arrives
+  on an isolated port doesn't move to that port a network the router reaches
+  through any other port, a directly connected one included, and such an
+  I-Am-Router-To-Network is not relayed (its other networks are learned, and
+  neighbours hear of them at their next Who-Is-Router-To-Network). Each
+  refusal counts in `Counters::isolated_refusals` and is logged. This departs
+  from Clause 6.6.3.3, which follows the newest claim, so a network that
+  really moves behind an isolated port needs its old route removed first (a
+  routing table update from an ordinary port, or the route's expiry) or a
+  router restart. Moves between ordinary ports, and from an isolated port to
+  an ordinary one, are unchanged.
+- With isolation on, a second search for the same network that comes from
+  another ordinary port inside the discovery cooldown is also broadcast on
+  the port the first search came from. A plain router sends one search per
+  cooldown.
+
+Isolation limits transit between isolated ports. It is not an authorization
+boundary: the router's own application reaches every port, and a network
+message that one node addresses to another across a permitted path is
+forwarded with its contents unread. It is not an access control on
+routing-table updates either: a reject or a routing table update from an
+isolated port can still mark, remove or redirect a route through an ordinary
+port; see `next_hop_rejects` and the host's authorization of table updates
+(`control_policy()`, `control_authorizer()`). Other routers on a shared
+network make their own forwarding decisions.
 
 Every port of one router has the same transport type. `RouterPort`'s
 defaults to `AnyTransport` (#2043), so a router that mixes link types takes
@@ -3688,6 +3900,30 @@ the routing table. With `control_policy(ControlPolicy::Hardened)` and a
 `control_authorizer()`, only the controls the authorizer allows can learn, mark
 busy or available, reject or initialize routes.
 
+The gate also decides one read: a routing-table query that arrives from another
+network, an Initialize-Routing-Table with a port count of zero and an SNET
+(#2715). It changes nothing, but the router answers it with its whole table (up
+to three Acks for 256 routes) sent across the internetwork toward a source
+that the query only claims. The default gate answers it, a hardened one with no
+authorizer doesn't, and an authorizer sees it with `class` set to
+`ControlClass::InitQuery`, where an update or purge is `ControlClass::InitMgmt`
+(`ControlAuthContext::class` names every control's class). A query with no SNET is
+answered on its own link without the gate. `control_snapshot().init_query`
+counts the decisions.
+
+One control doesn't reach the gate by default: an Initialize-Routing-Table
+update (a port count other than zero) that carries an SNET, so one that came
+from another network (#2717). A single update can remove or redirect any
+learned route, and none of the router's own networks can vouch for a sender
+behind another router. The router drops it silently, whatever the policy and
+authorizer, and counts it in `Counters::denied`. Clause 6.6.3.8 itself has a
+router apply the update it receives, so a site that manages router tables from
+a station on another network turns it on with
+`RouterOptions::new().remote_table_updates()`; such an update then goes to the
+gate like a local one, with `source_net` set, and an authorizer can still pick
+which to take. Updates from the router's own networks, and table queries, are
+the same either way.
+
 `ControlAuthContext::sending_peer_principal()` is the `ScPrincipal` of the
 verified leaf certificate of the direct BACnet/SC peer that handed the message
 over: the last hop, even when the message carries an SNET. Trusting it trusts
@@ -3712,8 +3948,9 @@ to certificates), and keeps the standard behaviour on B/IP:
 
 ```rust
 use std::sync::Arc;
-use bacnet_network::router::control_policy::{ControlAuthContext, ControlAuthorizer, ControlPolicy};
-use bacnet_npdu::NetworkMessageType as Message;
+use bacnet_network::router::control_policy::{
+    ControlAuthContext, ControlAuthorizer, ControlClass, ControlPolicy,
+};
 
 let routers: Vec<ScPrincipal> = configured_router_certificates();
 let announcers: Vec<MacAddr> = configured_router_vmacs();
@@ -3721,13 +3958,14 @@ let authorizer: ControlAuthorizer = Arc::new(move |context: &ControlAuthContext|
     if ![0, 1].contains(&context.port_idx) {
         return true; // B/IP: no certificates
     }
-    let unicast = [
-        Message::INITIALIZE_ROUTING_TABLE,
-        Message::INITIALIZE_ROUTING_TABLE_ACK,
-        Message::REJECT_MESSAGE_TO_NETWORK,
-        Message::I_COULD_BE_ROUTER_TO_NETWORK,
-    ]
-    .contains(&context.message_type);
+    let unicast = matches!(
+        context.class,
+        ControlClass::InitMgmt
+            | ControlClass::InitQuery
+            | ControlClass::InitAck
+            | ControlClass::Reject
+            | ControlClass::ICouldBe
+    );
     if unicast {
         context.sending_peer_principal().is_some_and(|peer| routers.contains(&peer))
     } else {
@@ -4013,14 +4251,14 @@ destination naming their own network's number as local traffic (#1358).
 
 The routed sends (`send_apdu_routed`, `send_apdu_routed_via_local_broadcast`
 and their `_with_data_attributes` forms), `send_apdu_on_issuance` and
-`broadcast_to_network` refuse DNET 0 and DNET 0xFFFF with `Error::Encoding`
+`broadcast_to_network` refuse DNET 0 and DNET 0xFFFF with `Error::InvalidArgument`
 before anything is sent (#1314, #1340, #1380). A global broadcast goes out only
 through `broadcast_global_apdu`, with DLEN 0 and the broadcast MAC, so that
 every router on the network can pass it on (Clause 6.3.2); a unicast would
 reach a single router.
 
 A broadcast carries only an Unconfirmed-Request APDU (Clause 6.3). Any other
-PDU type fails with an `Error::Encoding` naming it, before anything is sent,
+PDU type fails with an `Error::InvalidArgument` naming it, before anything is sent,
 from `broadcast_apdu`, `broadcast_global_apdu` and `broadcast_to_network`, and
 from a routed or on-issuance send with an empty DADR (a remote broadcast), in
 every `_with_data_attributes` form too (#1479).
@@ -4037,7 +4275,7 @@ a local broadcast too.
 `send_apdu` sends an Unconfirmed-Request for one of the groups the link's own
 broadcast stands for (`TransportPort::local_broadcast_destinations`) through
 the transport's `send_broadcast` (#1677). B/IP refuses every unicast to one of
-its group addresses with `Error::Encoding`, sending nothing, since its
+its group addresses with `Error::InvalidArgument`, sending nothing, since its
 receivers drop an Original-Unicast-NPDU that wasn't sent to their own address.
 On B/IP those groups are the ones at the link's own UDP port: a group address
 at another port belongs to another B/IP network, so a send there is left to
@@ -4056,6 +4294,51 @@ recipients and bound devices, and binds no device to one (#1493); its replies
 and COV notifications go to the source a request came from.
 `is_broadcast_mac` keeps its narrower meaning, this link's own broadcast,
 which routing relies on.
+
+The server also starts no confirmed request to a station on another network
+whose MAC there is a broadcast or group form, which the router delivering it
+would hand to every station there (#2732): the one octet `0xFF`, two octets
+starting `0x00` or `0xFF`, three octets of `0xFF`, or six starting
+`FF:FF:FF:FF` (`bacnet_npdu::RemoteBroadcast`, the client's check from #2709).
+That covers an Address recipient, a Device binding, configured or observed
+from an I-Am, the parent of an Audit Log that forwards, a COV subscriber
+relayed from such an address, and an endpoint session's source Audit
+recipient bound behind a router. An unconfirmed request to the same address
+still goes, as before. Such an address is taken where it is written (a
+Recipient_List, a `DeviceBinding::routed`, which logs a warning when
+configured) and skipped where a confirmed request would be sent, as a
+confirmed recipient at a broadcast address already was; the counters below
+say where each skip counts. An Audit Reporter that sends confirmed
+notifications reads CONFIGURATION_ERROR while its recipient is bound so.
+
+The forms are read from the MAC alone, since the far network's link is
+unknown here. Two kinds of real station share them: ARCNET's station 255 is
+the one octet `0xFF`, and a gateway's virtual network may number its stations
+in two octets starting `0x00` or `0xFF`. A routed Device binding can say its
+address is one station (#2738):
+
+```rust
+use bacnet_server::server::DeviceBinding;
+
+// Station 255 on network 3, an ARCNET network, behind the router at `router_mac`.
+let arcnet_255 = DeviceBinding::routed(device, 3, [0xFF], router_mac)?.one_station();
+server_builder = server_builder.device_binding(arcnet_255)?;
+```
+
+Marked, every confirmed request the server starts toward that device (event
+notifications and a Notification Forwarder's copies to a Device recipient,
+Channel and Command writes, audit notifications and Audit Log forwarding)
+goes to the one octet `0xFF` and to two octets starting `0x00` or `0xFF`, but
+not to `0x0000` or `0xFFFF`; three and six octets are judged as unmarked.
+The mark only lifts, never refuses: the one octet `0x00` takes confirmed
+requests marked or not, so an ARCNET network's broadcast there is not
+caught. `bacnet_npdu::RemoteBroadcast` has the table, and an endpoint
+session's source Audit binding takes the same mark
+(`with_source_audit_routed_one_station_binding`). Without the mark nothing
+changes. Three addresses can't carry it and stay unconfirmed-only at those
+forms: a Recipient_List or Audit recipient Address (name the Device and bind
+it marked instead), a COV subscriber's address, taken from its request, and a
+binding observed from an I-Am.
 
 A reply goes back to the link-layer MAC its request came from, so a
 confirmed request from a group address would get its answer, any segment
@@ -4125,9 +4408,26 @@ let ack = client
   endpoint that was asked, along the path the request came by. The port keeps
   the plans of up to 64 requests for up to 30 seconds; an answer after that is
   originated like any other send.
-- The port has no network of its own: a send with no DNET, such as a local
-  broadcast, fails with `Error::Encoding`, and so do network messages. Who-Is
-  goes out as a global broadcast, on every port.
+- The port is on each of the router's networks
+  (`TransportPort::attached_networks`). A local broadcast, with no DNET, goes
+  to every one of them once (#2601): a broadcast to each port's network,
+  isolated ports included, which the router sends there as that link's
+  broadcast and passes no further. So `Broadcast::Local` and ops'
+  `Scope::Local` ask each attached network, and `BACnetClient::local_networks`
+  lists them, so their answers, which carry those networks as SNET, count as
+  local. A copy a port refuses fails the send, while the other copies still
+  go, as for a global broadcast: an error from a local broadcast doesn't mean
+  nothing was sent. A unicast with no DNET names a MAC on no one network and
+  fails with `Error::InvalidArgument`, and a network message with
+  `Error::Unsupported`.
+- A server on the port (`RouterApplicationPorts::server`) sends its local
+  broadcasts the same way: `BACnetServer::broadcast_i_am`, an unconfirmed
+  event notification to a local-broadcast recipient, a Notification
+  Forwarder's copy of one, and the Who-Is that looks for a Device recipient
+  go to each attached network, isolated ports included, as do a client's
+  Write-Group, Who-Am-I and other unconfirmed broadcasts with no network. A
+  recipient or call that names one network's number reaches that network
+  alone.
 - A refusal from `originate` fails the send. Too long for the egress port is
   `Error::SendTooLong`. Anything else is an `Error::Transport` carrying the
   `OriginateFailure`, which `OriginateFailure::from_error` returns. A network
@@ -4263,6 +4563,16 @@ as that latest one, so a clock that steps back holds the router's timers
 still instead of failing; the router keeps that time from `Router::new` on.
 The router always follows Clause 6, R1 to R7 above included, with no switch
 back to the hosted router's behaviour before 0.13.0.
+
+The `Host` a caller passes decides each protected network message
+(`Host::authorize`, with its `ControlClass`): the ones that change the table,
+and, as `ControlClass::InitQuery`, a routing-table query that carries an SNET
+(#2715), since its answer crosses networks toward a source the query only
+claims. `Permissive` allows them all. A routing-table update that carries an
+SNET is dropped before the host is asked unless
+`Options::remote_table_updates` is on (#2717). It is off in `STANDARD` and in
+`HOSTED`, so a router built on the crate takes table updates from its own
+networks only until it sets the field.
 
 The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
 crate builds them like this:
@@ -4744,7 +5054,10 @@ Positive Integer and Large Analog Value, take Units (an Enumerated up to
 65535). The Multi-state Input, Output and Value take
 Number_Of_States (1 to `multistate::MAX_NUMBER_OF_STATES`, 1024),
 which resizes State_Text. A count is refused with `PROPERTY/VALUE_OUT_OF_RANGE`
-if a value the object holds would name a state past it. Of the configuration
+if a value the object holds would name a state past it. The application's
+own count meets the same cap: the multi-state constructors and
+`set_number_of_states` refuse one past it with `Error::Range` (#2711).
+Of the configuration
 objects (#2208), Calendar, Schedule, Notification Class, Trend Log and
 Structured View take Object_Name; Notification Class takes Priority (three
 Unsigned values up to 255) and Ack_Required; Trend Log takes Buffer_Size (up to
@@ -5106,7 +5419,7 @@ application sets them at each start.
   `persistence.save(oid, &WriteConfigSnapshot::Reporting(Default::default()))`.
   In a file, a
   bad value is damage, and a parameter this build doesn't keep for the
-  object's type is an unknown kind (`SnapshotErrorKind::UnknownKind(6)`,
+  object's type is an unknown kind (`PersistenceErrorKind::UnknownKind(6)`,
   `is_damage()` false): a later release may keep it, so a backend with two
   copies stops there instead of falling back to the older one.
 - **State_Text and Number_Of_States.** A Multi-state Input, Output or Value
@@ -5226,9 +5539,13 @@ writes in the same file, with the same rules:
 - Notification Class, Notification Forwarder and Access Rights, through
   their `with_persistence`;
 - Device and the two lighting outputs (Lighting Output, Binary Lighting
-  Output), in their Tags storage, through `with_tags_persistence`;
+  Output), in their Tags storage, through `with_tags_persistence`; the
+  Device a builder or an endpoint session builds through
+  `device_storage_path` ([The Device's storage](#the-devices-storage-2730));
 - Color and Color Temperature, with Present_Value and a written default,
-  through `with_output_persistence`.
+  through `with_output_persistence`;
+- the Audit Log, in the snapshot its `AuditLogPersistence` commits, beside
+  its records, Enable and Buffer_Size (#2407).
 
 A write of Description is saved before it is answered, refused with DEVICE /
 OPERATIONAL_PROBLEM when the save fails, and staged by the server with the
@@ -5238,8 +5555,8 @@ anything is saved; a long one the object took before it had storage refuses
 no other write. A NULL succeeds, changes nothing and saves nothing. A saved
 Description wins over `set_description` (on the analog, binary and
 multi-state objects, Event Enrollment, the logs, Notification Class,
-Notification Forwarder, Device and the two lighting outputs; the others have
-no setter) until the type's clear drops it:
+Notification Forwarder, Device, the two lighting outputs and the Audit Log;
+the others have no setter) until the type's clear drops it:
 
 - `clear_written_reporting` on the thirteen reporting types and the logs,
   with their written reporting settings;
@@ -5247,8 +5564,8 @@ no setter) until the type's clear drops it:
   they keep;
 - `clear_written_description` on Notification Class, Notification
   Forwarder, Access Rights, Device, Lighting Output, Binary Lighting Output,
-  Color and Color Temperature, which drops the Description alone. A colour
-  object's `clear_written_default` leaves it in place.
+  Color, Color Temperature and Audit Log, which drops the Description alone.
+  A colour object's `clear_written_default` leaves it in place.
 
 Each clear saves before it returns, keeps what was written when the save
 fails and returns storage's error, and does nothing without storage or a
@@ -5257,8 +5574,10 @@ are: it waits for its save. The text served stays until the setter or a
 write changes it. A log's `written_reporting().description`, and the
 `description` field of `TimerWriteConfig`, `ChannelWriteConfig`,
 `LogReportingSettings`, `NotificationClassSnapshot`, `ForwarderSnapshot`,
-`AccessRightsSnapshot`, `TagsSnapshot` and `ColorOutputSnapshot`, show what
-is saved.
+`AccessRightsSnapshot`, `TagsSnapshot`, `ColorOutputSnapshot` and
+`AuditLogSnapshot`, and an Audit Log's `written_description()`, show what is
+saved. `AuditLogSnapshot` gained the field: a struct literal of it now sets
+`description` (`None` for none).
 
 Storage holds it as kind 5 of `RBNWCF01`
 (`snapshot::write_config::KIND_WITH_DESCRIPTION`): the Description, then the
@@ -5287,17 +5606,19 @@ build refuses one with it as an unknown version:
   that holds a Description;
 - `RBNCLR03` (`snapshot::color::MAGIC_WITH_DESCRIPTION`): the Description
   between the header and version 2's body. Versions 1 to 3 all load, and
-  the file's cap rises from 64 octets to 16,452.
+  the file's cap rises from 64 octets to 16,452;
+- the Audit Log's slot, schema version 4 of `RBALOG01`
+  (`snapshot::audit_log::VERSION_WITH_DESCRIPTION`, #2407): the Description,
+  its length in four octets and its UTF-8, after the completed receipts.
+  Versions 1 to 4 all load.
 
 Once a clear leaves no Description saved, the next save writes the older
 version again.
 
 An endpoint session's server, a full server (#2617), keeps it the same way.
 
-So every type with a store keeps a written Description, with one
-exception: the Audit Log. Its `AuditLogPersistence` keeps the records,
-Enable and Buffer_Size, and a Description a peer writes to it lasts
-until a restart. The store must also be the one that takes it: an analog,
+So every type with a store keeps a written Description. The store must be
+the one that takes it: an analog,
 binary or multi-state object, a Color or a Color Temperature built with
 Tags storage alone keeps a written Description in memory, since its
 reporting or output store is the one that holds it. An object built
@@ -5989,15 +6310,20 @@ framing, through the shared `bacnet-encoding` codecs.
 `alloc` alone, so storage an application brings (flash, EEPROM, a database
 row) keeps the same octets a hosted build does. Each format's module has
 `encode`, `decode`, its magic tag and its version as constants, and every
-refusal is a `SnapshotError` whose `kind()` names it: `Truncated`,
-`NotThisFormat`, `UnknownVersion`, `UnknownKind`, `OtherObject`, `TooLarge`,
-`Damaged`, or `OutOfRange` for a snapshot refused as it is encoded. It
-carries only static text, so reporting one needs no allocation.
+refusal is a `bacnet_types::error::PersistenceError` whose `kind()` names
+it: `Truncated`, `NotThisFormat`, `UnknownVersion`, `UnknownKind`,
+`OtherObject`, `TooLarge`, `Damaged`, or `RefusedOnEncode` for a snapshot
+refused as it is encoded. Its text is static, so reporting one needs no
+allocation. The storage traits return it as `Error::Persistence` (#1833); a
+backend of the application's own reports its own failure there with
+`PersistenceError::new(PersistenceErrorKind::BackendFailed, detail)`, which
+is not damage, and an OS I/O failure as `Error::Transport`, as the file
+backends do.
 `is_damage()` says whether a two-slot backend should pass over that copy
 for the other one, and `snapshot::log::newest(object, [slot0, slot1])`
 makes `FileLogPersistence`'s whole choice between two slots, as
 `snapshot::audit_log::newest` does for `FileAuditLogPersistence`. `Error`
-implements `From<SnapshotError>`, the mapping the file backends use.
+implements `From<PersistenceError>`, the mapping the file backends use.
 
 | Module | Snapshot | Tag and versions | File backend |
 | --- | --- | --- | --- |
@@ -6283,8 +6609,13 @@ server, a full server (#2617), has it too.
 
 Binary Input and Binary Output hold a Polarity and a physical side (#2580).
 `set_polarity(Polarity)` takes NORMAL or REVERSE (VALUE_OUT_OF_RANGE for
-anything else); Polarity stays read-only on the network. On a running server
-the routes are:
+anything else); Polarity stays read-only on the network. A point list gives
+it as `bacnet_types::points::Binary::with_polarity` (#2595), which
+`points::build_database` sets on an Input or Output and refuses on a Binary
+Value, a type with no Polarity, as `Refusal::PropertyNotInType`. On a
+running server, an endpoint session's server included
+(`EndpointSession::server`, a full server since #2617; #2594), the routes
+are:
 
 | Route | Object | What it does |
 | --- | --- | --- |
@@ -6562,7 +6893,7 @@ number of records is a count that has wrapped (Clause 12.25.16). With no
 records it seeds the count, which lets a test start a log just short of the
 wrap. The restore records no status and keeps the records whatever Enable
 and the window say; BUFFER_READY counts from the restored count, as when
-detection starts. It fails with `Error::OutOfRange`, or a record's encoding
+detection starts. It fails with `Error::Range`, or a record's encoding
 error, and changes nothing when there are more records than Buffer_Size,
 records with a count of zero, a full buffer while Stop_When_Full and Enable
 are both TRUE, or a record that would not encode. It is for start-up, before
@@ -6582,7 +6913,7 @@ It goes in whatever Enable and the window say, carrying LOG_DISABLED while
 collection is off (and turning Enable FALSE when it fills a Stop_When_Full
 buffer). No clock is bound before the log joins a database, so the caller
 gives the time; one that isn't an actual moment fails with
-`Error::OutOfRange`.
+`Error::Range`.
 
 ##### Durable logs (#1541)
 
@@ -6625,7 +6956,7 @@ persistence)`.
   stops the log as usual) and logs a warning naming both sizes. Sequence
   numbers, Total_Record_Count and the BUFFER_READY counts don't change.
 - **Size limit.** A slot holds at most 256 MiB, so `with_persistence` refuses
-  with `Error::OutOfRange` a `buffer_size` whose full buffer of the family's
+  with `Error::Range` a `buffer_size` whose full buffer of the family's
   largest records couldn't fit: 828,251 records for a Trend Log, 178,426 for
   an Event Log and 15,848 for a Trend Log Multiple (sized for 64 references
   of 256-octet values, beside the written reporting settings and a written
@@ -7258,7 +7589,10 @@ bindings: a `DeviceBinding` registered on the builder, or an I-Am the server
 heard in the last ten minutes. A binding never takes a group address of the
 link (`TransportPort::is_group_destination`), as the device's own MAC or as its
 router's: one registered so stops the server from starting, with an error
-naming the device and the address, and an I-Am from one binds nothing (#1493). For a device with neither, the server first
+naming the device and the address, and an I-Am from one binds nothing (#1493).
+A routed binding whose MAC on its network is a broadcast or group form there
+binds, but no write or read goes to it, and the command fails as for an
+unbound device (#2732). For a device with neither, the server first
 broadcasts one Who-Is whose low and high limits are both that device's
 instance (#1322). A device it has never heard from is asked on every network
 (a global broadcast, DNET 65535). One whose stale I-Am is still held is asked
@@ -7316,7 +7650,7 @@ caller dropped once Operation_Expected has changed still notifies its
 subscribers (#1520). Every local write (`write_local`,
 `write_local_encoded`, `set_present_value_local` and the other `*_local`
 setters) must therefore be awaited inside a Tokio runtime: outside one it
-fails with `Error::Encoding` before anything is written.
+fails with `Error::Unsupported` before anything is written.
 
 Whatever commits a Present_Value write owns the run it starts and finishes it,
 so no path leaves a Command in process (#1178). Without a server,
@@ -7428,7 +7762,10 @@ request selects, the times, and whether Start_Time has come) and returns a
 levels), and `stop` says that a request it was asked about ended. Removing
 the object from its database, or replacing it there, during a request ends
 the request and calls `stop` (#2479), through the `Timed::retire` hook the
-database calls on an object leaving it, with a `Retirement` saying how. Replacing the shedder doesn't: the
+database calls on an object leaving it, with a `Retirement` saying how. A
+server start that looked at the request and then failed calls `stop` too,
+through `Timed::release_output`, and keeps the request for the next start
+over the same objects (#2752). Replacing the shedder doesn't: the
 old one isn't told, and the new one hears of the request's end only once it
 has been asked about it. Both run under
 the database's write guard, so they must return quickly and not touch the
@@ -9168,8 +9505,11 @@ bacnet-device-core = { version = "...", default-features = false, features = ["a
   sync. `Responder::set_zone(db, zone)` and `Reporter::set_zone` (#2395)
   change the clock's zone and lend it again, so the Device's UTC_Offset,
   Daylight_Savings_Status, Local_Date and Local_Time and the window follow
-  from that call on; they are refused without a clock. Only the host
-  changes the zone: both properties are read-only to a peer. With
+  from that call on; they are refused without a clock. Both properties are
+  read-only to a peer unless the clock is built with
+  `DeviceClock::with_writable_zone()` (#2395): a peer's write then moves
+  the clock once the request has run, and `Written::objects` names the
+  Device for the host to save the zone. With
   `event-reporting`, a `Responder` built without a clock refuses a
   Notification Class Recipient_List write that holds a destination not
   open every day, all day (to 23:59:59.99: an unspecified hundredth counts
@@ -9183,7 +9523,9 @@ bacnet-device-core = { version = "...", default-features = false, features = ["a
   as the class does.
 
 `Responder::new` refuses an identity that claims segmentation support, since
-the core aborts every segmented request and every reply too long for one APDU,
+the core aborts every segmented request and every reply too long for one APDU
+(`DeviceIdentity::new` segments both ways by default, so build the core's
+identity `.with_segmentation(Segmentation::NO_SEGMENTATION)`, #2617),
 a `read_work` limit of zero, and an RPM budget with a zero limit. `Limits`
 holds the ReadProperty work limit and, set with `Limits::with_rpm`, the
 `ReadPropertyMultipleBudget`: an RPM past its result rows is aborted with
@@ -9320,6 +9662,25 @@ let client = BACnetClient::sc_builder()
 Use `bip_builder()` for B/IP, `bip6_builder()` for B/IPv6 (client `ipv6`
 feature), `sc_builder()` for BACnet/SC, or `generic_builder()` with a
 prebuilt transport.
+
+### Segmented requests
+
+A request too long for one APDU goes as segments. The client sends segment
+zero alone, carrying the window it proposes
+(`ClientConfig::proposed_window_size`, 1 by default), and takes the window
+for the rest from the receiver's answer, at least one and never more than
+it proposed (Clause 5.4.4.1, #2742). At a window above one, a receiver that
+leaves segment zero unanswered for a whole segment timeout is remembered,
+and from then on gets the whole first window at once, as receivers that
+never answer segment zero alone expect: the request that taught it waits
+that one segment timeout and goes on if the receiver answers segment zero
+sent again, or fails if it drops that too, and its next request works. A
+conforming receiver that was offline, lost a segment or answered slower
+than the segment timeout is remembered the same way; sent a whole first
+window, it acknowledges segment zero at once, and that forgets it. The
+client remembers up to 256 peers (a routed peer apart from its router),
+forgets the oldest to make room, and forgets them all when it ends. A
+window of one is unchanged.
 
 ### Choosing the client transport at runtime
 
@@ -9506,6 +9867,12 @@ BACnet/SC handshake; a client's builders start the transport. After `stop()`
 a receiver keeps waiting, since the transport may start again; `recv()`
 returns `None` once the transport is dropped and the queue is empty.
 
+`FrameTapReceiver::close()` unsubscribes, discards the queued frames and
+returns the final overflow count. It waits for a publisher that met the full
+queue at that moment, so the count includes that frame; reading `dropped()`
+just before a drop can miss it. `IAmArrivals::close()` does the same for an
+arrival subscription.
+
 The management, FDT and fanout counters count what this transport does as a
 BBMD (ACKs sent, registrations admitted, broadcasts forwarded). They stay at
 zero unless the client runs as one, from `bip_builder().mode(BipMode::Bbmd(..))`
@@ -9684,12 +10051,10 @@ Applications with path-specific evidence can configure the NPDU envelope
 without changing `ClientConfig`:
 
 ```rust
-client
-    .configure_routed_path_max_npdu(&router_mac, dnet, 1497)
-    .await?;
+client.configure_routed_path_max_npdu(&router_mac, dnet, 1497)?;
 
 // Restore the conservative unknown-path policy.
-client.clear_routed_path_limit(&router_mac, dnet).await?;
+client.clear_routed_path_limit(&router_mac, dnet)?;
 
 // Each path with a configured or learned limit, or a below-minimum reject.
 for path in client.routed_path_limits() {
@@ -9698,13 +10063,31 @@ for path in client.routed_path_limits() {
 }
 ```
 
-`configure_routed_path_max_npdu` refuses, with `Error::Encoding`, a limit
+`configure_routed_path_max_npdu` refuses, with `Error::InvalidArgument`, a limit
 that can carry no request: one under the 50-octet minimum APDU plus the
 smallest NPCI a router adds to a request from this client (nine fixed octets,
 a one-octet DADR and the client's own MAC as SADR), so 66 on B/IP and 61 on
 MS/TP (#2667). Any larger value is taken, 228 or below included. A request to
 a station whose longer MAC leaves less than the minimum is still refused as
 `Error::RoutedPathTooLong` when it is made.
+
+Both methods are synchronous and apply at once (#2683). They send nothing and
+wait neither for a request on the path nor out the hold a request with no
+answer leaves (the APDU timeout times the attempts, #2651). A request waiting
+out the hold still waits it out, then goes sized to the new limit; a reason-4
+reject that lands in the hold is still discarded. A request sized before the
+change keeps its size, and a reject for it teaches the path nothing. Requests
+to one path still go one at a time. A request takes its turn only as it is
+polled (#2759): one left unpolled while it waits its turn, parked in a
+`select!` arm or a `buffer_unordered` stream while the caller awaits
+something else, holds the path for nobody and is passed over until it is
+polled again. Requests polled when woken go in the order they began to wait:
+strictly on a current-thread runtime, while on a multi-thread runtime one
+slow to be polled can be passed. A request that has its turn holds the path
+until it ends, polled or not, so drive such futures, or don't send to the
+same path from the body of a loop that drains them.
+`clear_routed_path_limit` on a path the client holds nothing for reserves
+nothing, so it never fails for capacity.
 
 `routed_path_limits()` lists every path holding more than the default, as
 `RoutedPathLimit` values ordered by router MAC and then network: the router
@@ -9722,9 +10105,10 @@ below are client-wide.
 
 Every MAC on a routed path holds to `bacnet_npdu::MAX_MAC_LEN` (18 octets), the
 longest address the NPDU codec carries and the network layer delivers (#1267).
-A routed request refuses a longer DADR or local source MAC, and a router MAC
-that is empty or longer, with `Error::Encoding` before it reserves or waits on
-the path, and both configuration methods refuse such a router MAC too.
+A routed request refuses a longer DADR, and a router MAC that is empty or
+longer, with `Error::InvalidArgument`, and a longer local source MAC with
+`Error::InvalidConfig`, before it reserves or waits on the path, and both
+configuration methods refuse such a router MAC too.
 
 A routed confirmed request goes to one device on one remote network (#1278).
 DNET must be in 1..=65534, since 0 names no network and 65535 is the global
@@ -9732,10 +10116,9 @@ broadcast, and the DADR must hold at least one octet, since an empty DADR has
 the remote router broadcast the request. Every routed confirmed request (a
 typed call or `confirmed_request` to a remote `Station` or address, a
 station from `resolve_device`, the routed COV subscriptions) refuses
-any of them with `Error::Encoding` before the path is reserved or a
+any of them with `Error::InvalidArgument` before the path is reserved or a
 transaction registered. Both configuration methods use the same DNET check,
-`add_routed_device` refuses such a peer, and the endpoint requester refuses
-such a routed destination. Unconfirmed sends keep remote and global broadcasts,
+and `add_routed_device` refuses such a peer. Unconfirmed sends keep remote and global broadcasts,
 for example `broadcast_network_unconfirmed`.
 
 A routed destination whose DNET is the client's own network number, once the
@@ -9745,18 +10128,15 @@ client's own network (#1358). A routed confirmed request to it, from any of
 the methods above or for a device added with `add_routed_device`, passes the
 checks above and then goes as a local request: a unicast to the DADR with no
 DNET, not through the router, so a non-routing peer there takes it. It holds
-no routed-path state, and `router_mac` is not used. An answer from the DADR
-with no SNET completes it, and so does one a router relays back with that
-number as its SNET and the DADR as its SADR (#1465): network numbers are
-unique, so both name the same station. That holds for any request to a station
-on this network. A relayed answer still has to carry the request's invoke ID,
-one naming another network or another station completes nothing, and while
-the number is unknown only the direct answer counts. The link source of a
-relayed answer is not checked, so any node on this link could complete the
-request by claiming that SNET and SADR with the right invoke ID; a routed
-request already trusts a claimed SNET/SADR the same way. A request routed to
-this network before the number was learned keeps its routed key, and its
-relayed answer still completes it. The peer's
+no routed-path state, and `router_mac` is not used. Only an answer from the
+DADR with no SNET completes it. One relayed back with that number as its SNET
+and the DADR as its SADR completes nothing (#2831): any station on this link
+could write those, so it is dropped unanswered and counted in
+`BACnetClient::off_path_answer_drops()`. That holds for any request sent
+straight to a station on this network. A request routed to this network
+before the number was learned keeps its routed key: its answer relayed with
+this network as SNET still completes it, but only from the router the request
+went to, as for any routed request. The peer's
 limits still come from its routed device-table row, so a request past them is
 refused or segmented as for the routed peer.
 `broadcast_network_unconfirmed`, and a scoped call to `Broadcast::Network`
@@ -9767,11 +10147,13 @@ arrived by.
 
 The shared endpoint's requester does the same once its session knows the
 number (#1403). A `Routed` or `RoutedViaLocalBroadcast` destination naming it
-passes the same checks, then goes to the DADR with no DNET. The DADR's own
-answer completes the read, and so does one relayed back with that number as
-its SNET and the DADR as its SADR (#1465). The client, the endpoint and the
+passes the same checks, then goes to the DADR with no DNET. Only the DADR's
+own answer completes the read; one relayed back with that number as its SNET
+and the DADR as its SADR completes nothing, and the session's client counts
+it in `off_path_answer_drops()` (#2831). The client, the endpoint and the
 server's own confirmed requests match answers through one rule,
-`CanonicalPeer::from_source`.
+`CanonicalPeer::of_answer`; `CanonicalPeer::from_source`, which reads that
+relayed form as the station, is for the sources of requests only (#1404).
 
 State is keyed by the immediate router MAC together with DNET. One confirmed
 request at a time owns that path; requests through a different router or to a
@@ -9846,6 +10228,69 @@ the wrong request (#2651):
   on each path also marks it in `routed_path_limits()`.
 - Network controls observed at ingress before a request becomes active are
   discarded using a monotonic ingress sequence.
+
+An answer for a routed device counts only when it comes from the router its
+request went to (#2831): the acknowledgments, Error, Reject, and the server's
+Abort and Segment-ACK. A routed frame's SNET and SADR are written by its
+sender, so any station on the link could name the device in them and guess
+the invoke ID; the link station it comes from is the part a sender can't
+choose on most links. So another station can no longer complete a routed
+request by sending the answer itself: one from another station is dropped
+unanswered (no Segment-ACK, no Abort), counted in
+`BACnetClient::off_path_answer_drops()`, and the request waits for the
+device's own answer. The standard allows one path between two nodes (Clause
+4.2), so a device's answers return through the router its requests went to;
+a retry goes through the same router as the first frame. The path ties to the
+request from before the TSM holds it, so no answer arrives in between
+unchecked. An answer relayed with this network's own number as SNET, for a
+request sent straight to the station it names, is dropped and counted the
+same way. Not covered: an answer relayed through the request's own router,
+which only that router could check; a request by local broadcast
+(`Station::routed_via_local_broadcast`), which names no router, so any
+router's relay completes it; a client on a router's application port, whose
+requests the router's own table routes; and B/IPv6, where a frame's source
+virtual address is the sender's own claim.
+
+A reject is addressed to the station that sent the refused message, so one
+that came as a broadcast (a global one, DNET 65535, or a broadcast on this
+link) is dropped before its reason is read, reason 4 included: anyone could
+send one naming any network to every client at once. A reject for any other
+reason is tied to the active request by the same rules, the router and
+network of the path and the ingress sequence (assigned when the network layer
+decodes the frame), without the size rules; while an answered request's
+frames may still draw a reject none is taken, since nothing says which frame
+it is for (#2724). What it does depends on its reason:
+
+| Reason | The request |
+| --- | --- |
+| 0 other, 1 no route to the network, 5 (a security refusal in earlier revisions), 6 an address length the router found invalid, and any reason 135-2020 doesn't define | ends at once as `Error::NetworkRejected`; no retry goes |
+| 2 the router is busy for the network | runs on: its retries go at the APDU timeout, the pace the router's flow control asks for; if they run out, `Error::RouterBusyTimeout` names the router |
+| 3 an unknown network message type | runs on: the reason answers a network message, never a request |
+| 4 too long | `Error::RoutedPathTooLong`, as above |
+
+A request refused after one frame frees its path at once; after several (a
+retry, or segments) the path is held for the APDU timeout times the attempt
+count, as for a reason 4. A reject changes no route: the next request to the
+network goes through the same router, the one its discovery-table row names,
+and fails at once the same way while that router has no route; once the
+router has one again, the next request goes through. A `bacnet_ops` handle
+that follows a device instance asks where the device went after one, as
+after a timeout. An I-Am heard through another router does not move the
+row: it only starts the client's own check of the path (#2823; see the
+discovery table under the client's Discovery section). A request by local broadcast (`Station::routed_via_local_broadcast`)
+takes no path, so no reject ends it: any router on the link may hear it, and
+one router's refusal says nothing of another's. A reject a router delivers
+to this station alone can still be forged: any station that can send through
+the router can address one to this client (its network as DNET, its MAC as
+DADR), and a station on this link can send one from the router's link
+address. Naming the network of a request in flight, it ends that request
+early, as a forged Abort could; it reaches one client at a time, can't end a
+request through another router, to another network, or one not yet sent,
+and changes no route or limit (a request it ends after several frames holds
+its path, as a timeout would). A router's refusal of a request whose answer
+was arriving in segments ends the request, has the dispatch task drop the
+reassembly, and sends the device nothing, as when the request's timeout or
+its caller cuts it off.
 
 All of this covers the client's own confirmed requests on the path. Other
 traffic to the same network sits outside it, as before: the client's
@@ -10118,33 +10563,55 @@ outstanding for the transport's send bounds plus the retry cycle. The standard
 ends delivery with the confirmed-request retries (Clause 5.4.4); reporting again
 after a hold-off is local policy.
 
-A confirmed report also needs an invoke ID. The server's confirmed event, COV
-and Audit notifications and the reads its runs make share one pool of 256; on an
-endpoint session's seat the server holds at most 64 of the node's. When none is
-free, the report is not sent and the baselines stay, and
-its coordinate (the subscription, or every reference of the COV-multiple context,
-a split report's later parts included) waits for an ID (#2661). While anything
-waits, the server looks again whenever an ID comes back or a confirmed COV
-notification in flight ends. Each pass takes, in the order they were refused,
-the waiting coordinates that have room now: an ID, a slot of the in-flight pool
-and one of their subscriber's `max_confirmed_in_flight_per_peer`. A coordinate
-without room keeps its place and those behind it still go, so one subscriber
-whose notifications are all out holds back no other. The usual fanout then
-reports from the kept baselines: a value back at its baseline sends nothing, one
-that changed again reports its current value once. A coordinate waits once
-however often it is refused, and keeps its place when its look is refused
-anyway, for want of an ID or of an in-flight slot that other work took first;
-it is looked at again when room comes back. Nothing is tried while there is no
-room, so a server at a limit doesn't spin. A cancelled, expired or removed
-subscription stops waiting, and so does one a re-subscription replaces, which
-sends its own initial report (waiting in its turn when it finds no ID).
-Timestamped history refused with its report goes back to its references and
-leaves with the next report, once. `stop()` ends the wait with the server.
-What still waits for its next fanout: a first report refused by the subscriber's
-in-flight limit or the pool of 255 (a deliberate throttle, #533), one past the
-fanout budget, and a look DCC drops, as it drops any fanout. The standard
-doesn't say what a server does when it cannot start a confirmed notification;
-this is local policy.
+A confirmed report also needs room: an invoke ID, a slot of the server's pool
+of 255 confirmed COV notifications in flight, and one of its subscriber's
+`max_confirmed_in_flight_per_peer` (16 by default). The server's confirmed
+event, COV and Audit notifications and the reads its runs make share one pool of
+256 invoke IDs; on an endpoint session with both roles the server always finds
+64 of the node's and holds at most 128, the other 128 kept for the client
+(#2617). The two in-flight limits keep a subscriber that subscribes to much and
+acknowledges slowly from tying up the server (#533, #561). A report that finds
+no room is not sent and the baselines stay, and its coordinate (the
+subscription, or every reference of the COV-multiple context, a split report's
+later parts included) waits for room, whichever of the three it lacked (#2661,
+#2671): the limits cap what is in flight and drop no change. While anything
+waits, the server looks again when a coordinate is newly owed a look, and
+otherwise only when what held the waiters back may be free again: an ID
+coming back, if none was free at the last look, or else a confirmed COV
+notification in flight ending. There is no timer. Each pass takes, in the
+order they were first refused, the waiting coordinates that have room now. A
+coordinate without room keeps its place and those behind it still go, so one
+subscriber whose notifications are all out holds back no other, in its own
+limit or in the pool. A waiting coordinate reserves nothing: a fresh change of
+another subscription may take freed room first, and the wait goes on to the
+next end, so the order is bounded, not strict. The server's own follow-ups
+after an Ack come after the waiters, but get a turn after eight passes of
+waiters in a row. A coordinate whose report goes out by another fanout first
+leaves its place. The usual fanout then reports from the
+kept baselines, with the value current at the look: a value back at its
+baseline, or within its COV increment of it, sends nothing, and one that
+changed several times reports once. A coordinate waits once however often it
+is refused, so the waits are never more than the subscriptions, and keeps its
+place when its look is refused anyway, for want of room that other work took
+first; it is looked at again when room comes back. Nothing is tried while there
+is no room, so a server at a limit doesn't spin. A cancelled, expired or
+removed subscription stops waiting (with its object, or with its peer through
+`remove_peer_subscriptions`), and so does one a re-subscription replaces, which
+sends its own initial report (waiting in its turn, at the back, when it finds
+no room). Timestamped history refused with its report goes back to its
+references and leaves with the next report, once. `stop()` ends every wait.
+`CovCounters::notifications_throttled_peer` counts each report the per-peer
+limit held back, so a subscription held back at several changes counts each
+time but waits once. A report held back by the pool or for an invoke ID warns
+at most once every 10 seconds, with the count since the last warning. A
+confirmed report to a subscriber relayed from a broadcast or group form on its
+network (see #2732 above) is never sent: it doesn't wait for room, and warns
+at most once every 10 seconds the same way, while the subscription's
+unconfirmed reports at that address still go. What
+still waits for
+its next fanout: a report past the fanout budget, and a look DCC drops, as it
+drops any fanout. The standard doesn't say what a server does when it cannot
+start a confirmed notification; this is local policy.
 
 A replaced ordinary or SubscribeCOVProperty subscription starts unmarked, as does
 a context whose route changes or which is re-subscribed with a non-empty list
@@ -10508,12 +10975,15 @@ bring, or `Multiple(ReceivedCOVNotificationMultiple)` for those of a
 SubscribeCOVPropertyMultiple subscription (#2654). Both carry the same
 source fields and delivery, and `COVEvent` reads the fields they share
 (`subscriber_process_identifier()`, `time_remaining()`, `source_mac()` and
-so on); `Station::is_source_of` matches either by its source. By default the client acknowledges and publishes a decoded confirmed
-notification of either form. A custom response policy may choose another
-answer. With strict admission, the registry checks the complete notification
-before policy evaluation or publication. Enabled receive segmentation brings
-both forms through the same admission. A whole request retried after a lost
-answer may be published again. `ManagedCOVSubscription` renews
+so on); `Station::is_source_of` matches either by its source. The client
+acknowledges a confirmed notification of either form whether or not it knows
+the subscription, and publishes it; `confirmed_cov_notification_ack_policy`
+sees the `COVEvent` and may answer otherwise. A notification sent again,
+its answer lost, is acknowledged and published again. A confirmed
+notification that comes in segments is reassembled first, when the client
+receives segments (`ClientConfig::segmentation`, both ways by default), then
+published and answered once (#2646); a client that takes none aborts its
+first segment. `ManagedCOVSubscription` renews
 SubscribeCOV and SubscribeCOVProperty subscriptions only.
 
 `COVNotificationMultipleRequest::decode` is lenient about times: the clause
@@ -10609,6 +11079,64 @@ announced (`Updated` for the same instance). Each contest that changed gets
 a collision notice. If nothing on the network knows the number, the routed
 row stays until the purge takes it.
 
+A routed row's router is the station its first I-Am came through, or the
+one `add_routed_device` or `DeviceTable::upsert` names (#2823). Once a
+row is known, no later frame moves its router: an I-Am naming the same
+address through another station changes nothing on the row and sends no
+device notice. It marks the path, the network and the row's router, for
+the client's own check, which runs beside the device purge: at once, then
+at most once a minute, the gap doubling up to ten minutes while such
+I-Ams keep coming. A full store of 256 paths keeps the longest known ones,
+then those with the most rows, and checks them first. The check sends a
+Who-Is through the row's router to the station on that network whose own
+I-Am the client took through that router last (then the one heard from
+last; never the one the claim named), and any frame that router carries
+back from the network (an I-Am, a notification, an answer to a request)
+keeps the path. Only when nothing comes does the client broadcast its
+router query (Who-Is-Router-To-Network) for that network: the old router
+among the answers keeps the path, and so do no answer, several, or an
+answer the client may have lost (its report receiver fell behind, or its
+network layer's control queue turned a message away). A client seated on
+an endpoint can't see its node's control queues, so it takes every
+answer as possibly lost and its checks never strike. One other router
+answering alone is a strike, and a second check runs a minute later,
+however long the path's hold had grown. Only if that one strikes too, with
+the same router and nothing carried back through the old one since the
+first began, does that router take over every row on the network that
+went through the old one, each reported `Updated`; anything else, or an
+explicit registration giving one of those rows another router, clears the
+strike. Each step waits the APDU timeout, so at the defaults a real router
+replacement is taken 84 seconds after the first I-Am through the new
+router at best: a path checked not long before waits out its hold first
+(up to ten minutes), other due checks may run first, and a path whose
+first check comes after its rows aged out is gone, the next I-Am through
+the new router being first sight. Until then requests to those devices go
+through the old router and end as on any silent path: after their
+retries, with `Error::Remote(RemoteError::Abort { reason: TSM_TIMEOUT })`,
+24 seconds at the defaults. A node that may not initiate
+(DeviceCommunicationControl) checks nothing.
+
+The standard lets a node learn a router from any frame a network sends it
+(Clause 6.5.3) and authenticates none of them; the client learns a change
+of a known row's router only from answers to its own requests. What this
+leaves to any station on the link: a row's first sight, which takes the
+station its I-Am came through, including after a row ages out of the
+table (ten silent minutes); the network number, learned from a
+Network-Number-Is, which folds routed rows on that network into local
+ones; and the router query itself, which any station can answer, so a
+station that answers it alone in two checks a minute apart, while the old
+router and its devices stay silent through both, is taken (#2824 covers
+confirming a device before a write). A router's answer that the link or
+the transport's own queue dropped before the network layer saw it is not
+seen as lost. Two kinds of frame can keep a path, or pick the station a
+check asks, without coming from its router, though neither moves a path:
+an answer the client's transaction matching accepted, and on B/IP a
+forwarded frame whose origin a BBMD gives as the router's (#2829). On a
+site whose routers never answer router queries, the path stays while the
+devices answer through it; when such a router is really replaced, its
+rows age out and the devices' next I-Ams through the new router make them
+again, or `add_routed_device` names the new router at once.
+
 A known number that changes (a learned one replaced by a router's
 configured one, or two configured routers that disagree) is logged as a
 warning naming both, throttled when the number keeps flipping; the table
@@ -10638,11 +11166,56 @@ client.write_property(&station, object, PropertyIdentifier::PRESENT_VALUE, None,
 let behind = Station::routed(&router_mac, 2, &[0x05]);
 client.time_synchronization(&behind, date, time).await?;
 client.confirmed_request(&behind, ConfirmedServiceChoice::READ_PROPERTY, &request).await?;
+// No router to network 2 known yet: one broadcast on this link that names the
+// station; the router serving network 2 passes it on.
+let unknown_route = Station::routed_via_local_broadcast(2, &[0x05]);
+// Station 255 on an ARCNET network, its address marked one station (see below).
+let arcnet_255 = Station::routed(&router_mac, 3, &[0xFF]).one_station();
 ```
 
-`Station` is the one address type: `Local { mac }`, `Remote { network, mac }`
-(the router from the table, as a `BACnetAddress`) and `Routed { router,
-network, mac }`. The `ToStation` trait is sealed; it takes a `Station`, a
+`Station` is the one address type: `Local { mac }`, `Remote { network, mac,
+one_station }` (the router from the table, as a `BACnetAddress`), `Routed {
+router, network, mac, one_station }` and `RoutedViaLocalBroadcast { network,
+mac, one_station }` (no router known: each attempt goes by one broadcast on
+this link whose NPDU names the station, takes no routed path lease and learns
+no route).
+
+A confirmed request on another network is checked before anything is sent
+or looked up, whatever form names it, and fails with `Error::InvalidArgument`
+naming the address in its link's form (#2722, #2709):
+
+- a router that is this link's broadcast or a group address (a B/IP limited,
+  directed or multicast address, MS/TP station 255, an Ethernet group MAC,
+  the BACnet/SC broadcast VMAC): it would reach every router at once. Name
+  the router's own address, or use `RoutedViaLocalBroadcast`, which names
+  none;
+- a station MAC that is a broadcast or a group on its network, read from its
+  length since the far link is unknown: one octet `0xFF` (MS/TP's
+  broadcast), two octets beginning `0x00` or `0xFF` (a LonTalk broadcast or
+  group), three octets of `0xFF` (no device's VMAC), or six beginning with
+  four of `0xFF` (the B/IP limited broadcast at any port, an Ethernet group
+  MAC, BACnet/SC's broadcast). `RemoteBroadcast::of`, in `bacnet-npdu` and
+  re-exported here, names the form. Two of them are a station on some
+  networks: ARCNET's station 255 is `0xFF`, and a gateway may number its
+  virtual stations in two octets. Mark such a station `.one_station()`
+  (#2738) and a confirmed request goes to `0xFF` and to two octets starting
+  `0x00` or `0xFF`, but not `0x0000` or `0xFFFF`, and three and six octets
+  are checked as unmarked. The mark only lifts, never refuses: the one octet
+  `0x00` goes marked or not, so an ARCNET network's broadcast there is not
+  caught. The refusal of an unmarked
+  form the mark lifts names the mark. The target grammar of the CLI and MCP
+  writes it as a third field, `5:0xFF:one-station` or
+  `9:0x0012:one-station`; `bacnet_ops::DeviceAddress::marked` builds the
+  address and its `Display` writes the suffix back, exactly at the MACs the
+  mark lifts (no field holds it, and `DeviceAddress::new` and `of` refuse
+  those MACs, so an I-Am never invents the mark). The suffix is refused
+  where it lifts nothing, and a device at such an address is named by its
+  address, never by `dnet:instance`.
+
+Unconfirmed requests are left alone: a remote broadcast carries those, and
+`Broadcast::Network(n)` sends one. `Station::check_confirmed` makes the
+checks that need no link, for a caller that looks a station up before
+calling. The `ToStation` trait is sealed; it takes a `Station`, a
 `BACnetAddress`, the MAC types and a reference to any of them. A station on
 the client's own network, once it has learned the number, is the station at
 that MAC on this link, whichever form names it. Every form takes the same
@@ -10685,8 +11258,15 @@ let found: Vec<ReceivedIHave> = client
 let mut i_haves = client.i_have_events();                // every I-Have, asked for or not
 
 // Who-Is-Router-To-Network, then the routers heard and the networks they reach.
-let routers: Vec<DiscoveredRouter> = client.discover_routers(None, None, Duration::from_secs(3)).await?;
-client.who_is_router_to_network(Some(2), None).await?;   // just send it
+let routers: Vec<DiscoveredRouter> = client.discover_routers(None, Duration::from_secs(3)).await?;
+// The same question to one router alone, by its MAC on the local network.
+// It answers with a local broadcast (Clause 6.6.3.3): a B/IP router on
+// another IP subnet is heard only when a BBMD forwards its answer here, as
+// a peer or by foreign-device registration; with no BBMD, expect no routers.
+let one: Vec<DiscoveredRouter> = client
+    .discover_routers_directed(&routers[0].mac, Some(2), Duration::from_secs(3))
+    .await?;
+client.who_is_router_to_network(Some(2)).await?;          // just send it
 client.what_is_network_number(None).await?;
 
 // I-Am-Router-To-Network, Network-Number-Is and Reject-Message-To-Network.
@@ -10717,7 +11297,7 @@ match client.routing_table(&router_mac, RoutingTableWait::default()).await {
         }
         if truncated { eprintln!("a bound cut the answer short"); }
     }
-    Err(RoutingTableError::NoAnswer { waited }) => eprintln!("silent for {waited:?}"),
+    Err(RoutingTableError::NoAnswer { waited, .. }) => eprintln!("silent for {waited:?}"),
     Err(RoutingTableError::Rejected(reject)) => eprintln!("refused: {}", reject.reason),
     Err(other) => return Err(other.into()),
 }
@@ -10732,13 +11312,26 @@ client uses a cached route or spends one additional first-answer window
 discovering a local next hop. Zero or multiple candidates yield
 `RoutingTableError::RouteUnresolved`. Lost discovery reports yield
 `RoutingTableError::DiscoveryIncomplete`. Neither outcome sends a table query.
-Routed acks must match the selected hop and original station. A matching hop's
-reject naming the target DNET before the first ack ends the query, though a
-concurrent request through the same hop to that DNET can produce the same reject.
-`NetworkReport::RoutingTable` reports each ack. An empty ack is a successful
-empty table. Silence after the table query was sent yields `NoAnswer`.
-A client runs one query at a time. A `first_answer` greater than `total`
-returns `InvalidArgument`.
+Routed acks must match the selected hop and original station. A reject naming
+the target DNET that comes through the selected hop before the first ack ends
+the query, whether the hop sent it or relayed it from a router further on,
+though a concurrent request through the same hop to that DNET can produce the
+same reject. `NetworkReport::RoutingTable` reports each ack. An empty ack is a
+successful empty table. Silence after the table query was sent yields
+`NoAnswer`; for a routed query its `routed` field holds the network, and its
+text says that an older router may answer a table query only on its own link,
+where only the next hop hears it, so query the next hop or ask from a node on
+that network. A router that refuses table queries from other networks drops a
+routed query silently, so it ends as `NoAnswer` too: a hosted router on the
+hardened control policy with no authorizer does, as does a `bacnet-router-core`
+host that refuses `ControlClass::InitQuery` (#2715).
+A client runs one query at a time. A call takes its turn only as it is
+polled, so one left unpolled while it waits its turn holds up no other
+(#2759); calls polled when woken go in the order they began to wait,
+strictly on a current-thread runtime, while on a multi-thread runtime one
+slow to be polled can be passed. A call that has its turn holds it until it
+returns, polled or not: drive it, or wrap it in a timeout. A `first_answer`
+greater than `total` returns `InvalidArgument`.
 
 ### Device Management
 
@@ -11442,6 +12035,30 @@ server.stop().await?;
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
+A refused `build()`, or `BACnetServer::start`, returns a `StartError` that
+hands back the database it took (#2752): a port already in use, a refused
+dial, a setting or Device the start refuses. The start releases what it
+began first, a bound socket and the outputs it drove among them (a Load
+Control's application is told to stop, and the object keeps its request),
+and puts a registered Network Port it published back as configured, so the
+same database can go into the next build; `StartError`'s documentation
+lists what else a start leaves set. `?` turns it into
+`bacnet_types::error::Error`, and a refusal dropped without taking its
+database lets go of it off the runtime; `into_parts()` gives the error and
+the database:
+
+```rust
+let server = match BACnetServer::bip_builder().database(db).port(47808).build().await {
+    Ok(server) => server,
+    Err(refused) => {
+        let (error, db) = refused.into_parts();
+        tracing::warn!(%error, "port 47808 refused; trying 47809");
+        let db = db.expect("the builder was given one");
+        BACnetServer::bip_builder().database(db).port(47809).build().await?
+    }
+};
+```
+
 All three Rust builders accept `.policy(..)`, also available as
 `ServerConfig::policy`: one `bacnet_server::ServerPolicy` that makes the server's
 authorization decisions, each with a documented default
@@ -11772,7 +12389,7 @@ let server = BACnetServer::bip_builder()
   Protocol_Object_Types_Supported (`bacnet_objects::device::SUPPORTED_OBJECT_TYPES`)
   other than Device and Network Port, which model the node itself, or a
   proprietary type from 128 to 1023. Anything else, and a second
-  registration for the same type, is refused with `Error::Encoding` when it
+  registration for the same type, is refused with `Error::InvalidConfig` when it
   is registered. A registered proprietary type passes CreateObject's type
   check; Protocol_Object_Types_Supported, which lists standard types only,
   doesn't change.
@@ -11815,7 +12432,7 @@ calls it with a `ReinitializeContext` and the object database once a request
 has decoded, passed `reinit_password` and named a state Clause 16.4 defines.
 A configured `reinit_password` or `dcc_password` holds 1 to 20 characters
 (`bacnet_services::device_mgmt::MAX_PASSWORD_CHARS`, counted in characters,
-not octets); an empty or longer one fails the build with `Error::Encoding`
+not octets); an empty or longer one fails the build with `Error::InvalidConfig`
 instead of refusing every request (#2060, #2094). Leave it unset for no
 password.
 The context carries the requested `state`, the immediate `source_mac`, the
@@ -11971,8 +12588,131 @@ server.set_clock_zone(ClockConfig::new(300, true)?).await?;
   `TimeSyncPolicy::max_step` and its value stored under one hold of the
   clock's lock, so the zone a local value is judged in is the zone it is
   stored under even while the zone changes.
-- Only the host changes the zone. UTC_Offset and Daylight_Savings_Status are
-  read-only to a peer.
+- UTC_Offset and Daylight_Savings_Status are read-only to a peer unless the
+  server opts in, below.
+
+#### Letting peers write the zone (#2395)
+
+`clock_zone_writable(true)` on any of the three builders (or
+`ServerConfig::clock_zone_writable`) lets a peer write UTC_Offset and
+Daylight_Savings_Status. It is off by default, and then both stay read-only
+on the wire, refused with WRITE_ACCESS_DENIED as before.
+
+- A WriteProperty or WritePropertyMultiple of either moves the clock as
+  `set_clock_zone` does: the other half stays, the clock keeps its UTC
+  instant and its synchronization, and a request reads one pair. An Audit
+  Reporter monitoring the Device reports the write like any other.
+- UTC_Offset takes an INTEGER that is a multiple of 15 within -1440 to 1440
+  (Clause 12.11.25); anything else of that datatype is VALUE_OUT_OF_RANGE.
+  Daylight_Savings_Status takes a BOOLEAN. Another datatype is
+  INVALID_DATA_TYPE, and a NULL succeeds and changes nothing.
+- A Device built with `DeviceObject::with_tags_persistence` keeps each half
+  written in that storage, as it keeps a written Description: saved before
+  the write is answered (staged off the database guard with the request's
+  other kept writes), and refused with DEVICE / OPERATIONAL_PROBLEM when the
+  save fails. The clock is asked first (`ClockReader::check_zone`) and moved
+  only once storage has the half (`ClockReader::write_zone`), so a refused
+  write never reaches it. The file takes `RBNTAG03`
+  (`snapshot::tags::MAGIC_WITH_ZONE`) only while it holds a half, so other
+  files keep their octets; `TagsSnapshot` gained a `zone` field
+  (`WrittenZone`), and every Tags user but a Device refuses storage holding
+  one.
+- The newest change wins. A kept half wins over the builder's `clock_zone`
+  at start, so it survives a restart. The host's `set_clock_zone` is newer:
+  it drops the kept halves from storage (saved off the database guard, the
+  file back to the version without them) and applies its zone in full. A
+  save that fails is returned and changes nothing, clock and storage alike.
+  A peer's later write wins again. `DeviceObject::written_zone()` shows what
+  is kept. A Device without storage keeps a written zone until the server
+  stops or the host changes it; the builders give theirs storage with
+  `device_storage_path` ([The Device's storage](#the-devices-storage-2730)).
+- With the opt-in off a half the file holds is left there and not applied:
+  the configured zone runs, the server logs a warning at start naming the
+  half, and later saves of Tags or a Description keep it, so the file keeps
+  its octets. Turning the opt-in on applies it again.
+- Every writer of the clock holds the database guard (a request, the
+  host's `set_clock_zone`, and a TimeSynchronization, which now takes a
+  shared one), so a WritePropertyMultiple of both halves is seen as one
+  change.
+- In the device core, `DeviceClock::with_writable_zone()` is the same
+  opt-in. A written zone moves the `Responder`'s clock once the request has
+  run, or at once for the `Reporter`'s local write, and `Written::objects`
+  names the Device. The host's `Responder::set_zone` is newer: it drops a
+  written zone and the Device's kept halves. The core keeps no settings of
+  its own: the host saves `responder.clock()`'s zone and builds its clock in
+  it at the next boot, or gives the Device Tags storage and puts
+  `written_zone()` over the zone it builds the clock in.
+- The capability feature `zone-writes` on `bacnet-objects` and
+  `bacnet-device-core` (on with `std`) carries this path. A firmware image
+  built without it keeps both properties read-only and leaves the path out
+  of its flash; a Tags file holding a written half still loads, unapplied.
+
+### The Device's storage (#2730)
+
+The Device keeps what a peer writes to it in the storage it is built with:
+a written Description (#2364) and, with `clock_zone_writable`, a written
+UTC_Offset and Daylight_Savings_Status (#2395). With storage, each such
+write is saved before it is answered, and the next server built on the same
+storage serves it again. **Without storage, the write is still answered and
+served, but only until the server stops**: the next start serves what the
+Device was configured with (maintainer decision, 2026-11-23). This section
+is where the docs state that; the rest point here. A server whose peers may
+write the zone (`clock_zone_writable`) and whose Device has no storage logs
+one warning at start saying a written zone lasts until the server stops.
+
+A Device gets its storage in one of these ways:
+
+- one the application builds: `DeviceObject::with_tags_persistence(config,
+  storage)` with any `TagsPersistence` (`FileTagsPersistence` for a file),
+  in the database it gives the server. Only such a Device can have a Tags
+  row (`set_profile`), whose writes the storage keeps too;
+- the one a server builder builds from its identity when given no
+  database: `device_storage_path(path)` on `generic_builder()`,
+  `bip_builder()` and `sc_builder()` (`ServerConfig::device_storage_path`).
+  It has no Tags row, so a peer's Tags write is refused with
+  UNKNOWN_PROPERTY either way;
+- the one an endpoint session builds: `EndpointSession::with_device_storage_path`,
+  or `device_storage_path` on the B/IP, SC and MS/TP endpoint builders. The
+  session's server builder takes no path of its own, and a peer writes only
+  through a server whose policy lets it: the read-only server lets none;
+- in Python, the `device_storage_path` keyword of `BACnetServer`,
+  `BipEndpoint`, `ScEndpoint` and `MstpEndpoint`;
+- `bacnet_objects::device_identity::build_database_with_tags_persistence`
+  builds the stock database around a Device on given storage, as
+  `build_database_with_extra` builds it without.
+
+A relative path is resolved against the current directory when the builder,
+the session or the Python constructor is given it, so a later change of
+directory doesn't move the saves. A path is refused where nothing builds a
+Device a server serves from it: beside a `database` the builder or session
+was given (that Device brings its own storage), in the `ServerConfig`
+passed to `BACnetServer::start`, on a `SessionRole::ClientOnly` session,
+which runs no server, and by an endpoint builder's `build_transport`. An
+empty path fails the build (in Python, the constructor raises
+`BacnetError`, as an object's `storage_path` does).
+
+The file is a `FileTagsPersistence` (`RBNTAG01` to `RBNTAG03`; see
+[Persisted snapshot formats](#persisted-snapshot-formats-2047)):
+
+- A missing file, or missing directories, starts the Device with nothing
+  kept; the first save creates them.
+- Each save writes `<path>.tmp`, synchronizes it and renames it over the
+  file, so a failed save leaves the previous file whole.
+- A file that can't be read, is damaged, was saved for another Device or by
+  a newer release fails the build (in Python, `start()` raises
+  `BacnetError` before it takes the registrations), with an error that
+  names the path and the reason. The file is left as it is.
+  `FileTagsPersistence` names its path in every error it returns.
+- A file saved for another Device, as when the Device instance changes and
+  the path stays, is refused naming the Device it belongs to and the one
+  starting. To go on, remove or move the file (what it kept is lost to the
+  new Device), or give each Device instance a path of its own.
+- A peer's write whose save fails is refused with DEVICE /
+  OPERATIONAL_PROBLEM, and the value served before stays. The failed save
+  is also logged as a warning ("Failed to save object Tags") whose error
+  names the path. A host's `set_clock_zone` or `clear_written_description`
+  whose save fails returns the error and changes nothing.
+- Nothing coordinates two servers on one path: give each its own.
 
 ### Confirmed notifications under DeviceCommunicationControl
 
@@ -12234,7 +12974,26 @@ task per destination, so one destination's notifications go out in commit
 order whichever task committed them, and a destination that stalls holds up
 only its own lane (#2537). A confirmed one holds its lane until its first
 attempt is handed off, and, with every invoke ID in use, until one comes back,
-counted once in `confirmed_waited_for_invoke_id`. A Device recipient the
+counted once in `confirmed_waited_for_invoke_id`. The lanes waiting for an
+ID get one in the order they began to wait, one arriving while others wait
+queuing behind them, and counted, even with an ID free (#2563). Other work
+of the server that doesn't wait (a COV report, an Audit record, a run's
+request) may take a freed ID first, but once it has, the next free ID is
+kept for the oldest waiter: until that waiter takes it, a Command or Channel
+run's request fails, an Audit record is dropped or kept for a retry, and a
+COV report is owed a look, as when no ID is free. On an endpoint session
+with both roles the client leases from the node's pool apart from this
+order, but only while the server holds at least its reserve of 64 (#2617):
+under it the server always finds an ID. There the ID kept for the oldest
+waiter is the last of that reserve, which the client can't take, so the
+server's other work leaves it until the server is two under its reserve,
+and the oldest waiter is served within two of the server's request
+lifetimes (the APDU timeout times the retries plus one, after its sends,
+which a busy link such as MS/TP waiting for the token can delay) of its
+first wait, however busy the client is. A Device recipient's
+binding is read again once its ID comes: a binding refreshed meanwhile still
+takes the notification, and one that lapsed or moved is looked for as at a
+first send, the ID given back while it is (#2569). A Device recipient the
 server holds no binding for holds its lane the same way while its device is
 looked for (below). `lane_full`, `lanes_entries_full` and `lanes_full` count
 notifications dropped, the newest, at 64 entries waiting behind the one a
@@ -12242,7 +13001,10 @@ destination's lane is sending, 1,024 across the lanes and 256 destinations.
 A change's COV notifications wait for its event notifications to be handed
 off (#889) for at most the APDU timeout (`cov_retry_timeout_ms`), a wait for
 a Device recipient's I-Am included; `cov_wait_expired` counts the changes for
-which they went out at that limit instead. The intrinsic-reporting sweep
+which they went out at that limit instead. Staging plans due at start-up are
+written before `start()` returns, but their notifications, and the COV fanout
+that waits for them, go on afterwards, so `start()` never waits for a
+recipient, a silent device included (#2573). The intrinsic-reporting sweep
 doesn't wait itself: each pass's COV fanout goes in sweep order, within the
 APDU timeout of that pass's commit. A sweep's COV report carries the object's
 state when it goes. When a pass's notifications go in time, an object that a
@@ -12279,19 +13041,25 @@ fixes them, and the warning logged with each skip gives the finer reason:
   counts here once; one that can't be looked for within the minute after a
   fruitless Who-Is counts here at once. Observing the device's I-Am again,
   or configuring a binding, clears it. A confirmed notification whose
-  observed binding expires before an attempt (a retry, or a first one that
-  waited for its invoke ID) ends there, its invoke ID freed, and counts here,
-  not in `confirmed_unanswered` (#1371).
+  observed binding expires before a retry ends there, its invoke ID freed,
+  and counts here, not in `confirmed_unanswered` (#1371); one whose binding
+  lapsed while it waited for its invoke ID is looked for first (#2569).
 - `recipient_unroutable`: the entry can't be routed as written. Its Device
   identifier names an object that isn't a Device (or its binding is unusable on
   this link), or its address puts a MAC on network 65535.
 - `confirmed_broadcast_recipient`: the entry asks for confirmed notifications at
   a local, remote or global broadcast address, or at any other group address
   of the link, such as a B/IP multicast address or the broadcast IP at
-  another port (#1493). Clause 6.3 allows only unconfirmed requests there,
-  and sending one unconfirmed would lose the acknowledgment, so the entry is
-  skipped before any invoke ID is reserved. An unconfirmed notification still
-  goes to such an address.
+  another port (#1493). Also an Address, or a Device binding, on another
+  network whose MAC there is a broadcast or group form (#2732): `5:0xFF`, a
+  two-octet LonTalk broadcast or group, `0xFFFFFF`, or six octets starting
+  `FF:FF:FF:FF`, judged by length since that network's link is unknown here,
+  as a binding's one-station mark has them (#2738); its warning names the
+  address and the form, at most once every ten seconds. Clause 6.3 allows
+  only unconfirmed requests there, and sending one
+  unconfirmed would lose the acknowledgment, so the entry is skipped before
+  any invoke ID is reserved. An unconfirmed notification still goes to such
+  an address.
 
 ### Concurrency
 
@@ -12356,7 +13124,11 @@ stops)
 asks fewer devices). Its Who-Has is a local broadcast too unless
 `.within(scope)` names another `Scope` (#2596): every device that hears a
 Who-Has searches its objects, so an empty list from the default says only
-that nothing on this network has it. `bacnet_ops::raw::who_has(&low_level,
+that nothing on this network has it. A directed Who-Has goes to one station
+on this network only: the station is admitted as local when the request is
+checked, before its rate slot, and should the client learn a new network
+number in between, the Who-Has still goes to that local MAC.
+`bacnet_ops::raw::who_has(&low_level,
 &scope, &object, range)` sends one on a low-level client and
 `raw::who_has_replies(.., wait)` also collects the `ReceivedIHave`s, with no
 rate cap. `BACnetClient::who_has` and `who_has_replies` take a `Broadcast`
@@ -12365,8 +13137,16 @@ scope, and `who_has_replies` keeps the answers from that scope
 keeps one answer per device, object and source address, at most
 `MAX_I_HAVE_REPLIES`; `bacnet_client::client::collect_answers` is that
 collector, for a caller that sends its own Who-Has.
+`client.discover_routers(RouterDiscovery::local())` broadcasts one
+Who-Is-Router-To-Network under this network's rate cap and returns the
+routers that answered with the networks they reach; `.network(n)` asks
+about one network, `.wait(..)` and `.deadline(at)` bound the collection,
+and `RouterDiscovery::directed(&router_mac)` asks one router alone,
+keeping only its own answers (#2689). That router answers with a local
+broadcast, so a B/IP router on another IP subnet is heard only when a BBMD
+forwards its answer here, as a peer or by foreign-device registration.
 `client.device(target).await?` gives a `Device` handle: from an address
-(`192.168.1.10`, `2:0x05` or a `DeviceAddress`) it is pinned there (an
+(`192.168.1.10`, `2:0x05`, `5:0xFF:one-station` or a `DeviceAddress`) it is pinned there (an
 address on the client's own network, once `BACnetClient::network_number`
 knows it, is the local station), from an instance (`1234`, or `2:1234` on
 one network) it follows the one address claiming it (none: one Who-Is for
@@ -12380,25 +13160,72 @@ result it is pinned and knows the instance. The handle's async reads are
 `Readings`), `read_object` (an object's properties, all or a list),
 `list_objects`, `describe_device`, `read_trend` (trend, event and audit log
 pages), `alarms`, `alarm_summary` and `enrollment_summary`
-([values and errors](#values-readings-and-opserror)), `inventory` and
-`point_record` ([inventory](#inventory)), and its
+([values and errors](#values-readings-and-opserror)), `inventory`,
+`list_objects_whole`, `point_records` and `point_batch`
+([inventory](#inventory)), and its
 writes are `write`, `relinquish`, `priority_array` and `preview_write`
-([writes and priorities](#writes-and-priorities)). A device's gate, turns and
-memory of an RPM refusal key on its `DeviceAddress` (network and MAC), so
-two devices sharing an instance stay apart and one device named two ways
-waits at one gate. A following handle moves to the one other address on its
-network claiming the instance, and tells `Client::events`
-(`ClientEvent::Moved`): before a request when another device has announced
-itself at its address; after a request times out, or finds no route to a
-routed address, when its row is gone; and after a timeout while its address
-still claims the instance, when only the other address answered the one
-Who-Is an earlier timeout sent for it, on the network where it was last
-reached and never on every network (at most one every `QUIET` for the
-handles following it). A clone that sends no Who-Is
+([writes and priorities](#writes-and-priorities)). A device's gate, turns,
+memory of an RPM refusal (`Client::refused_rpm`, for the client's life) and
+memory of the largest ReadPropertyMultiple of point records it could answer
+(`Client::rpm_limit`, in properties; it only shrinks, and goes with the
+instance read for the address when the discovery table loses the row there
+or another device announces itself at it) key on its `DeviceAddress`
+(network and MAC), so two devices sharing an instance stay apart and one
+device named two ways waits at one gate. The discovery table is filled
+by I-Ams nobody asked for, which anyone can send, so a following handle
+never moves on it alone (#2795). **Writes never move a handle:** `write`
+and `relinquish` go only to the place the handle already holds, while
+the device there is taken for the instance, as it is when its discovery-table row
+is absent or names the instance (neither is the device's own answer, and
+neither has an age limit), or the device's last own answer there named
+it; else one identity read is sent within the call, and an answer as
+the instance, an unclear one (a Reject, an Abort, another error) or the
+client's own failure keeps the write there. Otherwise nothing is sent and the call fails with
+`OpsError::NotConfirmed { instance, at, candidate }`, `candidate` the one
+other address the table has the instance at, an unconfirmed hint; so does
+a write that finds no route. **A read may move it:** to
+the one other address on its network claiming the instance, telling
+`Client::events` (`ClientEvent::Moved`), only once the device at the
+handle's own address was asked which it is and didn't answer as the
+instance (silent, by a timeout alone, or another device), and the device at
+the new address names the instance (by the wildcard instance, or, as the
+handle's own address was asked first, by having that instance's Device
+object). A read checks so before it is sent when the handle's address
+isn't taken for the instance as above, another device having announced
+itself there (still the instance, or no word of which it is, the handle
+stays, and an answer by the wildcard is remembered); after it times out,
+or a router refuses it, when the row at its address is gone or only the
+other address answered the one Who-Is an earlier timeout sent for the
+instance, on the network where it was last reached and never on every
+network (at most one every `QUIET` for the handles following it); and
+after it finds no route to a routed address, once a Who-Is for the
+instance addressed to the station, then one to its network, drew no
+answer as the instance (one sends the read there again). A later write
+goes where a read moved the handle. A handle made later for the instance
+joins the place the others reach it at, whatever the table says, and a
+watch hub moves the handles only when its own move asked their address
+and found another device there (#2795). What this leaves: a read moves a following handle once its old address
+misses one identity question (about 24 s at the default timers; about 3
+to 6 s for a routed address with no row) while another address names the
+instance, and later writes go to the new place. A routed device's path
+through its router is #2823, and a new handle's first resolution of an
+instance is #2824. A
+clone that sends no Who-Is
 (`with_resolve_wait(None)`) goes by the I-Am times instead: its own address
 announced `QUIET` before the other's. A duplicate claim is no move. A pinned
 handle stays, and `Device::moved_to` says where its instance is heard now,
-by the I-Am times. A directed Who-Is accepts
+by the I-Am times. `bacnet_ops::Station` re-exports the low-level
+`Station` that `Scope::Directed` and `Discover::directed` take. A handle made from a remote address the table holds no
+row for sends a Who-Is addressed to the station, then, with no answer within
+the resolve wait, one Who-Is to its network that only an I-Am from the
+station's own address answers, as a slave proxy sends for its MS/TP slave
+(Clause 16.10.2). The client remembers a station found the second way and
+asks its network first next time; `Client::unanswered_recently(&address)`
+says whether neither form drew an answer within `bacnet_ops::device::MISS_MEMORY`.
+Nothing goes further, and never to every network. Each of the two Who-Is
+waits the resolve wait, so a silent remote address takes up to twice it
+(6 s with the default `RESOLVE_WAIT`), plus any wait for the Who-Is rate
+limit. A directed Who-Is accepts
 `bacnet_client::client::Station`. A remote station keeps its DNET and DADR
 through an explicit or learned router. With no known next hop it uses a local
 link broadcast carrying that same destination.
@@ -12410,9 +13237,10 @@ copy and local row identify one station, the local row wins unless it is an
 `bacnet-tool` (#2560) holds what only the tool's front ends use, on top of
 `bacnet-ops`: the write-safety core the TUI and MCP share (`safety`: tiers,
 previews, the ledger and the audit log, #2068), the command classes
-(`class`), frames decoded into field trees with no traffic
-(`decode::tree`), and B/IP BBMD table reads through a `Client` and the
-checks over them (`bbmd`). An application on `bacnet-ops` doesn't need it.
+(`class`), and B/IP BBMD table reads through a `Client` and the checks
+over them (`bbmd`). An application on `bacnet-ops` doesn't need it; frames
+decoded into field trees with no traffic stay in `bacnet_ops::decode::tree`
+(#2633).
 
 ### Engine becomes Client
 
@@ -12497,8 +13325,10 @@ Every call fails with `OpsError` (`#[non_exhaustive]`): `Parse { what,
 input, reason }` for text that names nothing this client can address,
 `UnknownDevice { target }` (also a B/IPv6 node that doesn't say its VMAC),
 `Ambiguous { instance, candidates }` (the addresses as `DeviceAddress`),
-`Unreachable { device, source }` for a timeout or a link failure (a
-transaction state machine's TSM_TIMEOUT abort included), `Refused { device,
+`Unreachable { device, source }` for a timeout, a link failure (a
+transaction state machine's TSM_TIMEOUT abort included) or a router's
+network reject (`Error::NetworkRejected`, after which a following `Device`
+looks for its device again as after a timeout), `Refused { device,
 error, detail }` for the device's Error, Reject or Abort (`detail` holds a
 structured Error PDU's extra fields), `Paging(PagingFault)` for a device
 that breaks a paged read's rules (a GetEventInformation answer naming an
@@ -12537,41 +13367,71 @@ request jobs: `Reader`, `Halt`, `RpmFailure`, `rpm_failure`, `rpm_rows`,
 ### Watching points
 
 `client.watch(points)` watches many points at once (#2560) and returns a
-`Watch`, a `futures_core::Stream` of `Update`s (read it with
-`futures_util::StreamExt::next`). It is the one way an application
+`Watch` of `Update`s: read it with its own `next()`, which is cancel
+safe (an update leaves the watch only on the poll that returns it), or as
+the `futures_core::Stream` it also is. It is the one way an application
 watches; `watch::hub` is the layer under it. A point comes from a handle:
 `device.point("ai:1")`, `device.point("bv:3 pv")` or
 `device.point("ao:2 priority-array[8]")`, in the grammar `Device::read`
-takes. It names its device by the handle's `DeviceAddress`, so two devices
-sharing an instance are two points, and one station named two ways is one.
-A Present_Value is watched by SubscribeCOV on its object; any other
-property, or an element, by SubscribeCOVProperty.
+takes, and `device.watch(["ai:1", "bv:3 pv"])` is shorthand for a watch of
+those. A point names its device by a `watch::Binding`: a pinned handle's
+`Binding::At(address)`, or a following handle's `Binding::Follows { instance,
+network }` (#2795), which the hub follows from address to address
+(`device.binding()` gives a handle's). Two
+devices sharing an instance, each named by its address, are two points,
+and one station named two ways is one. A Present_Value is watched by
+SubscribeCOV on its object; any other property, or an element, by
+SubscribeCOVProperty.
 
 ```rust
 use bacnet_ops::watch::{State, Why};
-use futures_util::StreamExt;
 
 let ahu = client.device("192.168.1.10").await?;
 let mut watch = client.watch([ahu.point("ai:1")?, ahu.point("bv:3 pv")?])?;
+let control = watch.control();
+tokio::spawn(async move {
+    // From another task, while the loop below awaits the next update.
+    control.add([ahu.point("av:3")?])?;
+    Ok::<_, bacnet_ops::OpsError>(())
+});
 while let Some(u) = watch.next().await {
     let text = u.value.as_ref().map_or("-", |v| v.text.as_str());
     match &u.state {
         State::Gone { why: Why::Moved { to } } => println!("moved to {to}"),
+        State::Gone { why: Why::Replaced { watched, found } } => {
+            println!("device {found} answers at {} now, not {watched}", u.at)
+        }
         state => println!("{} {text} {:?} via {:?}", u.point, state, u.via),
+    }
+}
+
+// A handle from an instance follows its device: its points too.
+let vav = client.device(1234).await?;
+let mut watch = vav.watch(["ai:1"])?;
+while let Some(u) = watch.next().await {
+    if let Some(moved) = &u.moved {
+        println!("{} followed from {} to {} at {:?}", u.point, moved.from, moved.to, moved.when);
     }
 }
 ```
 
 An `Update` (`#[non_exhaustive]`) carries:
 
-- `point`;
+- `point`, as watched (the key a caller's map keeps across a move), `at`
+  (the `DeviceAddress` it is watched at now), `instance` (the instance, when
+  known) and `moved` (a following point's latest move the hub took, a
+  `watch::Moved { from, to, when, count }`; `None` for a pinned point and before
+  any move);
 - `state`, one `watch::State`: `Starting`, `Subscribed`, `Polled { why }`,
   `Unreachable { why }` or `Gone { why }`, where `why` is a `watch::Why`:
-  `Refused` (the device said no; not asked again), `NoAnswer` (the first
-  read or the subscription had no answer), `Full` (its subscription table
-  was full) and `Lapsed` (a renewal failed), each asked again after a
-  backoff, `Missing` for a remote address with no router known, or
-  `Moved { to }`;
+  `Refused` (the device said no; not asked again), `PollOnly` (the
+  watch's settings poll every point), `NoAnswer` (the first read or the
+  subscription had no answer), `Full` (its subscription table was full)
+  and `Lapsed` (a renewal failed), each asked again after a backoff,
+  `Missing` for a remote address with no router known, `Moved { to }` (a
+  pinned point's device answers there now), or `Replaced { watched, found }`
+  (another device answers at the point's address now; a following point is
+  `Unreachable` for it while the hub looks for its device);
 - `value` (a `Value`, an object watch's Present_Value, named by the units
   and state texts the first read had) and `error`: `value` alone is
   current; both together, a value read earlier while the latest read
@@ -12581,18 +13441,86 @@ An `Update` (`#[non_exhaustive]`) carries:
   `via` (`Via::First`, `Notification` or `Poll`) and `updated` (a
   `SystemTime`, by the wall clock, which an application shows, logs or
   hands on; `elapsed()` is the value's age);
-- `cov`, a `CovSupport`.
+- `cov`, a `CovSupport`;
+- and `mark()`, which of the watch's points it was taken for (see below).
 
-The points share the client's own hub, made on first use and kept while a
-watch holds a point, in one range of subscriber process identifiers for
-the client's life, with the client's base settings whichever clone calls:
-one subscription a point however many watches hold it, five minutes at a
-time and renewed before it ends; a point the device won't subscribe is
-polled with the device's other polled points, every 10 s at most; at most
-`watch::MAX_WATCHED` (4096) points, those still cancelling included.
-`OpsError::Watch(WatchError::Full { .. })` refuses points that would pass
-it, taking none and sending nothing, and `WatchError::NoRuntime` a call
-outside a Tokio runtime.
+**Settings (#2603).** A watch takes `WatchSettings { lifetime, poll_every,
+subscribe }` (`#[non_exhaustive]`; build one from `WatchSettings::default()`
+with `with_lifetime`, `with_poll_every` and `with_subscribe`): each
+subscription's `hub::Lifetime` (1 s to `Lifetime::MAX`, 28,800 s, the
+longest every device must take, Clauses 13.14.1.1.4 and 13.15.1.1.4;
+`Lifetime::new` refuses anything else with `WatchError::Settings`), the
+least time between two polls of a device (1 s to an hour), and whether to
+subscribe at all (`false` polls every point, `Why::PollOnly`). The default
+is five-minute subscriptions, polls at most every 10 s, COV where the
+device takes it. A client's defaults are its connect builder's
+(`Client::bip().watch_settings(..)`, refused by `connect` before anything
+is bound when no hub takes them) or a clone's
+(`client.with_watch_settings(..)`, as `with_resolve_wait` is per clone);
+`client.watch(points)` uses them and `client.watch_with(points, &settings)`
+takes others for one watch. A renewal goes early enough to leave room for
+two requests with every retry on the low-level client's own timers
+(`BACnetClient::apdu_timeout()` times one more than `apdu_retries()`: 48 s
+before a five-minute lifetime ends at the default 6 s and three retries), at
+most half the lifetime. A subscription that went unanswered, met a full
+table or failed its renewal is asked for again after 5 minutes.
+
+**Hubs.** Watches with equal settings share one of the
+client's pooled hubs: one subscription a point however many of them hold
+it; watches of other settings run on another hub, so no hub mixes two
+lifetimes. Each pooled hub is made on first use, with the client's base
+settings whichever clone calls, and takes a range of subscriber process
+identifiers from the client's 256; it lives while a watch on it lives or one
+of its tasks runs (a cancel included), then gives its range back. A hub
+watches at most `watch::MAX_WATCHED` (4096) points, those still cancelling
+included. `OpsError::Watch(WatchError::Full { .. })` refuses points that
+would pass it, taking none and sending nothing; `WatchError::Settings`
+settings `WatchSettings::validate` refuses; `WatchError::Hubs` a watch of
+new settings while every range is held; and `WatchError::NoRuntime` a call
+outside a Tokio runtime. `client.shutdown_watches(wait)` shuts every pooled
+hub at once, as `Hub::shutdown` does, and is what the Python client's stop
+runs: a watch made after makes a new hub. Dropping the `Client` changes
+nothing: each hub holds a clone while a watch on it lives.
+
+**Changing a live watch.** `watch.control()` gives a `WatchControl`
+(`Clone + Send + Sync`) whose `add(points)` and `remove(&points)` change the
+points from any task while another awaits `next()`. `add` is all or none
+(`WatchError::Full` past the hub's 4096) and returns how many points were
+new: a point the watch holds already is left as it is. A point no other
+watch on the hub holds starts as at any watch, its first update from a
+fresh read; one another watch holds joins its subscription, its first
+update at once with where it stands. A point removed and added again is a
+new point of the watch: a new subscription with its own process
+identifier unless another watch held it meanwhile. `remove` returns how
+many it held, and once it returns no `next()` begun after yields any of
+them, a change already waiting included. A `next()` already past its last
+check when the removal takes effect still returns that update, possibly
+after `remove` returned: it was handed out before the removal. The cancel of a point no
+other watch holds goes from the hub's scheduler after `remove` returns,
+best effort, as on drop. A consumer that holds updates back (a buffer, a
+slot for one a cancelled read put back) asks `control.holds(update.mark())`
+before handing one out: false once its point was removed, even if added
+again. `control.close(wait)` ends the watch at once (its stream gives
+`None`) and waits up to `wait` for the cancels of the points no other watch
+holds. Once the watch has ended (dropped, closed, its stream ended, or its
+hub shut down) the control's calls return `WatchError::Closed`.
+
+A front end that picks its own hub settings makes a `watch::hub::Hub` with
+its `WatchOptions` (`subscribe` included) and takes a `Watch` from it with
+`Hub::stream(points)`: the same updates, refused with `WatchError::Full`
+past its `max_points` or `WatchError::Shut` once `Hub::shutdown` has run.
+Each hub alive on a client holds a range of subscriber process
+identifiers of its own, so no two share an identifier and neither's
+cancel can end the other's subscription: `Hub::new` takes the next free
+range of 256, going round from the one taken last, so a range given back
+is taken again only after the other free ones, and the hub gives it back
+once it is gone, its last clone dropped and its tasks ended, cancels
+included. `Hub::new` returns `WatchError::Hubs` when every range is held,
+`WatchError::NoRuntime` outside a Tokio runtime and
+`WatchError::Settings` (a `Refusal`, text for a person) for options
+`WatchOptions::validate` refuses, taking nothing. `Hub::watch` and
+`Hub::stream` start a device's scheduler task, so they panic outside a
+Tokio runtime.
 
 The latest value of each point wins: a consumer that falls behind gets one
 update a point with its latest value and state (`Watch::folded` counts the
@@ -12603,25 +13531,202 @@ request that made it, without a lifetime, through the device's gate. A
 device in its poll backoff, or one that leaves a cancel unanswered, is
 sent no more cancels, whose subscriptions lapse with their lifetimes, so
 dropping a silent device's points costs at most one cancel's wait. A
-polled point stops being polled. A non-empty watch never ends on its own:
-drop it to stop.
+polled point stops being polled. A watch's stream ends once it has no
+point and no control lives to add one, once it is closed, and at once when
+its hub shuts down (updates still waiting then are dropped); otherwise it
+never ends on its own: drop it to stop.
 
 A device that stops answering (a poll or a first read fails; a point whose
-renewal failed goes to the next poll) is looked for. Its points are given
-up (`State::Gone { why: Why::Moved { to } }`) only on positive evidence:
-the row at the address names another instance now and one other address
-claims this one, or a following handle moved by its own rule (one Who-Is
-at most every `QUIET`), for the hub's request or one of its own. A row
+renewal failed goes to the next poll) is looked for: the one other address
+claiming its instance when the row at its address names another instance
+now, or where a following handle's rule would take it (one Who-Is at most
+every `QUIET`), which moves no handle. That address, or one a following
+handle moved to for a request of its own, is only a cue (#2812): the
+device there is asked which it is, by one ReadProperty of its Device
+object by the wildcard instance through its gate and the client's rate,
+at once and then on the pace of a claim's asks (below). Its pinned points
+are given up (`State::Gone { why: Why::Moved { to } }`), and its following
+points go there (below), only when that answer names their instance and
+the device is gone from their address:
+its device is asked once more, as a claim is checked, whatever the
+address looked like before (a renewal or poll may fail for many reasons,
+and a router's reject for a routed address can be forged). The ask is
+skipped only when no route to the address is known, or when the cue came
+from the hub's own look, after its own request there went unanswered, and
+the address is failing (in its poll backoff, or a point there
+unreachable). Still that device, the two addresses are two claimants (a
+duplicate, or a responder on an impostor's own host), and nothing
+changes, logged as a warning once a lifetime for each instance and other
+address; the ask timing out (a router's reject or the client's own
+failure says nothing), the points are given up as moved; another device,
+they are given up for it (`Why::Replaced`), then say where their own went.
+Another instance at the new address, no answer there, or a device that
+refuses the wildcard read changes nothing for the watch, and a handle that
+moved stays where it moved. A point given up already (`Why::Replaced`)
+isn't watched at its address, so nothing is asked there: any device at the
+new address naming its instance has it say `Why::Moved { to }`, at most
+once each turn of the pace. An application should take that `to` as a
+hint; a watch made there checks which device answers as any watch does.
+The pace and the one slot a cue
+waits in belong to the watched address, whichever addresses cues name: a
+stream of forged cues can hold a real move's read to one a lifetime, or
+take a real cue's slot, until the hub's own look after an unanswered poll
+cues the real address again. A row
 merely gone from the discovery table (aged out of a quiet device) is no
 move, nor are the announcement times `Device::moved_to` reports: a
 duplicate starting up while the device misses a request looks the same,
-so the point stays `Unreachable`, polled after its backoff. A given-up point is sent nothing more, though the old
-address may still notify it until its subscription lapses. The move
-doesn't stick: a point started at the address later starts as any other,
-and the given-up points start again once the address announces itself for
-the instance, or answers a start while the discovery table names it
-there. The hub doesn't follow a device on its own; watch the point at
-`to`, which a following handle's `point` now gives.
+so the point stays `Unreachable`, polled after its backoff. A given-up point is sent nothing more, and
+nothing its old address sends is taken as its own. The move doesn't
+stick: a point started at the address later starts as any other, and the
+given-up points start again once the address announces itself for the
+instance, or answers a start while the discovery table names it there.
+Watch a pinned point at `to`, or follow its instance.
+
+**Following (#2795).** A following point (`Binding::Follows`) is never
+given up for a move. On the same answers the hub hands it to the
+scheduler at the new address with its subscriber process identifier and
+its values: its update says so (`moved`, `at`) with `State::Starting`,
+then it is read and subscribed there and its values come from there. The
+hub follows each instance from one place, shared with the client's
+following handles, which it keeps alive and moves with its points (telling
+`Client::events`), so a point added while a move is checked starts where
+the hub follows the device then and goes with the others, one that
+arrived as the move was taken included; the handles move with them only
+when the hub asked their address (not after its own request there went
+unanswered). Its renewals at
+the old address stop and nothing is cancelled there: the device there is
+another or silent by the move's own answers, so that subscription lapses
+with its lifetime (a device that kept its table through the move takes the
+new subscription, with the same identifier, as the same one). While
+another device answers at its address a following point is
+`State::Unreachable { why: Why::Replaced { .. } }` as the hub looks for its
+device; two or more other addresses claiming the instance move nothing.
+A following point's start asks the device at its address which it is
+(one read by the wildcard instance an address, unless the device named
+itself to the client already), and one naming another instance makes the
+point unreachable there (`Why::Replaced`) before anything of the start is
+taken: nothing is subscribed at another device. A device there that refuses
+that read can't be confirmed (a read of the instance's own Device object
+names nothing on its own, and no address it left was asked): the point is
+`Unreachable { why: Why::Unconfirmed }`, its first read dropped and nothing subscribed; watch
+such a device by its address. A following point is
+placed when watched where the hub follows its device
+already, else where the client's handles following it reach it, else at
+the one address claiming it in the discovery table: `WatchError::UnknownDevice`
+or `WatchError::Ambiguous` refuse one that can't be placed, taking
+nothing. A pinned point and a following point of one object are two points
+(two subscriptions) on a shared hub. A device that refuses the wildcard
+read is never followed by the hub, as a read by one instance names
+nothing; a following handle takes that read for a read only after asking
+its own address.
+
+A watched device is its address and an instance (#2603). One rule
+decides it: only an answer to a request the hub sent may set the instance
+once one is known, give a point up, change the restart time known, or
+take a sender name for the device, and only an answer that names the
+device (a read of its Device object by the wildcard instance, or a poll's
+identity row) may confirm it. A read of one Device object by its instance
+(the sender probe, the read of the watched instance for a device that
+refuses the wildcard, the restart-time read) names nothing, as a gateway
+may answer for any instance. A frame nobody asked for (a COV notification,
+an I-Am and the discovery row it fills, a restart notification) is only
+taken as a value when it names the point's device or the name taken for
+it, dropped, or a cue for one paced read; the one exception is a
+notification's sender taken, unconfirmed, when no instance is known at
+all. (The client acknowledges a confirmed notification to the frame's
+source whatever the hub makes of it.)
+
+The instance is the one the device at the address last named itself
+(kept per address until the discovery table loses its row there or a
+device there announces another instance), else the one an answer named
+for the address's other points, else the table's row there, else one read
+by the wildcard instance once the first read is answered. Until an answer
+names it, the point is unconfirmed: the device is asked its name once its
+points are first subscribed, or polled without the identity row, and the
+first answer naming another instance replaces the point's, as a stale row
+or a forged I-Am is no word of the device's. A poll by
+ReadPropertyMultiple asks which device answers in the same request, at no
+extra request: the question rides with the first batch, counted toward
+none of its limits; a device that fails the batch with it is asked again
+without it, and the question isn't put to it again (its RPM is kept). An
+answer naming another instance than a confirmed one gives the point up at
+once (`State::Gone { why: Why::Replaced { watched, found } }`).
+
+A cue (an I-Am of another device at the address, the table naming one
+once a start or poll there is answered, unless the device's last word or
+its last refutation says otherwise, a notification naming another
+sender) is a claim: the device there is asked which it is, by one
+ReadProperty of its Device object by the wildcard instance, or by the
+watched instance for a device that refused the wildcard; that one
+missing (or, for points no answer named, not shown: another error or
+another device's identifier), the claimed instance is read, then the one
+the table names, and the points take the one that answers, unconfirmed
+(a confirmed point is given up for it), through the device's gate and the
+client's rate. The client's own failure refutes nothing. Answered as the
+watched device, the claim is ignored: a stray or forged I-Am ends nothing.
+Not answered, the device is unreachable, as for any unanswered request.
+The first claim is asked at once, the next after 60 s, the wait doubling
+up to a lifetime and staying there: at most four asks in the first seven
+minutes and then one a lifetime (twelve an hour at the default lifetime),
+however many frames come. Meanwhile the points carry a note saying a
+claim waits. While an ask runs (it goes first in the device's queue), a
+start answered while the table named another instance, and polls
+without the identity row, are held, for the whole chain at most: up to
+four requests, one of which may time out. Between asks their values are
+taken, the poll's answer being the device's, so a flood naming a new
+instance every second holds values for one such chain a few times an
+hour.
+The last claim refuted is kept by the address's scheduler and isn't cued
+again from the table. A sender a notification named in place of the
+watched device (a gateway that names itself, say) is taken as the
+device's own once the device was asked which it is and one more read
+finds no Device object of the sender's instance at the address; that
+lasts a lifetime (the first such notification after it is dropped while
+the name is checked again), until a device of that instance announces
+itself there, or until the points are given up or come back. Any other
+answer to that read (a device there answers as the sender, or as the
+watched device, or can't say) means its notifications can't be told from
+another device's: its subscribed points are polled instead, their
+subscriptions cancelled, with `Why::ForeignSender { sender }`; nothing
+is remembered of its COV service, so the point is subscribed and the name
+read again when it starts again, as is another watch of the device. A
+given-up point's renewals stop and nothing more is sent
+for it, cancels included, since the new device never held its
+subscription, and its values are dropped. It becomes `Why::Moved` once its
+instance announces itself at one other address and the device there names
+itself so when read (one paced read there, as above), and
+starts again when its address answers for it again. A pinned point stays
+given up until then; a following one is unreachable until the hub's reads
+find its device elsewhere, and goes there. Not
+caught: a device taking the address before the watched device named
+itself, or at all for a device that refuses the wildcard read (it is
+taken as the point's device), and a device that never announces itself
+taking the address of a point polled by ReadProperty alone. A forged
+answer needs the request's invoke id.
+
+A watched device announcing itself again at its address, for its own
+instance, or sending a restart notification (process identifier 0, about
+its own Device object), may have restarted and lost its subscriptions.
+Its Time_Of_Device_Restart, read once when its points are first
+subscribed (one request a device), is read again then, once a lifetime at
+most: when it moved, its subscribed points are read and subscribed again
+(not within 30 s of the last time), and those polled after a failure
+(`NoAnswer`, `Full`, `Lapsed`, `Missing`) tried again, rather than at
+their next renewal or retry; unchanged, nothing more is sent. A read
+finding no such Device object learns nothing and asks the device its
+name, and one finding no such property is kept only for an instance an
+answer named, so a forged row can't turn restart reads off. The time a restart notification carries isn't taken, so a forged
+one costs one read at most a lifetime, and one from another device than
+the points' is ignored. A device without the property is sent nothing
+more, and like one whose restart time never moves (it has no clock), is
+recovered at its next renewal. So a Who-Is answered by every device
+costs a device with the property one read a lifetime, and one without it
+nothing. Each check waits up to 10 s, a part set by the device's address
+and the hub, so devices answering one Who-Is are asked one after
+another, and goes through the device's gate and the client's rate. A
+burst of announcements the hub's receiver fell behind on makes each
+device's scheduler read the discovery table at its address, which sends
+nothing.
 
 `CovSupport` (`Unknown`, `NotOffered`, `Offered`, `Accepted`, `Refused`;
 `#[non_exhaustive]`) says what is known of COV: `device.cov_support()` for
@@ -12632,7 +13737,11 @@ unknown service, or a services-class denial) is remembered by its address,
 as an RPM refusal is: its later points are polled without asking. A
 refusal for one object stays that point's own, and a full subscription
 table (a resources-class error) is no refusal: the point is polled
-(`Why::Full`) and asked again after a backoff.
+(`Why::Full`) and asked again after a backoff. What the client learned of
+an address's COV goes when the discovery table loses its row there, or a
+device there announces another instance than the one it was learned from,
+as the instance read there does, and all of it when the client missed a
+burst of the table's changes; nothing goes by time alone.
 
 `watch::hub` is the layer under `Watch`, for a front end that runs its own
 hub (the TUI's watch list and the MCP server, which keep a history, serve
@@ -12640,13 +13749,18 @@ several sessions and pick their settings): `Hub::new(client, options)`
 with `WatchOptions`, `Reads`, `Backoff`, `Fallback`, `MissingDevice` and
 `Lifetime`; `Hub::watch(point)` for a `Lease` with its `Snapshot` (the
 hub's own `hub::Phase` and `hub::Source`), its change signal (`Changes`)
-and `samples()` (`Samples`, `Sample`); `peek`, `seq`, `stats`
+and `samples()` (`Samples`, `Sample`); `Hub::stream(points)` for a
+`Watch`, as an application reads one; `peek`, `seq`, `stats`
 (`HubStats`) and `shutdown`; `renewal_margin`, `first` and the poll and
 row constants.
 
 | Was | Now |
 |---|---|
+| `Hub::new(..) -> Result<Hub, String>`, subscriber ranges handed out in turn, wrapping after 256 hubs made | `Result<Hub, WatchError>` (`Settings`, `NoRuntime`, `Hubs`); the next range no live hub holds, going round, given back once the hub is gone (#2561) |
 | `watch::Point { device: u32, .. }`, `Copy` | `watch::Point { device: DeviceAddress, .. }`, `Clone`, from `Device::point`; entries, schedulers and subscription targets key on the address, never an instance lookup |
+| `watch::Point { device: DeviceAddress, .. }` | `watch::Point { device: Target, .. }`: `Binding::At(address)`, or `Binding::Follows { instance, network }`, which the hub follows; `Device::point` picks by the handle (#2795) |
+| a following handle's points pinned at its address, given up with `Why::Moved` | following its instance: `Update::{at, instance, moved}`, `Snapshot::moved`, `Lease::at` |
+| a following handle moving on the discovery table's rows, and with the hub's look | a read moves it only once its own address, asked, isn't the device (one missed question counts) and the new address names it; a write never moves it (`OpsError::NotConfirmed`); a routed device's path is #2823, a new handle's first resolution #2824 (#2795) |
 | `watch::{Hub, Lease, Changes, Snapshot, Samples, Sample, WatchOptions, Reads, Backoff, Fallback, MissingDevice, Lifetime, HubStats, renewal_margin, first, POINT_PROPERTIES, MISSING, MIN_POLL, POLL_FLOOR, MAX_ROWS, MAX_SAMPLES}` | the same names under `watch::hub` |
 | `watch::{State, Source}` (the snapshot's) | `watch::hub::{Phase, Source}`; `watch::State` is the update's one state with its reason |
 | a point whose instance two addresses claim failing its start as ambiguous | two points, one an address |
@@ -12789,8 +13903,14 @@ std::fs::write("inputs.csv", inputs.to_csv(&CsvOptions::new())).ok();
 
 - **Options.** `InventoryOptions::new()` reads every object the Object_List
   names. `.with_types(..)` narrows it, `.with_values(true)` adds each
-  object's Present_Value and Status_Flags, and `.with_settings(true)` its
-  COV_Increment, Min_Pres_Value, Max_Pres_Value and Relinquish_Default.
+  object's Present_Value, Status_Flags, Event_State and Reliability and
+  the priority in control of one that takes commands,
+  `.with_details(true)` its Device_Type and Profile_Name (#2620), and
+  `.with_settings(true)` its
+  COV_Increment, Min_Pres_Value, Max_Pres_Value, Relinquish_Default and a
+  Binary Input's or Output's Polarity (a required property there, so one
+  the device doesn't give, or gives as other than an Enumerated, is a
+  problem; a Binary Value has none).
   `bacnet_ops::inventory::properties(object_type, &options)` is the one
   list of what each object type reads: Object_Name and Description of every
   type, a vendor's included; Units of the analog and integer types,
@@ -12799,22 +13919,67 @@ std::fs::write("inputs.csv", inputs.to_csv(&CsvOptions::new())).ok();
   and Priority_Array where only a read can tell whether the object takes
   commands (the value types and any type this release doesn't know).
 - **A record.** `PointRecord { device, device_instance, object, name,
-  description, units, state_texts, number_of_states, commandable,
-  relinquish_default, cov_increment, min_present_value, max_present_value,
-  present_value, status_flags, problems }`. Text is exactly as the device
-  sent it. `units` is the `EngineeringUnits` value, and the values are
+  description, device_type, profile_name, units, state_texts,
+  number_of_states, commandable, relinquish_default, cov_increment,
+  min_present_value, max_present_value, polarity, present_value,
+  command_priority, status_flags, event_state, reliability, problems }`.
+  Text is exactly as
+  the device sent it. `units` is the `EngineeringUnits` value, and the
+  values are
   `Value`s, so their text names the units and the state (`72.5 °F`,
   `2 (Low)`). `commandable` is what `Commandability::of` says of the type,
   settled by the Priority_Array where the type alone can't. A property the
-  object's type doesn't have, an optional one it lacks, or one the options
+  object's type doesn't have, an optional one it lacks (the device says
+  it is unknown; any other error is a problem), or one the options
   didn't ask for is `None`. One that should have read and didn't is listed
   in `problems` with the device's error, and never fails the inventory: an
   object the device refuses is a record whose properties are all problems.
+  A value of another datatype than the property has on the object's type
+  is a problem naming what came back (`not a Real (got an Unsigned, 5)`)
+  and the field `None`: a relinquish default is a REAL on an analog output
+  or value, an Enumerated on a binary one and an Unsigned on a multi-state
+  one, an Integer Value's COV_Increment an Unsigned and its range a Signed
+  (#2765). Octets that can't be decoded are a problem saying so, naming a
+  character set the stack doesn't convert. A State_Text entry that isn't
+  a string is a problem whether or not settings were read. A value
+  `bacnet_objects::points::build_database` would refuse on its own point
+  (an empty name, Units past 65535, a state count or State_Text the
+  builder won't take, a Real that isn't finite, a negative COV_Increment,
+  Min_Pres_Value above Max_Pres_Value, a state or Polarity the object
+  can't hold) is kept as the device gave it and listed in `problems` too.
+  `PointRecord::flags()` gives the Status_Flags read with values as a
+  `bacnet_types::bitstring::StatusFlags` (`IN_ALARM`, `FAULT`,
+  `OVERRIDDEN`, `OUT_OF_SERVICE`); a Status_Flags that isn't a bit string
+  is a problem and leaves `status_flags` empty, as any value of the wrong
+  type does (#2620). `event_state` and `reliability` are named Enumerateds
+  (`normal`, `no-fault-detected`); Event_State is required on the types
+  whose property tables make it so unconditionally (the analog, binary and
+  multi-state objects, Loop, the logs, Access Door and others).
+  Reliability and Current_Command_Priority are treated as optional on
+  every type, though some tables require them (Reliability on Access Door,
+  Schedule and Network Port among others, Current_Command_Priority on the
+  six types that always take commands): a device built to an earlier
+  revision may lack them. Device_Type and Profile_Name are optional.
+  `command_priority` is the
+  priority in control, as a Current_Command_Priority gives it: an Unsigned
+  from 1 to 16 named by what the project calls it (`8 (operator,
+  manual)`, `10 (site defined)`), or NULL, written `relinquish default`.
+  An output, Access Door or lighting output reads its own property
+  (`None`, no problem, where the device lacks it); a value object's comes
+  from the Priority_Array already read, by whether each slot is NULL, an
+  array that isn't sixteen values being a Priority_Array problem. `device_type` and `profile_name`
+  are device text.
 - **The inventory.** `Inventory { address, device, cov, points, unread,
   stopped }`. `device` is the `DeviceSummary` (`describe_device`'s). `cov`
   is the device's `CovSupport` for SubscribeCOV, known from the summary at
-  no request of its own; whether one point reports changes is known only
-  once a watch has asked it. `Inventory::point(object)` finds a record.
+  no request of its own. Whether one point reports changes is known once a
+  watch has asked it, or, read with settings, from an analog object's or
+  integer value's `cov_increment`: on those six types the property exists
+  exactly when the object reports changes of its Present_Value (the
+  footnotes to their tables in Clause 12), so a value there is evidence
+  that a subscription is worth trying, not proof, as some devices give the
+  property regardless, and `None` with no problem says a conforming
+  device's object doesn't report them (#2620). `Inventory::point(object)` finds a record.
 - **What it costs.** By ReadPropertyMultiple: the summary, the Object_List,
   then one request for each batch, filled in Object_List order up to 16
   objects or 32 properties, whichever comes first: 16 objects of a type
@@ -12824,17 +13989,27 @@ std::fs::write("inputs.csv", inputs.to_csv(&CsvOptions::new())).ok();
   size is the smaller of 16 and 32/p rounded down (31 analog inputs, at
   three properties each, go ten a batch and take 4 requests), and a mix
   one or two more than its types would apart: about N/8 + 2 requests for a
-  typical controller, N/5 + 2 with values. A handle made from an address whose instance isn't
-  known yet costs one more. A batch whose answer the device can't send for
+  typical controller, N/4 + 2 with values. Values add four properties an
+  object, five on an output, so a batch holds 3 to 5 objects; details add
+  two. Settings add up to four
+  properties an object, so fewer objects fit a batch and a device with
+  many of them takes more requests: a Binary Input then reads five (its
+  Polarity among them) and goes six a batch, a Binary Output six and goes
+  five. A handle made from an address whose instance isn't known yet
+  costs one more. A batch whose answer the device can't send for
   its size is asked again an object at a time, and the batches after it
   hold at most half as many objects as it did, down to one: at most four
   such refused batches an inventory (a device that answers one object at
   a time costs three, then a request an object). A single object whose
   answer is too large costs its refused request and a ReadProperty for
   each property. An answer in segments costs no more requests. A device
-  that refuses ReadPropertyMultiple costs that one
+  that fails a whole ReadPropertyMultiple with an error of its own (not a
+  refusal of the service) has that batch read by ReadProperty and the
+  next tried by ReadPropertyMultiple again: one wasted request a batch. A
+  device that refuses ReadPropertyMultiple costs that one
   refused request, then a ReadProperty for each property: 13 for the
-  summary, one for the Object_List, and each object's own count. No
+  summary, one for the Object_List, and each object's own count (four
+  more with values, five on an output; two more with details). No
   property is read twice, and every request waits at the device's gate
   under the client's `RequestLimits`.
 - **What it holds.** The Object_List, the records built so far, and the
@@ -12852,19 +14027,40 @@ std::fs::write("inputs.csv", inputs.to_csv(&CsvOptions::new())).ok();
   read as the whole list failing. After that the call is `Ok`. A device that goes
   silent while its objects are read, or whose route is lost then, leaves
   the records read, `unread` (the objects not read) and `stopped` (why).
-- **One object.** `Device::point_record(object, &options)` reads one
-  record the same way in one request, for a front end that pages a
-  device's objects itself, as the MCP export does.
+- **Some objects.** `Device::point_records(&objects, &options)` reads
+  the records of the objects named, in the order named, in the same
+  batches and with the same fallbacks, into `PointRecords { points,
+  unread, stopped }`: for a front end that pages a device's objects
+  itself, a slice of its Object_List a call, as the MCP inventory and
+  export do. Nothing else is read. Its errors follow `read_many`'s: `Err`
+  only for what is decided before a request is sent or a local failure
+  with nothing read; a silent device is `stopped`, with whatever records
+  came before. The objects may be `ObjectIdentifier`s or their text
+  (`"ai:1"`), as anywhere on a handle. `Device::point_batch(&objects,
+  &options)` says how many of them, from the first, one request reads
+  (one once the device has refused ReadPropertyMultiple), for a caller
+  that stops between calls. A batch of several objects the device can't
+  send for its size leaves the client remembering half its properties for
+  that device (`Client::rpm_limit`), a limit that holds under other
+  options; an inventory keeps its own count instead, starting at 16
+  objects each time, so its cost stays as documented (#2785).
+  `Device::list_objects_whole()` reads the Object_List to page, whole or
+  not at all, as an inventory does: a list read element by element that
+  fails at one element is `OpsError::ObjectList` naming it, a timeout
+  still `timed_out()`, where `list_objects` keeps the elements before it
+  in `ListRead` and says why as text (#2561).
 - **Without a `Client`.** `bacnet_ops::raw::read_inventory(&mut reader,
-  &options)` and `raw::read_point_record` are the layer under
-  `Device::inventory`, for a caller that owns a low-level client and a
-  `raw::Reader`. `read_inventory` fails with `raw::InventoryHalt`
-  (`Cancelled`, `Device(error)` or `ObjectList(ListStop)`, the last naming
-  the element) and `read_point_record` with `Halt`; the `bacnet` CLI uses
-  them. A
+  &options)` is the layer under `Device::inventory`, for a caller that
+  owns a low-level client and a `raw::Reader`. It fails with
+  `raw::InventoryHalt` (`Cancelled(partial)`, `Device(error)` or
+  `ObjectList(ListStop)`, the last naming the element); the `bacnet` CLI
+  uses it. A
   reader's stop flag is checked before each batch and before each
-  ReadProperty of a batch read property by property; a stopped read is
-  `Cancelled` and what it had read is dropped.
+  ReadProperty of a batch read property by property. A read stopped once
+  the Object_List is in keeps what it read, as a silent device's does:
+  `Cancelled(Some(inventory))` holds the records read whole and lists the
+  rest in `unread`, with `stopped` empty; one stopped while the summary or
+  the list was read is `Cancelled(None)` (#2620).
 - **JSON and CSV.** `Inventory` and `PointRecord` implement
   `serde::Serialize` with stable field names, and `Inventory::to_json()`
   is the indented document `bacnet inventory --json` prints: `address`,
@@ -12876,14 +14072,17 @@ std::fs::write("inputs.csv", inputs.to_csv(&CsvOptions::new())).ok();
   `Inventory::to_csv(&CsvOptions::new())` (and `write_csv`) writes
   one row a record under `inventory::CSV_HEADER`: `device`,
   `device_instance`, `object` (`analog-input:1`), `name`, `description`,
-  `units` (the kebab name), `state_texts` (joined with `|`, a `|` or `\`
-  inside a text escaped with `\`), `number_of_states`, `commandable`,
-  `relinquish_default`, `cov_increment`, `min_present_value`,
-  `max_present_value`, `present_value`, `status_flags` (each value's text)
-  and `problems`. A field holding a comma, a double quote or a line break
-  is quoted, its quotes doubled; rows end with a line feed. The JSON keeps
+  `device_type`, `profile_name`, `units` (the kebab name), `state_texts`
+  (joined with `|`, a `|` or `\` inside a text escaped with `\`),
+  `number_of_states`, `commandable`, `relinquish_default`,
+  `cov_increment`, `min_present_value`, `max_present_value`, `polarity`,
+  `present_value`, `command_priority`, `status_flags`, `event_state`,
+  `reliability` (each value's text) and `problems`. A field holding a comma, a double quote or
+  a line break is quoted, its quotes doubled; rows end with a line feed.
+  The JSON keeps
   device text exactly. The CSV guards it by default: a `name`,
-  `description` or `state_texts` cell that starts with `=`, `+`, `-`, `@`,
+  `description`, `device_type`, `profile_name` or `state_texts` cell that
+  starts with `=`, `+`, `-`, `@`,
   a tab or a carriage return, which a spreadsheet would run as a formula,
   gets an apostrophe before it (for `state_texts`, the joined cell);
   leading spaces and line breaks before such a character don't hide it. A
@@ -12902,7 +14101,11 @@ export's terms, a `bacnet_types::points::Point` an object
 (`PointRecord::to_point()`) or the reason it has none (`Skipped`), and
 `to_turtle(&model, &options)` writes the same Turtle as before.
 `point_list_options()` reads what `Model::point_list()` needs for a whole
-`PointList`.
+`PointList`, a Binary Input's and Output's Polarity included (#2760): a
+list with a REVERSE point reads back REVERSE and builds the same way
+again. As with the other fields, one the list left out reads back as the
+object's default, NORMAL, and one the device doesn't give stays `None`,
+named among the record's problems.
 
 | Was (`bacnet_ops::export::s223`) | Now |
 |---|---|
@@ -12910,11 +14113,11 @@ export's terms, a `bacnet_types::points::Point` an object
 | `Entry::Point(point)`, `Entry::Failed { object, property, error }` | `Result<Point, Skipped>`: `Ok(point)`, `Err(Skipped { object, property, error })`; `s223::exported(&record)` makes one from a record |
 | `Entry::object()`, `point()`, `error()` | match on the `Result` |
 | `InventoryOptions::default()`, `InventoryOptions::new(types)?` | `s223::inventory_options(None)?`, `s223::inventory_options(Some(types))?`, which give a `bacnet_ops::InventoryOptions` |
-| `Detail::Export`, `Detail::Full`, `InventoryOptions::with_detail` | `InventoryOptions::with_settings(bool)`; `s223::point_list_options()` for everything a `PointList` holds |
+| `Detail::Export`, `Detail::Full`, `InventoryOptions::with_detail` | `InventoryOptions::with_settings(bool)`; `s223::point_list_options()` for every field a `PointList` holds |
 | `read_inventory(&mut reader, &options)` | `bacnet_ops::raw::read_inventory(&mut reader, &options)`, then `Model::from(&inventory)` |
 | `Device::inventory(&options) -> s223::Inventory` | `Device::inventory(&options) -> bacnet_ops::Inventory` |
 | `Device::inventory_device(detail)` | `Device::describe_device()`, or `device.read((device_object, OBJECT_NAME))` for the name alone |
-| `Device::inventory_object(object, detail)` | `Device::point_record(object, &options)`, then `s223::exported(&record)` |
+| `Device::inventory_object(object, detail)` | `Device::point_records(&[object], &options)`, then `s223::exported(&record)` for each record |
 | `WritePriority::new(n)`, `TurtleOptions::new(base, Option<WritePriority>)` | `bacnet_ops::Priority::new(n)`, `TurtleOptions::new(base, Option<Priority>)` |
 | `Inventory::stopped: Option<String>` | `bacnet_ops::Inventory::stopped: Option<OpsError>`, with `unread`; `Model::stopped` keeps the text |
 
@@ -12960,9 +14163,11 @@ the stack takes: a Forwarded-NPDU's origin, Annex J.2.5, else the UDP source;
 the source VMAC on B/IPv6, the original source's when forwarded, Annex U.2.9;
 the originating VMAC on SC, Annex AB.5.3; the station on MS/TP),
 `original_source`, `forwarded` (an origin other than the link sender),
-`source_network` (SNET and SADR, Clause 6.2.2; `link_source` is then the
+`source` (SNET and SADR, Clause 6.2.2; `link_source` is then the
 router, Clause 6.5.4, which a node may take as that network's router, Clause
-6.5.3), `broadcast` (link or network) and `missed_before`. `device_address()`,
+6.5.3), `destination` (DNET and DADR as the NPDU carried them, an empty DADR
+for a network broadcast, `None` without a DNET), `broadcast` (link or
+network) and `missed_before`. `device_address()`,
 `next_hop_router()` and `forwarding_bbmd()` say it as a scanner asks it.
 `IAmArrival::from_frame` reads one `TappedFrame`.
 
@@ -12985,9 +14190,55 @@ transport copies every frame once; the decode runs in the reading task.
 To carry what the records need, `decode_npdu_layer`'s `DecodedApdu` now holds
 the I-Am's decoded parameters (`i_am: Option<Result<IAmRequest, String>>`, in
 place of `device: Option<u32>`; take the instance from
-`i_am.object_identifier`), `DecodedNpdu` the SADR (`source_address`), and
+`i_am.object_identifier`), `DecodedNpdu` the SADR (`source_address`) and the DADR (`dest_address`), and
 `decode::frame::Link` the typed origin (`origin`) and the source MAC the frame
 names (`source_mac`).
+
+### Routed path limits
+
+`Client` carries the low-level client's routed path limits
+([Routed Confirmed-Request Limits](#routed-confirmed-request-limits), #2667)
+in decoded form. A `RoutedPath` is a router on this client's link and a
+destination network, read through `router()` (the router in the link's own
+form: `192.168.1.20:47808`, `mstp:5`), `router_mac()` and `network()`, and
+shown as `ROUTER/NETWORK`.
+
+- `routed_paths()` returns `RoutedPaths`: each path holding more than the
+  default as a `RoutedPathStatus` (`max_npdu`, `source` as
+  `RoutedPathLimitSource`, the configured and learned values, and
+  `below_minimum_reject_seen`), with `too_long_reject_drops`,
+  `below_minimum_reject_drops` and `off_path_answer_drops` (answers refused
+  for the path they came by, #2831). `status(&path)` reads one path, the default
+  `bacnet_ops::client::DEFAULT_ROUTED_PATH_MAX_NPDU` (228 octets, the
+  low-level client's `bacnet_client::client::DEFAULT_ROUTED_PATH_MAX_NPDU`)
+  when it is not listed. It serializes with `source` as `default`,
+  `configured` or `learned`. `bacnet_ops::raw::routed_paths(&low_level)`
+  builds the same from a `BACnetClient` alone, as the CLI's summary does, and
+  `raw::routed_path_to(&low_level, &address)` is `Device::routed_path`'s.
+- `set_routed_path_limit(&path, max_npdu)` and `clear_routed_path_limit(&path)`
+  apply at once and send nothing; a limit that carries no request is an
+  `OpsError::Parse`.
+- `routed_path_at("ROUTER", network)` reads a router address in the target
+  grammar, and `routed_path(router_mac, network)` takes the MAC; an empty or
+  over-long MAC, or a network outside 1 to 65534, is an `OpsError::Parse`
+  (`what` is `"routed path"`). `RoutedPath` gives `router()`, `router_mac()`
+  and `network()`; two paths are equal by MAC and network.
+- `Device::routed_path()` is the path a handle's device is reached by now,
+  through the router the discovery table holds for its network: `None` on
+  this client's own network, `OpsError::UnknownDevice` when no router is
+  known.
+
+```rust,ignore
+let device = client.device("5:0x09").await?;
+if let Some(path) = device.routed_path().await? {
+    if client.routed_paths().status(&path).below_minimum_reject_seen {
+        client.set_routed_path_limit(&path, 128)?;
+    }
+}
+```
+
+The client never shrinks a request by itself after a timeout: setting a limit
+stays the caller's step.
 
 ### Moved to bacnet-tool
 
@@ -13009,10 +14260,11 @@ use `bacnet_ops::decode::tree` for `Field`, `decode_tree`,
 
 `bacnet-ops` itself gains three public items the moved code reads:
 `client::rpm_rows`, `format::timestamp_text` and `format::alarms::cell`.
-The rest of `bacnet_ops::decode` stays where it was: the frame summaries
-(`decode::frame`), the network and application layer reader
-(`decode_npdu_layer`) and the test frame builders (`decode::testing`,
-feature `test-support`).
+`bacnet_ops::decode` stays where it was: the frame summaries
+(`decode::frame`), the field trees (`decode::tree`: `Field`, `decode_tree`,
+`decode_npdu_tree`, `decode_apdu_tree`, which the Python bindings use too,
+#2633), the network and application layer reader (`decode_npdu_layer`) and
+the test frame builders (`decode::testing`, feature `test-support`).
 
 `bacnet-mcp` (#2066, experimental) is a Model Context Protocol server over
 that client, run by `bacnet mcp serve --stdio` (the CLI's `mcp` feature).
@@ -13038,14 +14290,24 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
 | `Error::Timeout(duration)` | APDU retry exhausted |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
+| `Error::UnexpectedAck { service, complex }` | The device acknowledged the request with the other kind of acknowledgement than its service takes: a Complex-ACK for a service acknowledged with a Simple-ACK (`complex` true, such as WriteProperty), or the reverse (#2721). The request failed at once and nothing more was sent; whether the device carried it out is unknown |
+| `Error::NetworkRejected(Box<NetworkReject>)` | The router a routed request went through refused it, sending back a Reject-Message-To-Network (no route, an addressing error, other); names the router in the link's form, the network and the reason, and says whether the device can have received it |
+| `Error::RouterBusyTimeout(Box<NetworkReject>)` | A routed request timed out after its router said it was busy for the network: a timeout, naming that router |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |
 | `Error::Decoding(DecodeError)` | Malformed received data, with its offset and `DecodingKind` |
 | `Error::Encode(EncodeError)`, `Error::Range(RangeError)` | A value an encoder, validator or constructor refused, with a static label |
-| `Error::Encoding(msg)` | A formatted local encoding or configuration error (transport, network, client and server) |
-| `Error::Transport(io_error)` | Transport I/O failure |
+| `Error::State(Lifecycle, Refusal)` | A call the component's lifecycle state refuses, with nothing done: already started, not running, stopping, not connected to its peer, or closed (#1833). A send on a transport that isn't started gets `NotRunning`; after a stop, `NotRunning` from one that starts again (B/IP, B/IPv6, Ethernet; `bacnet_transport::port::stopped`) and `Closed` from one that doesn't (loopback, BACnet/SC, MS/TP, a router's application port; `stopped_for_good`). It is the client's own refusal: the source Audit doesn't count it as attempted, and `bacnet-ops` as failed locally, not unreachable. `Lifecycle::name()` gives the state's stable name, which Python exposes as `BacnetStateError.state` |
+| `Error::InvalidConfig(Refusal)` | What the component is built or started with (a value given to a builder's setter, an option, a table it is configured with) refused |
+| `Error::InvalidArgument(Refusal)` | A value refused at the call that hands it over, even one the component would keep, or text parsed once, before anything was sent, such as a MAC of the wrong form for the link |
+| `Error::Unsupported(Refusal)` | Not offered on this platform, in this build, or by this kind of component |
+| `Error::LimitReached(Refusal)` | A resource cap reached: a full table, a counter run out, a one-holder resource another holds |
+| `Error::SendTooLong { length, limit }` | A send refused for its length before anything was written: an NPDU too long for B/IP, MS/TP or Ethernet, and BACnet/SC's NPDU and frame bounds (#1833). A router answers it with reject reason 4; the high-level client asks again with smaller requests |
+| `Error::Persistence(PersistenceError)` | Persisted state that couldn't be loaded or saved (#1833): `kind()` is `Truncated`, `NotThisFormat`, `TooLarge` or `Damaged` for stored octets no save wrote, `UnknownVersion`, `UnknownKind` or `OtherObject` for a sound snapshot this object must not take, `RefusedOnEncode` for one refused as it is encoded (nothing written), and `BackendFailed` for storage that failed with no OS error behind it (a save that failed or panicked, a slot that changed while it was read). `is_damage()` is true for the first four only: a backend keeping two copies passes over that one for the other. The type is opaque; a storage backend of the application's own builds one with `PersistenceError::new(kind, detail)`. With `std`, `Error::with_context` puts context in front and keeps the kind: the Tags file backend names its path this way. `bacnet-ops` counts it as failed locally; a server answers it SERVICES / OTHER |
+| `Error::Transport(io_error)` | I/O the operating system reported, with its error as the source: a socket's, a serial port's open, read or write, GPIO, the RS-485 ioctl, entropy (#1833), an SC dial's TLS handshake, and a storage file's, which the stack's file backends return this way. A send this side's link didn't carry before its deadline (an endpoint's deadline-bound send, a server's audit forwarding) is one of kind `TimedOut`, not `Error::Timeout` (#1833). A stopped transport's send is `Error::State` |
 | `Error::AmbiguousDevice { instance, candidates }` | Two or more addresses claim the instance a request named; name one by its address |
-| `Error::UnknownDevice { device }` | No address claims the instance and none answered a Who-Is, or no router is known for a remote station (`bacnet-ops` handles) |
+| `Error::RequestCutOff { sent }` | A request ended before an answer came because the client or its link stopped under it (#1833): the client's stop, its endpoint's or node's, or the link stopping after the request went out, refusing its retry or a later segment or dropping a B/IP BVLC management request's wait. `sent: false`: it was still waiting for its turn and nothing left. `sent: true`: it, or some of its segments, may have gone out and been carried out, so don't send a write again blindly. The text says which; an endpoint whose audited request's task its stop ended reports it with `sent: true` too. The source Audit records one with `sent: true`, its outcome unknown (COMMUNICATION, OTHER), and not one with `sent: false` |
+| `Error::UnknownDevice { device }` | No address claims the instance and none answered a Who-Is, or no router is known for a remote station (`bacnet-ops` handles); `BACnetClient::resolve_device` and the calls that look a device up by its instance refuse an instance the table doesn't hold this way (#1833); a server's audit send to a recipient with no router known fails this way too, and counts as not sent |
 
 ---
 
@@ -13092,7 +14354,7 @@ let client = BACnetClient::generic_builder().transport(transport).build().await?
 #### SC Device UUID migration
 
 `ScServerBuilder::device_uuid([u8; 16])` is now required at runtime: `build()`
-returns `Error::Encoding` for omitted/all-zero identity before dialing. Reconnect
+returns `Error::InvalidConfig` for omitted/all-zero identity before dialing. Reconnect
 configuration is still checked first; the existing TLS/binding/budget checks
 retain their relative order. This is an intentional runtime compatibility break
 for SC server callers. The Rust SC client already requires a nonzero UUID; its
@@ -13511,6 +14773,57 @@ With standard frames the default identity resolves to 480 before Device generati
 The port declares its own echo, as for a transport built by hand
 (`with_echo(Echo::full())`; see [Echo](#echo)).
 
+A refused build or start hands the object database back (#2766). The
+builders' `build_session`, `build_session_wrapped`, `build_loopback_session`,
+`build_hub_session` and `connect_hub_session` return `StartError`
+(`bacnet_endpoint::StartError`, the server builders' type), as a server
+builder's `build()` does: `?` turns it into `bacnet_types::error::Error`,
+and `into_parts()` gives the error and the database `database(...)` gave,
+as given, for every refusal, a hub dial that fails included.
+`EndpointSession::start` returns it too. A refusal before the link starts
+leaves the session ready to start again with its database, so the error
+carries none. One after ends the session (a link that won't start, such as a
+port another program holds; a registered Network Port it can't publish; a
+server build or source Audit installation the started link refuses), and the
+error carries the database: the one the session was given, or the stock one
+it built from the identity. The start's cleanup lets go of every other handle
+on it first, the stopped server's included, puts a registered Network Port it
+published back as configured, and releases the outputs the server's start
+drove (a Load Control's application is told to stop, and the object keeps its
+request), so the same database can go into the next session. A refusal after
+the server was built comes once that server has run: the database keeps what
+its periodic work's first pass did, as any start and stop leave it (a
+Schedule's value written to the properties it references, a Trend Log's
+records, event transitions a first sweep confirmed).
+
+`EndpointSession::can_start()` tells what a refusal without a database
+means: `true`, the session keeps it and can be corrected and started again;
+`false`, the session had already started, or this start ended it while
+something it began still held the database a few runtime turns after its
+cleanup, and the session lets go of it as it drops.
+
+```rust
+if let Err(refused) = session.start().await {
+    match refused.into_parts() {
+        // The session ended: start another over the same objects.
+        (error, Some(db)) => {
+            tracing::warn!(%error, "port 47808 refused; trying 47809");
+            let mut session =
+                BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 47809, Ipv4Addr::BROADCAST)
+                    .database(db)
+                    .device(identity)
+                    .build_session()?;
+            session.start().await?;
+        }
+        // No database: can_start() says whether the session kept it to retry.
+        (error, None) => {
+            tracing::warn!(%error, retry = session.can_start(), "start refused");
+            return Err(error);
+        }
+    }
+}
+```
+
 ### Choosing standalone or shared client/server roles
 
 | Standalone construction | Shared endpoint composition |
@@ -13596,7 +14909,7 @@ together, and a request queue full of I-Ams about 50 KB.
 
 Older and slower peers: a dropped request or answer costs its requester one
 APDU timeout, and a requester with a long timeout or no retries pays it in
-full. The endpoint's own client roles default to `apdu_timeout_ms: 6000` and
+full. The endpoint's client defaults to `apdu_timeout_ms: 6000` and
 `apdu_retries: 3` (#2617), so a dropped answer costs that call a timeout
 before its retry. Where bursts are expected, raise `queue_capacity`, and
 `apdu_retries` on the requesting side.
@@ -13604,13 +14917,16 @@ Standalone `BACnetClient` and `BACnetServer` don't use this classifier.
 
 ### Full client on an endpoint
 
-`EndpointSession::full_client()` returns a full `BACnetClient` on the
-session's one transport, beside its server role and its narrow client role
-(#2617). It has every call a client with its own transport has: discovery in
-every scope, segmented reads, files, COV, router discovery, and the link's own
-calls and frame tap through `transport()`. It shares the session's pool of
-invoke IDs, and `bacnet_ops::Client::over` takes it as it is.
-`full_client_with(options)` sets the client's startup options.
+`EndpointSession::client()` returns a full `BACnetClient` on the session's
+one transport, beside its server role (#2617). It is the session's only
+client: the narrow client role of 0.15.0 is
+[gone](#the-narrow-client-role-is-gone). It has every call a client with its
+own transport has: discovery in every scope, segmented reads, files, COV,
+router discovery, and the link's own calls and frame tap through
+`transport()`. It shares the session's pool of invoke IDs, and
+`bacnet_ops::Client::over` takes it as it is. `client_with(options)` sets the
+client's startup options. A running session of any role gives one, and a
+session not running refuses.
 
 ```rust
 use bacnet_endpoint::{EndpointSession, SessionConfig, SessionRole};
@@ -13618,21 +14934,26 @@ use bacnet_endpoint::{EndpointSession, SessionConfig, SessionRole};
 let mut session = EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())?
     .device(identity);
 session.start().await?;
-let client = session.full_client()?;
+let client = session.client()?;
 client.who_is(Broadcast::Global, None).await?;
 session.stop().await?; // the client may still be alive
 assert!(client.who_is(Broadcast::Global, None).await.is_err());
 ```
 
-- One full client at a time; another is refused until the first is dropped.
+- One client at a time; another is refused until the first is dropped. It
+  is owned, not borrowed from the session: share it by reference or in an
+  `Arc`.
 - With a source Audit Reporter, the client's reads and writes are audited
   ([below](#source-audit-of-the-full-client)).
 - Beside a server role the client answers only the COV notifications of its
   own subscriptions; the session's server
   ([below](#full-server-on-an-endpoint)) acknowledges a
-  ConfirmedEventNotification, of which the client hears a copy. A session
-  with no server role leaves the client to answer as a standalone client
-  does.
+  ConfirmedEventNotification, of which the client hears a copy. Of one that
+  comes in segments, the server hands the client the whole notification once
+  it has reassembled it (#2743), so the client publishes it once per
+  transmission either way.
+  A session with no server role leaves the client to answer as a standalone
+  client does.
 - The session has the one owner of the local network number: the client asks
   What-Is-Network-Number on first need and never answers one.
 - The node is one device: a DeviceCommunicationControl the session's server
@@ -13643,7 +14964,10 @@ assert!(client.who_is(Broadcast::Global, None).await.is_err());
   open requests and stops the link. From then on the client sends nothing:
   requests and unconfirmed sends fail at once, and a call made directly on
   `client.transport()`, such as a BVLC query, fails with the transport's
-  stopped error. Dropping the client afterwards changes nothing.
+  stopped error. Dropping the client afterwards changes nothing. Dropping
+  the session without a stop ends the client the same way and aborts the
+  link, though the client still holds it: nothing graceful is sent, and the
+  link's sockets close as the runtime drops its aborted tasks.
 - The full client's type is the session's: `BACnetClient<T>` for an
   `EndpointSession<T>`. An owner that keeps its clients over one enum of
   links builds the session over that enum with
@@ -13685,19 +15009,46 @@ Table 19-5 maps to READ and WRITE go through that Reporter (#2617):
 ReadProperty, ReadPropertyMultiple, ReadRange, AtomicReadFile, AuditLogQuery,
 WriteProperty, WritePropertyMultiple, AtomicWriteFile, AddListElement and
 RemoveListElement, whichever call sends them: typed, raw, routed or through
-`bacnet_ops`. Each is admitted as the narrow requester's operations are (the
-Reporter's Audit_Level, Auditable_Operations and Audit_Priority_Filter, the
-Device's recipient, one station direct or behind a router) and then belongs
+`bacnet_ops`. Each is admitted by the Reporter's Audit_Level,
+Auditable_Operations and Audit_Priority_Filter and the Device's recipient,
+for one station direct or behind a router, and then belongs
 to the session: a caller that goes away loses neither the request nor its
 records, since the client retries with the same invoke ID and the records
-carry the real answer. At most 64 are held at once; past them a request
-waits for a slot in its caller's task, with nothing spawned for it, and its
-timeout starts once it is admitted. A stop or the caller going away ends the
-wait with nothing sent. A request waiting for a slot keeps the turn at its
-destination it was given before it waited (`min_request_interval_ms`), so two
-requests to one device that both waited can go out together when slots free.
-A request the Reporter doesn't select, or with no recipient, goes unaudited
-in the caller's task.
+carry the real answer. At most 64 are held at once, and at most 4 by one
+lane (#2652): a station on the link is a lane of its own, and the stations
+of another network share one, since the client sends one request at a time
+through a router to a network. Past either a request waits for a slot in its
+caller's task, with nothing spawned for it, and its timeout starts once it
+is admitted; a request to a lane at its share waits behind that lane only,
+so a burst to one slow or silent device leaves the other 60 slots to the
+rest. A waiting request takes a slot only as it is polled, so one its
+caller stops polling holds nothing: within a lane the first polled goes
+first. A slot that comes back wakes one waiting request, of the lane
+holding the fewest, then of the one that has waited longest since it was
+last woken; a request woken is not woken again until it polls, so one its
+caller no longer polls is woken past. That order bounds when a lane is
+woken, not when a given request is admitted: one polled first can take the
+slot. A stop or the caller going away ends the wait with nothing sent. A
+request waits out its turn at its destination (`min_request_interval_ms`)
+holding nothing, and takes the turn with its slot, so the interval holds
+between requests as they are admitted; one whose turn another request took
+meanwhile takes no slot and waits again. A caller never waits for the
+node's database (#2755): Tokio's lock hands its guard to a queued waiter
+whether or not it is polled, so a caller parked in a `select!`, `join!` or
+`buffer_unordered` could own it. An admitted request takes the guard in its
+caller's task only when it is free at once; otherwise the request goes with
+its slot to a task the session owns, which waits for the guard. So a parked
+caller holds neither the guard nor a slot, and holds up no request the node
+serves. A caller that goes before that task has the guard loses the
+request, with nothing sent or recorded. Sequence numbers follow admission
+while the database is free; a request admitted while it is busy takes its
+number when its task gets the guard. A request the Reporter doesn't select,
+or with no recipient, goes unaudited in the caller's task.
+`write_audit_recipient` and `report_device_reset_local` take the guard the
+same way (#2759): with the database busy, a task the session owns waits for
+it and does the work, and a caller that goes before that task has it leaves
+the recipient unchanged or the reset unrecorded. `policy_counters` is a
+plain method under a short synchronous lock, so a sample never waits.
 
 - Each target is its own record (Clause 19.6.5): one per reference of a
   ReadPropertyMultiple, or per value its answer reports for ALL, REQUIRED or
@@ -13708,8 +15059,10 @@ in the caller's task.
   Audit_Priority_Filter applies and the record names the priority. One sent
   without a priority is not filtered by priority and names none. There is no
   commandability argument.
-- Records carry the narrow requester's fields for the same operations, but
-  for these differences:
+- A write's record carries its value when that is at most 32 octets, and
+  no value past that.
+- Against the narrow requester of 0.15.0, which recorded the same fields for
+  the same operations, records differ in these ways:
   - a write without a priority names none and isn't filtered by priority,
     where the narrow requester's commandable write named 16 and was filtered
     at 16;
@@ -13720,14 +15073,16 @@ in the caller's task.
     wait running out that way, and a peer's Abort with that reason can't be
     told from it without a cost on every request (the narrow requester
     recorded a peer's as ABORT_TSM_TIMEOUT);
-  - the 65th request at once waits for a slot, where the narrow requester
-    refused it;
+  - the 65th request at once, or the 5th at once to one lane, waits for a
+    slot, where the narrow requester refused it;
   - a ReadPropertyMultiple of ALL, REQUIRED or OPTIONAL, or of a wildcard
     object, which the narrow requester refused, is recorded per value its
     answer reports, and so is an answer that decodes but doesn't follow the
     request reference by reference (the narrow requester failed it).
 - A raw request of an audited service that doesn't decode is refused before
-  it is sent: what it names can't be reported. Not audited yet on an audited
+  it is sent: what it names can't be reported. A write whose value isn't
+  whole application data is one; an unaudited write sends its value as
+  given, as a standalone client does. Not audited yet on an audited
   session: WriteGroup, subscriptions, object and device management, alarm
   acknowledgment and life safety.
 - What is recorded when something else ends the operation: one cut off by
@@ -13753,7 +15108,7 @@ in the caller's task.
 ### Full server on an endpoint
 
 A session with a server role (`ServerOnly`, `Both`) builds a full
-`BACnetServer` at start on its one transport, beside its client roles
+`BACnetServer` at start on its one transport, beside its client
 (#2617). `EndpointSession::with_server(builder)`, before `start()`, gives it
 the builder; without one it builds the read-only server of
 `bacnet_endpoint::session::read_only_server()` (below). It is the server a
@@ -13762,7 +15117,9 @@ builder's settings as given (policies, budgets, handlers, COV policy, device
 bindings, clock zone). The session owns it: `server()` borrows it while the
 session runs, and is `None` before start, after stop and for a session
 without a server role. The session hands it its database (`with_database`,
-or a stock one built from the identity). The session must have a
+or a stock one built from the identity, whose Device keeps what peers write
+to it in the file `with_device_storage_path` names; see [The Device's
+storage](#the-devices-storage-2730)). The session must have a
 `DeviceIdentity`: the node is one device on its address, with one set of
 device settings, and a server role without one is refused at start.
 
@@ -13777,7 +15134,7 @@ let mut session = EndpointSession::new(transport, SessionRole::Both, SessionConf
 session.start().await?;
 let server = session.server().expect("built at start");
 server.set_present_value_local(&point, value).await?;
-let client = session.full_client()?;
+let client = session.client()?;
 // ... the node answers Who-Is, reads, COV and the rest, and asks others ...
 drop(client);
 session.stop().await?; // stops the server, then the link
@@ -13810,7 +15167,8 @@ session.stop().await?; // stops the server, then the link
   server while the server builds.
   A start that fails after the server is built stops it; one cancelled there
   leaves it holding its requests unanswered until `stop()` or drop. A server
-  build that fails or is cancelled drops the database it was given.
+  build that fails ends the session, and the start's `StartError` hands the
+  database back (#2766); one cancelled drops it.
 - Stopping: `stop()` stops the server first, which joins its work and settles
   its saves while the link is still up, then the session's other roles and
   the link. A cancelled stop keeps the server, and the next call stops it
@@ -13819,7 +15177,9 @@ session.stop().await?; // stops the server, then the link
 - Who answers what: the server answers every request but a
   ConfirmedCOVNotification or ConfirmedCOVNotificationMultiple, which is the
   full client's. It acknowledges a
-  ConfirmedEventNotification, of which the full client hears a copy. Both
+  ConfirmedEventNotification, of which the full client hears a copy: of one
+  that came in segments, the whole notification, once the server has
+  reassembled it (#2743). Both
   hear every unconfirmed request. An answer goes to the role whose lease it
   answers, from the session's one pool of invoke IDs, and a requester's
   Abort or Segment-ACK to the server.
@@ -13835,13 +15195,21 @@ session.stop().await?; // stops the server, then the link
   still queued when it stops is dropped unanswered and counted only as
   handed over (`apdus`).
 - One pool of invoke IDs: the server and the client roles share the session's
-  256, and the server holds at most 64 at once: its confirmed COV, event and
-  Audit notifications (the session's source Audit records among them) and the
-  reads its runs make. Past that each does what it does when the pool is
-  empty: a confirmed event notification waits for an ID, an Audit record is
-  counted lost, and a confirmed COV notification's subscription waits for one
-  of the server's IDs to come back and is then looked at again (#2661). The
-  client's requests find the rest of the pool.
+  256, and each keeps a reserve the other can't take (#2617): 128 for the
+  client's requests (`REQUESTER_RESERVE`), 64 for the server's confirmed COV,
+  event and Audit notifications (the session's source Audit records among
+  them) and the requests its runs make (`NOTIFICATION_RESERVE`). Beyond its
+  reserve either borrows from the quarter neither keeps, so the client holds
+  at most 192 at once and the server 128. A role under its reserve always
+  finds an ID, however many the other holds, slow peers' leases included.
+  Past what it may hold, a client request fails at once with the exhausted
+  error, and the server does what it does when the pool is empty: a confirmed
+  event notification waits for an ID, an Audit record is counted lost or kept
+  for a retry, and a confirmed COV notification's subscription waits for an
+  ID to come back and is then looked at again (#2661). A session with one
+  role keeps a reserve for that role only, so it may take the whole pool; a
+  client on a `ServerOnly` session may borrow up to 192, and a `ClientOnly`
+  session's source Audit records up to 128.
 - The session keeps the one owner of the local network number; the server
   runs none and takes the number it publishes. Target Audit routes its
   recipient by that number, so a seated server takes `audit_reporters`.
@@ -13877,15 +15245,24 @@ session.stop().await?; // stops the server, then the link
   server rejects a ConfirmedCOVNotification the Device lists, and a full
   client on a `ServerOnly` session executes services the Device doesn't
   list. Following the attached client would cost every ReadProperty a read
-  of shared state. The server follows the Device's Segmentation_Supported.
-  With SEGMENTED_RECEIVE or SEGMENTED_BOTH, the full client reassembles both
-  confirmed COV forms using the Device's APDU_Segment_Timeout. Its outbound
-  requests keep their own setting for accepting segmented responses.
+  of shared state. Segmentation_Supported, Max_Segments_Accepted and
+  APDU_Segment_Timeout are the identity's (segmented both ways by default),
+  and both roles follow them (#2617): the server reassembles and segments as
+  the identity allows, and the client accepts segmented answers and states
+  more than 64 segments only when the Device receives segments, sends
+  segmented requests only when it transmits them
+  (`SegmentationError::LocalCannotTransmit` otherwise, before anything is
+  sent), and takes the identity's segment timeout. Each segment, Segment-ACK
+  and Abort reaches the role whose transaction it is, by its PDU type, the
+  side that sent it and the invoke ID the role leased. When the Device
+  receives segments the client also reassembles a segmented COV
+  notification of either form, as the answering side, and answers it once
+  it is whole (#2646).
 - DeviceCommunicationControl binds the whole node (Clause 16.1). While the
   server holds a DISABLE_INITIATION it accepted, nothing on the node
   initiates but I-Am answers to Who-Is and audit notifications, and nothing
-  is sent: the full client's requests and unconfirmed sends, the narrow
-  client's requests and the session's `broadcast_i_am()` fail with
+  is sent: the client's requests and unconfirmed sends and the session's
+  `broadcast_i_am()` fail with
   `Error::InitiationDisabled { sent: false }`, and the server's own
   `broadcast_i_am()` with a SERVICES / COMMUNICATION_DISABLED
   `Error::Remote`, as on a standalone server. A client request already
@@ -13895,6 +15272,16 @@ session.stop().await?; // stops the server, then the link
   COLDSTART, or the server's stop or drop. An operator's own tool may start a client
   outside it with `ClientOptions::with_node_dcc_override(true)`, an override
   of Clause 16.1 the node warns about in its log.
+- `client.with_data_attributes(attributes)` is a view of the client whose
+  confirmed requests carry those data attributes on every frame, the first,
+  each retry and each segment (on BACnet/SC, Annex AB header data options):
+  its `read_property`, `read_property_multiple` and `read_range`, and
+  `confirmed_request` for any other confirmed service. Each call takes its
+  own, carried by the request's transaction, so a view's request may run in
+  any task; requests made without a view, unconfirmed requests and the
+  client's acknowledgments (a SegmentACK for a segmented answer, an Abort)
+  carry none. A source-audited request takes its attributes into the
+  node's task (#2723).
 - A segmented Complex-ACK, or a Segment-ACK from an answering device, that
   answers no request of the node's goes to the full client, which aborts it
   as an idle client does (Clause 5.4.4.1); it takes at most half of the
@@ -13904,8 +15291,9 @@ session.stop().await?; // stops the server, then the link
   correct and start again: `with_server` on a session with no server role (a
   full client there answers every request itself); a server role without a
   Device identity; a builder with a transport, a database
-  (give it to the session) or a `registered_network_port` (name it on the
-  session); a builder identity, `cov_retry_timeout_ms` or
+  (give it to the session), a `registered_network_port` or a
+  `device_storage_path` (name either on the session); a Device storage path
+  beside the session's own database; a builder identity, `cov_retry_timeout_ms` or
   `notification_retries`, or a database Device's largest APDU or APDU timing,
   that differs from the node's (a Device that declares the object model's
   default timing is given the node's); a builder setting a server's start
@@ -13917,8 +15305,8 @@ session.stop().await?; // stops the server, then the link
   database through each of these refusals. One check needs the started link
   and comes after it: target Audit's recipient as the started link sees it,
   an Address naming this network by its number or a group address only the
-  bound link reveals. That refusal ends the session and drops the database
-  the server was given.
+  bound link reveals. That refusal ends the session, and the start's
+  `StartError` hands the database back (#2766).
 - Routed source Audit bindings learn their networks' routers at the
   session's ingress, from every request and every answer a lease of the
   session's holds that comes from such a network, whichever role takes it.
@@ -13957,7 +15345,9 @@ before `stop()` where storage must be settled when it returns.
 Canceling `stop()` retains its original dispatch or ingress outcome and the
 server it has not finished stopping. Call it again to finish. The session
 stays stopping until then, and returns the saved outcome. It keeps its
-object database through `stop()` and lets go of it when it drops.
+object database through `stop()` and lets go of it when it drops; a start
+refused once the link has started hands it back instead (see
+[Builders](#builders)).
 
 Every endpoint holder of the database lets go through
 `bacnet_server::server::drop_database_off_runtime` (#1561): the session, its
@@ -13965,11 +15355,10 @@ server (whose aborted tasks may hold it last), the source Audit runtime (which
 an audited request in flight may hold last) and the session's Number task. So
 whichever goes last, in async code a durable object's final saves run on
 Tokio's blocking pool, not on a runtime worker. The server `stop()` stops
-hands its handle to a task that lets go of it on the runtime's next turn, as
-a standalone server's drop does: code that takes the database back once the
-session is gone (`Arc::try_unwrap` of a clone it kept) lets that turn pass
-first. Storage may still change after a drop returns. Await `stop()`, with
-no guard held, for the joined save boundary.
+has let go of its handle when `stop()` returns (#2766), but for settling it
+handed to a task because a guard was held. Storage may still change after a
+drop returns. Await `stop()`, with no guard held, for the joined save
+boundary.
 
 ### The narrow server role is gone
 
@@ -13997,108 +15386,72 @@ server answers subscriptions (its builder's `cov_policy` bounds them), and
 its calls of those names make the application's own changes. A client-only
 session has no server database to change.
 
-### Direct endpoint WriteProperty and source WRITE reporting
+### The narrow client role is gone
 
-`ClientRoleHandle::write_property` accepts a direct B/IP IPv4 unicast MAC, a
-`bacnet_services::write_property::WritePropertyRequest` (object, property, optional
-index, complete encoded property value, optional wire priority), and the required
-`bacnet_endpoint::roles::Commandability::{Commandable, Noncommandable}`.
-This assertion is required with or without a source Reporter; neither object type,
-property identifier, local object state nor the supplied priority establishes it.
-The method refuses other endpoint transports and invalid/group destinations before
-traffic. There is no routed WP method in this subset.
+Through 0.15.0 `EndpointSession::client()` borrowed a narrow requester,
+`ClientRoleHandle`: unsegmented ReadProperty, ReadPropertyMultiple of 1 to 64
+concrete references, ReadRange and a WriteProperty to a direct B/IP peer.
+`client()` now returns the full client
+([above](#full-client-on-an-endpoint)), and the narrow requester is removed
+(#2617):
 
-The shared requester validates zero or more complete TLVs, priority 1–16 when
-supplied, and the complete unsegmented APDU size before reserving an Invoke ID.
-Empty lists and encoded NULL are distinct valid representations. The wire priority
-and bytes remain unchanged. A matching SimpleACK returns `Ok(())`; Error, Reject,
-Abort and timeout retain the established error mapping. A wrong-service Error or ACK, or a wrong
-ACK shape, cannot complete the write. Error correlation also protects notification
-leases in the shared coordinator.
+| Removed (0.15.0) | Use instead |
+|---|---|
+| `client()` returning `Option<&ClientRoleHandle>`, `cloned_client_handle()`, the `bacnet_endpoint::roles` module | `client()`, which returns `Result<BACnetClient<T>, Error>`: one owned client at a time, refused before start and after stop on any role. Keep it and share it by reference or in an `Arc`; don't ask for one per call |
+| `full_client()`, `full_client_with(options)` (never released) | `client()`, `client_with(options)` |
+| `read_property`, `read_property_multiple`, `read_range`, `read_range_with`, `read_log_page` taking a MAC | the client's calls of the same names, whose destination is any `ToStation`: a MAC slice or array, a `MacAddr`, a `BACnetAddress` or a `Station` |
+| the `_with_destination` forms with `EndpointApduDestination::Routed { router_mac, destination_network, destination_mac }` | the same call with `Station::routed(&router_mac, network, &mac)`, or `Station::remote(network, &mac)` to use the router the station's row in the discovery table names |
+| `EndpointApduDestination::RoutedViaLocalBroadcast { destination_network, destination_mac }` | the same call with `Station::routed_via_local_broadcast(network, &mac)`: one broadcast on the link whose NPDU names the station, while no router to its network is known (#2723) |
+| the `data_attributes` argument of `read_property_with_destination`, `read_property_multiple_with_destination` and `read_range_with_destination` | the same call on `client.with_data_attributes(attributes)`: every frame of that request, retries and segments included, carries them (#2723) |
+| the `bacnet_endpoint::EndpointApduDestination` re-export | `bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination`, where the type lives |
+| `write_property(mac, WritePropertyRequest, Commandability)`, `roles::Commandability` | `write_property(to, object, property, index, value, priority)`, on every link and through routers. A write sent with a priority is audited as a command at that priority; one without names none |
+| `LeaseHolder::EndpointRequester`, `OutboundTransactionCoordinator::mark_endpoint_requester`, `EndpointEgress::admit_owned_apdu` (hidden) | `LeaseHolder::Client` |
+| `SegmentationError::EndpointAckTooLong` and `EndpointRequestTooLong` | nothing: the client segments a long request and reassembles a segmented answer |
 
-The same session source Audit owner captures live Reporter policy, recipient,
-source Device, timestamp, identity and Invoke ID once. Commandable omitted priority
-is effective 16 for filtering and reporting, including NULL. Noncommandable writes
-ignore priority for Audit, even when it was supplied on the wire. The source
-Reporter controls level/operation/priority filtering; remote policy is not consulted.
-Eligible attempted writes generate at most one WRITE record across retries, with
-complete 0–32-byte `Target_Value` and no value field for larger payloads. The source
-never invents remote `Current_Value`, target timestamp, or execution evidence.
+What a caller sees differently:
 
-Before source admission, cancellation releases caller-owned work. Eligible admitted
-writes retain terminal observation after caller cancellation. Nonreported writes
-remain caller-owned: cancellation retracts queued requester sends and drops any
-in-progress transport future. A transport attempt may already have reached the
-peer, so cancellation never proves the write was not executed. Ordinary detached
-egress sends retain their existing semantics. The existing 64-operation budget, notification budget,
-recipient generation fences, three-second delivery deadline and stop/drop behavior
-are shared with reads. Notification failure cannot replace the caller's write result.
-Source WP is a bounded extension under #345/#852; WPM, routed writes, standalone
-source ownership and other transports remain outside this profile.
+- The client's own wait running out is
+  `Error::Remote(RemoteError::Abort { reason: AbortReason::TSM_TIMEOUT })`,
+  where the narrow requester returned `Error::Timeout`. Its source Audit
+  record is still COMMUNICATION / TIMEOUT.
+- A long request is segmented and a segmented answer reassembled, where the
+  narrow requester refused the first and failed the second. The 1 to 64
+  reference bound on ReadPropertyMultiple, and the refusal of ALL, REQUIRED,
+  OPTIONAL and wildcard objects, are gone.
+- A ReadPropertyMultiple answer that decodes but doesn't follow the request
+  reference by reference is returned as it is; compare it with the request
+  where that matters.
+- The 65th audited request at once, or the 5th at once to one lane (a
+  station on the link, or another network), waits for a slot, where the
+  narrow requester refused it.
+- An unaudited `write_property` sends its value as given, as a standalone
+  client does, where the narrow requester refused a value that isn't whole
+  application data. A source-audited write still refuses such a value before
+  it is sent, since its record could not report what it names.
+- A request waiting for its turn at a destination (`min_request_interval_ms`)
+  fails at once when the session stops or is dropped, as the narrow
+  requester's did, but with the error an open request cut off by the stop
+  gets, `Error::RequestCutOff` (with `sent: false`), where the narrow
+  requester returned `"endpoint shutdown"` (#2720).
+- A routed request whose router is the link's broadcast or a group address
+  is refused before anything is sent, as the narrow requester refused it
+  (#2722); so is one whose station's MAC is its network's broadcast (#2709).
+- Not yet as the narrow requester had it: a Complex-ACK naming
+  WriteProperty ends a write as success, where the narrow requester ignored
+  it (#2721).
 
 ### Bounded endpoint source READ reporting
 
-Standalone direct/routed and endpoint ReadProperty share ACK object/property/index
-validation (Clause 15.5). Device/Network Port instance 4194303 requests accept only
-same-type concrete peer-reported identifiers; other mismatches return decoding
-errors. This client contract does not implement the bundled server's Network
-Port ingress-port alias mapping (#785).
+The session's source Audit reports its client's requests
+([Source Audit of the full client](#source-audit-of-the-full-client)). This
+section covers the recipient, the bindings and what a record holds.
 
-Endpoint ReadPropertyMultiple accepts 1–64 explicit property occurrences across
-nonempty object specifications, with concrete object identifiers. ALL, REQUIRED,
-OPTIONAL and wildcard object instances are excluded from this endpoint profile;
-standalone RPM retains its broader profile. Array index zero is valid. Shared
-RPM request encoding is fallible and validates both lists before appending bytes.
-
-RPM ACK correlation checks all object/property counts, order and identifiers
-before returning success or projecting any record. A successful value must echo
-the requested index. An inline error may omit a requested index or repeat it,
-but cannot substitute another index; an unindexed request requires no index.
-The Audit attempt retains the requested index. Indistinguishable duplicate
-omitted-index errors cannot reveal a peer's ordering violation. Request and raw
-ACK bytes must fit the configured unsegmented max APDU. The server's separate
-known-scalar error-index response issue remains tracked in #789.
-
-One RPM operation retains one requester lease, source-operation slot, timestamp,
-invoke ID, owned worker and recipient/configuration snapshot across retries and
-caller cancellation. Each eligible occurrence produces a separate value-free
-READ record, including duplicates. AUDIT_CONFIG excludes Present_Value per
-occurrence; returned values remain caller-only. Inline errors retain their
-class/code. Whole Error/Abort/Reject, timeout, malformed, mismatched or segmented
-outcomes are locally represented by the final operation failure on every eligible
-attempted reference; they do not imply remote per-property execution. Notification
-admission is independent and bounded through the existing delivery and resource
-failure-summary owners; no batch reserves 64 notification permits across request I/O.
-Known synchronous egress QueueFull also counts as local resource loss; Closed or
-shutdown and already-attempted transport/ACK failures do not. A full-queue summary
-returns its count to the same bounded generation-fenced coalescer and waits for
-capacity. It never counts itself or retries an ordinary record; stop owns that wait.
-
-After a complete validated RPM ACK, one distinct concrete Device object with at
-least one successful property establishes Target_Device for all records in that
-operation. Error-only Device results establish none; conflicting successful
-Device IDs retain Address attribution without rejecting the otherwise valid ACK.
-This is operation-local knowledge, with no discovery cache.
-
-The initiating role supports `read_property`, `read_range`, `read_property_multiple`,
-`read_log_page` and direct B/IP `write_property`, plus explicit
-endpoint destinations: `read_property_with_destination`,
-`read_property_multiple_with_destination`, `read_range_with_destination` and
-`read_log_page_with_destination` take an `EndpointApduDestination`, such as
-`Routed { destination_network, destination_mac, router_mac }` for a station
-behind a router, or `RoutedViaLocalBroadcast { destination_network,
-destination_mac }` to reach it by one local broadcast when its router isn't
-known (#2612). A `Routed` destination whose `router_mac` is a broadcast or
-group address on the link is refused before a transaction is registered. ReadRange returns a correlated `ReadRangeAck` with raw
-item bytes; empty and multiple-item ACKs each produce one value-free source READ
-record. `read_range_with` and `read_range_with_destination` take a
-`ReadRangeRequest` and a `ReadRangeValidation`: a lenient read keeps
-a page that breaks a rule and is audited as a success. Request encoding validates before output/transaction admission: ALL,
-REQUIRED, OPTIONAL, array index zero, zero/non-INTEGER16 counts, and nonconcrete
-ByTime components are rejected. Zero position/sequence references are valid and
-may match no items. Rust and Python support all-items, position, sequence and ByTime.
-Endpoint requests/responses are unsegmented; a received segmented response is a
-failed attempted read and is reported using the caller's terminal result.
+A client's ReadProperty, direct or routed, on a session or standalone, checks
+the ACK's object, property and index against the request (Clause 15.5).
+Device/Network Port instance 4194303 requests accept only same-type concrete
+peer-reported identifiers; other mismatches return decoding errors. This
+client contract does not implement the bundled server's Network Port
+ingress-port alias mapping (#785).
 
 On direct B/IP IPv4, provision the typed recipient on the built-in Device and
 select `EndpointSession::with_source_audit_reporter`. Device recipient choices
@@ -14112,10 +15465,14 @@ CONFIGURATION_ERROR and resolves once the number names it (#1461); see
 [Device Audit recipient](device-audit-recipient.md). The local database must have a
 concrete built-in local Device (the lowest when it holds several; see
 [Databases with several Devices](#databases-with-several-devices)) and the
-selected Audit Reporter. Configure the Reporter's READ bit
-and audit level before startup; both `ClientOnly` and `Both` sessions support
-confirmed and unconfirmed notifications. `Both` additionally requires an explicit
-Device write authorizer. Startup itself emits nothing.
+selected Audit Reporter. Configure the Reporter's Auditable_Operations and
+audit level before startup; both `ClientOnly` and `Both` sessions support
+confirmed and unconfirmed notifications. On `Both`, the session's server
+decides by its policy whether a peer may change the Reporter or the Device's
+recipient: the read-only server a session runs without a builder refuses
+every write, and a `with_server` builder's policy decides. No separate
+authorizer is needed. A `ServerOnly` session refuses a source Reporter.
+Startup itself emits nothing.
 
 Other links work the same way (#2357): B/IPv6, BACnet/SC, MS/TP and any other
 transport take Device bindings to a MAC on their own link, in its format, with
@@ -14136,7 +15493,10 @@ same rule.
 
 A Device behind a router binds on any link, B/IP included (#2371), with
 `EndpointSession::with_source_audit_routed_device_binding(device, network, mac)`
-or each builder's `source_audit_routed_device_binding(device, network, mac)`.
+or each builder's `source_audit_routed_device_binding(device, network, mac)`;
+`with_source_audit_routed_one_station_binding` (and each builder's
+`source_audit_routed_one_station_binding`) binds one whose address is marked
+one station, as a server's `DeviceBinding::one_station` does (#2738).
 The network must be 1 to 65534 (0 names the local network and 65535 every
 network) and the MAC 1 to 18 octets; its length isn't checked against this
 link, since the remote network's link may differ. `start` and the builders
@@ -14153,8 +15513,8 @@ toward AUDITING_FAILURE and sets COMMUNICATION_FAILURE as a direct one does.
 Once the session's number is the binding's network, the binding is a direct
 one by the link's rule, and a record queued or in flight then goes, and is
 answered, as a direct one. An audited client operation routed to a station
-on another network (DNET 1 to 65534, a DADR of 1 to 18 octets, which the
-requester already requires) is audited too, and its record names the station
+on another network (DNET 1 to 65534, a DADR of 1 to 18 octets) is audited
+too, and its record names the station
 by that network and MAC.
 
 ```rust
@@ -14183,7 +15543,7 @@ let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROA
         SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47808),
     ).build_session()?.with_source_audit_reporter(source);
 session.start().await?;
-// Use session.client().unwrap().read_property(...) or read_range(...) for a direct IPv4 target.
+// let client = session.client()?; then client.read_property(...), read_range(...) and the rest.
 // Trusted runtime writes use the same Device owner; None relinquishes unchanged.
 session.write_audit_recipient(None).await?;
 session.stop().await?;
@@ -14200,8 +15560,9 @@ changing READ results or consuming an audit sequence. Source policy and the
 Device recipient route are sampled before each admitted READ; a later change
 does not rewrite an in-flight request's record or destination. The local
 `AUDIT_CONFIG` classification excludes `Present_Value` and includes other
-properties. Priority filters do not filter READ. Requests selected for source
-reporting reject routed, broadcast, or non-IPv4 destinations before traffic.
+properties. Priority filters do not filter READ. A request selected for source
+reporting goes to one station, direct or behind a router; a broadcast or group
+destination is refused before traffic.
 
 A record contains the local source Device, one request-time timestamp, the actual
 ReadProperty, ReadRange or ReadPropertyMultiple invoke ID shared across retries, and the requested
@@ -14232,7 +15593,8 @@ a later retry failure retains evidence of earlier transmission attempts.
 Once an audited request transfers to session ownership, dropping its caller
 waiter does not cancel it: the session observes the response or deadline and
 records once. Ordinary requests retain caller-owned RAII cancellation. There
-are 64 whole-operation slots, acquired before asynchronous policy reads, and a
+are 64 whole-operation slots, at most 4 to one lane (#2652), acquired with
+the turn at the destination and before the asynchronous policy reads, and a
 separate shared pool of 64 active audit notifications. Read results do
 not wait for audit delivery. Notifications have one absolute three-second
 send/ACK deadline, no retries and no ordinary-record backlog. Expired or canceled
@@ -14257,7 +15619,7 @@ rejection, closed admission, transport/ACK failures and summary failures do not
 contribute. Failed summaries never recursively produce another summary.
 
 One owned worker waits passively for actual semaphore or shared coordinator
-capacity; requester-only releases also wake it. Further losses coalesce into
+capacity; a client request's release also wakes it. Further losses coalesce into
 sequential batches, without queuing or replaying ordinary records. Each batch
 belongs to one immutable Reporter instance, configuration generation, delivery
 mode and destination. Changes discard incompatible pending counts, including

@@ -6,6 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use bacnet_transport::port::{DirectScIdentity, TransportProvenance};
 use bacnet_types::enums::{AuditOperation, ReinitializedState};
+use bacnet_types::sync::MutexExt;
 
 use super::*;
 use bacnet_device_core::reply::error_apdu;
@@ -146,9 +147,7 @@ struct AfterReplyHooks(Arc<std::sync::Mutex<Vec<AfterReplyHook>>>);
 
 impl AfterReplyHooks {
     fn hooks(&self) -> std::sync::MutexGuard<'_, Vec<AfterReplyHook>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.locked()
     }
 
     fn take(&self) -> AfterReply {
@@ -543,21 +542,28 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// local Device, under that Device's audit policy, as a peer's reset's
     /// does, and does nothing when no Reporter selects it. It returns once
     /// the record is admitted, not delivered, so call it before the restart
-    /// begins and give delivery time before the process exits.
+    /// begins and give delivery time before the process exits. The database
+    /// is never waited for in the caller's task, and a call dropped part way
+    /// is as [`write_local`](Self::write_local)'s Cancellation section describes
+    /// (#2772): one dropped after its task took the guard may still record.
     ///
     /// # Errors
     ///
     /// The stopped-server error once [`stop`](Self::stop) has run.
     pub async fn report_device_reset_local(&self) -> Result<(), Error> {
-        let network = self.active_network()?;
-        let mut db = self.db.write().await;
-        super::audit_reporter::WriteAudit::local(
-            &self.config,
-            network,
-            &self.notification_transactions,
-        )
-        .device_operation(&mut db, AuditOperation::DEVICE_RESET);
-        Ok(())
+        let network = Arc::clone(self.active_network()?);
+        let config = Arc::clone(&self.config);
+        let transactions = Arc::clone(&self.notification_transactions);
+        let report = move |mut db: tokio::sync::OwnedRwLockWriteGuard<ObjectDatabase>| {
+            super::audit_reporter::WriteAudit::local(&config, &network, &transactions)
+                .device_operation(&mut db, AuditOperation::DEVICE_RESET);
+        };
+        // Never waited for in the caller's task (#2772).
+        self.request_tasks
+            .for_caller(Arc::clone(&self.db).write_owned(), report)
+            .await
+            // `None`: no change; its runtime dropped the task before it took its locks.
+            .ok_or_else(broadcaster::stopped)
     }
 }
 

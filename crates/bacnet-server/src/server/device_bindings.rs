@@ -1,5 +1,5 @@
 use super::binding_probes::{BindingProbes, WhoIsScope};
-use super::event_recipient_route::RecipientRoute;
+use super::event_recipient_route::{BroadcastStation, RecipientRoute};
 use super::*;
 use bacnet_encoding::primitives::{
     encode_app_object_id, encode_app_octet_string, encode_app_unsigned,
@@ -22,6 +22,9 @@ enum DeviceBindingTarget {
         network: u16,
         final_mac: MacAddr,
         router_mac: MacAddr,
+        /// The final address is marked one station
+        /// ([`DeviceBinding::one_station`], #2738).
+        one_station: bool,
     },
 }
 
@@ -43,7 +46,9 @@ impl DeviceBinding {
         validate_device_identifier(device)?;
         let peer_mac = MacAddr::from_slice(peer_mac.as_ref());
         if peer_mac.is_empty() {
-            return Err(binding_error("local peer MAC must be non-empty"));
+            return Err(binding_error(
+                "invalid device binding: local peer MAC must be non-empty",
+            ));
         }
         Ok(Self {
             device,
@@ -52,6 +57,15 @@ impl DeviceBinding {
     }
 
     /// Create a routed binding with a final network/address and local router.
+    ///
+    /// A final MAC that is a broadcast or group form on its network (the
+    /// one octet `0xFF`, two octets starting `0x00` or `0xFF`, three of
+    /// `0xFF`, or six starting `FF:FF:FF:FF`; `bacnet_npdu::RemoteBroadcast`)
+    /// is taken, and the server logs a warning when it is configured: such
+    /// a device gets unconfirmed requests only, since a confirmed request
+    /// goes to one station (#2732). Where that address is one station on
+    /// its network, an ARCNET station 255 or a gateway's two-octet virtual
+    /// station, mark the binding [`one_station`](Self::one_station).
     pub fn routed(
         device: ObjectIdentifier,
         network: u16,
@@ -60,15 +74,21 @@ impl DeviceBinding {
     ) -> Result<Self, Error> {
         validate_device_identifier(device)?;
         if !(1..=0xFFFE).contains(&network) {
-            return Err(binding_error("routed network must be in 1..=65534"));
+            return Err(binding_error(
+                "invalid device binding: routed network must be in 1..=65534",
+            ));
         }
         let final_mac = MacAddr::from_slice(final_mac.as_ref());
         if final_mac.is_empty() {
-            return Err(binding_error("routed final MAC must be non-empty"));
+            return Err(binding_error(
+                "invalid device binding: routed final MAC must be non-empty",
+            ));
         }
         let router_mac = MacAddr::from_slice(router_mac.as_ref());
         if router_mac.is_empty() {
-            return Err(binding_error("routed router MAC must be non-empty"));
+            return Err(binding_error(
+                "invalid device binding: routed router MAC must be non-empty",
+            ));
         }
         Ok(Self {
             device,
@@ -76,18 +96,45 @@ impl DeviceBinding {
                 network,
                 final_mac,
                 router_mac,
+                one_station: false,
             },
         })
     }
+
+    /// This binding, its final address marked one station (#2738): an
+    /// explicit opt-in for a device at an address that is a broadcast or
+    /// group form on some links and a station on others. Unmarked, the
+    /// server sends no confirmed request to the one octet `0xFF` or to two
+    /// octets starting `0x00` or `0xFF`; marked, every confirmed request it
+    /// starts toward the device (event notifications and a Notification
+    /// Forwarder's copies, Channel and Command writes, audit notifications
+    /// and Audit Log forwarding) goes to `0xFF`, station 255 on ARCNET, and
+    /// to two octets starting `0x00` or `0xFF`, but for `0x0000` and
+    /// `0xFFFF`; three and six octets are judged as unmarked
+    /// (`bacnet_npdu::RemoteBroadcast` has the table). The mark only lifts:
+    /// it refuses nothing an unmarked binding takes, so the one octet `0x00`
+    /// gets confirmed requests either way, and an ARCNET network's
+    /// broadcast there is not caught. A local binding is returned
+    /// unchanged: the link's own group rule judges its MAC.
+    #[must_use]
+    pub fn one_station(mut self) -> Self {
+        if let DeviceBindingTarget::Routed { one_station, .. } = &mut self.target {
+            *one_station = true;
+        }
+        self
+    }
 }
 
-fn binding_error(message: &str) -> Error {
-    Error::Encoding(format!("invalid device binding: {message}"))
+/// A binding the server won't keep (#1833).
+fn binding_error(label: &'static str) -> Error {
+    Error::invalid_config(label)
 }
 
 fn validate_device_identifier(device: ObjectIdentifier) -> Result<(), Error> {
     if device.object_type() != ObjectType::DEVICE {
-        return Err(binding_error("identifier must name a Device object"));
+        return Err(binding_error(
+            "invalid device binding: identifier must name a Device object",
+        ));
     }
     Ok(())
 }
@@ -97,13 +144,17 @@ pub(super) fn register_configured_binding(
     binding: DeviceBinding,
 ) -> Result<(), Error> {
     if bindings.len() >= MAX_DEVICE_BINDINGS {
-        return Err(binding_error("configured binding capacity exceeded"));
+        return Err(Error::limit_reached(
+            "invalid device binding: configured binding capacity exceeded",
+        ));
     }
     if bindings
         .iter()
         .any(|configured| configured.device == binding.device)
     {
-        return Err(binding_error("duplicate configured Device identifier"));
+        return Err(binding_error(
+            "invalid device binding: duplicate configured Device identifier",
+        ));
     }
     bindings.push(binding);
     Ok(())
@@ -120,6 +171,8 @@ pub(super) enum DeviceResolution {
         final_mac: MacAddr,
         router_mac: MacAddr,
         freshness: BindingFreshness,
+        /// The binding's address is marked one station (#2738).
+        one_station: bool,
     },
     Unknown,
     Stale,
@@ -303,21 +356,47 @@ impl DeviceBindingTable {
     ) -> Result<(), Error> {
         validate_device_identifier(binding.device)?;
         if let Some((role, mac)) = group_hop(&binding.target, &is_group) {
-            return Err(binding_error(&format!(
-                "Device {} is bound at {} as {role}, a broadcast or group address of \
-                 this link; bind the device's unicast address",
-                binding.device.instance_number(),
-                colon_hex(mac)
+            return Err(Error::InvalidConfig(bacnet_types::error::Refusal::text(
+                format!(
+                    "invalid device binding: Device {} is bound at {} as {role}, a broadcast \
+                     or group address of this link; bind the device's unicast address",
+                    binding.device.instance_number(),
+                    colon_hex(mac)
+                ),
             )));
         }
         if !target_is_usable(&binding.target, &is_group) {
-            return Err(binding_error("the binding names no reachable device"));
+            return Err(binding_error(
+                "invalid device binding: the binding names no reachable device",
+            ));
         }
         if self.entries.contains_key(&binding.device) {
-            return Err(binding_error("duplicate configured Device identifier"));
+            return Err(binding_error(
+                "invalid device binding: duplicate configured Device identifier",
+            ));
         }
         if self.entries.len() >= MAX_DEVICE_BINDINGS {
-            return Err(binding_error("configured binding capacity exceeded"));
+            return Err(Error::limit_reached(
+                "invalid device binding: configured binding capacity exceeded",
+            ));
+        }
+        // Kept: an unconfirmed request may still go there, and the far
+        // network's link is unknown here (#2732).
+        if let DeviceBindingTarget::Routed {
+            network,
+            final_mac,
+            one_station,
+            ..
+        } = &binding.target
+            && let Some(station) = BroadcastStation::of(*network, final_mac, *one_station)
+        {
+            warn!(
+                device = binding.device.instance_number(),
+                address = %station,
+                "Device is bound at a broadcast or group address on its network: the server \
+                 sends it no confirmed request (event or audit notification, write or read), \
+                 only unconfirmed ones"
+            );
         }
         self.entries
             .insert(binding.device, BindingEntry::Configured(binding.target));
@@ -342,10 +421,15 @@ impl DeviceBindingTable {
             Some(source)
                 if (1..=0xFFFE).contains(&source.network) && !source.mac_address.is_empty() =>
             {
+                // Unmarked: the I-Am says nothing of the address's link,
+                // so a device heard at a broadcast form there gets
+                // unconfirmed requests only, until a configured binding
+                // marked one station names it (#2738).
                 DeviceBindingTarget::Routed {
                     network: source.network,
                     final_mac: source.mac_address.clone(),
                     router_mac: MacAddr::from_slice(source_mac),
+                    one_station: false,
                 }
             }
             Some(_) => return ObservationOutcome::RejectedInvalid,
@@ -521,11 +605,13 @@ impl DeviceBindingTable {
                 network,
                 final_mac,
                 router_mac,
+                one_station,
             } => DeviceResolution::ResolvedRouted {
                 network: *network,
                 final_mac: final_mac.clone(),
                 router_mac: router_mac.clone(),
                 freshness,
+                one_station: *one_station,
             },
         }
     }
@@ -567,6 +653,7 @@ fn target_is_usable(target: &DeviceBindingTarget, is_group: impl Fn(&[u8]) -> bo
             network,
             final_mac,
             router_mac,
+            ..
         } => {
             (1..=0xFFFE).contains(network)
                 && !final_mac.is_empty()

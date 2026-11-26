@@ -56,7 +56,7 @@ fn routed_row(dnet: u16, dadr: &[u8]) -> DiscoveredDevice {
 }
 
 /// DNET 0, DNET 65535 and an empty DADR fail every routed confirmed entry
-/// point with `Error::Encoding` before a frame, a TSM entry or a routed-path
+/// point with `Error::InvalidArgument` before a frame, a TSM entry or a routed-path
 /// entry exists, while an unconfirmed remote broadcast still goes out.
 #[tokio::test]
 async fn routed_confirmed_request_to_no_single_device_fails_before_any_state() {
@@ -95,8 +95,12 @@ async fn routed_confirmed_request_to_no_single_device_fails_before_any_state() {
             },
         ];
         for result in results {
+            // The request's refusal, or the lookup's: `resolve_device` finds
+            // no row it can name, a device it can't place (#1833).
             assert!(
-                matches!(result, Err(Error::Encoding(_))),
+                matches!(&result, Err(Error::InvalidArgument(_)))
+                    || matches!(&result, Err(Error::UnknownDevice { device })
+                        if *device == ROUTED_DEVICE.to_string()),
                 "DNET {dnet}, DADR {dadr:?}: {result:?}"
             );
         }
@@ -127,14 +131,12 @@ async fn path_apis_and_routed_requests_share_the_remote_dnet_bound() {
     let (client, inbound, mut outbound) = client().await;
     for dnet in [0, u16::MAX] {
         let refused = [
-            client
-                .configure_routed_path_max_npdu(&ROUTER, dnet, 1497)
-                .await,
-            client.clear_routed_path_limit(&ROUTER, dnet).await,
+            client.configure_routed_path_max_npdu(&ROUTER, dnet, 1497),
+            client.clear_routed_path_limit(&ROUTER, dnet),
         ];
         for result in refused {
             assert!(
-                matches!(&result, Err(Error::Encoding(m)) if m == "routed DNET must be in 1..=65534"),
+                matches!(&result, Err(Error::InvalidArgument(m)) if m.to_string() == "routed DNET must be in 1..=65534"),
                 "DNET {dnet}: {result:?}"
             );
         }
@@ -143,9 +145,8 @@ async fn path_apis_and_routed_requests_share_the_remote_dnet_bound() {
     for dnet in [1, u16::MAX - 1] {
         client
             .configure_routed_path_max_npdu(&ROUTER, dnet, 1497)
-            .await
             .unwrap();
-        client.clear_routed_path_limit(&ROUTER, dnet).await.unwrap();
+        client.clear_routed_path_limit(&ROUTER, dnet).unwrap();
     }
 
     let client = Arc::new(client);
@@ -193,7 +194,10 @@ async fn add_routed_device_refuses_a_destination_no_request_could_reach() {
         (DNET, too_long),
     ] {
         let result = client.add_routed_device(config(dnet, dadr)).await;
-        assert!(matches!(result, Err(Error::Encoding(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(Error::InvalidArgument(_))),
+            "{result:?}"
+        );
         assert!(client.get_device(ROUTED_DEVICE).await.unwrap().is_none());
     }
     let longest = vec![3; bacnet_npdu::MAX_MAC_LEN];
@@ -202,5 +206,45 @@ async fn add_routed_device_refuses_a_destination_no_request_could_reach() {
         .await
         .unwrap();
     assert!(client.get_device(ROUTED_DEVICE).await.unwrap().is_some());
+    client.stop().await.unwrap();
+}
+
+/// `add_device` holds a local station's MAC to the bound
+/// `add_routed_device` holds a routed one's to (#2606): an empty or a
+/// 19-octet MAC is refused with the same kind of error, the table left
+/// unchanged, and an 18-octet one is taken.
+#[tokio::test]
+async fn add_device_holds_its_mac_to_the_routed_bound() {
+    let (mut client, _inbound, _outbound) = client().await;
+    let too_long = vec![3; bacnet_npdu::MAX_MAC_LEN + 1];
+    let routed = client
+        .add_routed_device(RoutedDeviceConfig {
+            instance: ROUTED_DEVICE,
+            router_mac: ROUTER.to_vec(),
+            remote_network: DNET,
+            remote_mac: too_long.clone(),
+            max_apdu_length: 1476,
+            segmentation_supported: Segmentation::NO_SEGMENTATION,
+            max_segments_accepted: None,
+        })
+        .await;
+    assert!(
+        matches!(routed, Err(Error::InvalidArgument(_))),
+        "{routed:?}"
+    );
+    for mac in [Vec::new(), too_long] {
+        let result = client.add_device(ROUTED_DEVICE, &mac).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidArgument(m))
+                if m.to_string() == "device MAC address must contain 1..=18 octets"),
+            "{} octets: {result:?}",
+            mac.len()
+        );
+        assert!(client.discovered_devices().await.is_empty());
+    }
+    let longest = vec![3; bacnet_npdu::MAX_MAC_LEN];
+    client.add_device(ROUTED_DEVICE, &longest).await.unwrap();
+    let row = client.get_device(ROUTED_DEVICE).await.unwrap().unwrap();
+    assert_eq!(row.mac_address.as_slice(), longest.as_slice());
     client.stop().await.unwrap();
 }

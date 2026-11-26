@@ -3,6 +3,7 @@
 //! whole request is executed once, and nothing of a transfer outlives its
 //! end, however it ends.
 use super::super::cov_notification_tests::cov_notification;
+use super::super::event_notification_tests::payload as event_payload;
 use super::*;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
@@ -46,18 +47,17 @@ async fn lab_with(segments: bool, max_segments: Option<u8>, options: ClientOptio
         .inbound(rx)
         .build();
     let log = transport.sent();
-    let client = BACnetClient::start_with_options(
-        ClientConfig {
-            segmented_response_accepted: segments,
-            max_segments,
-            apdu_timeout_ms: TSEG_MS,
-            ..ClientConfig::default()
-        },
-        transport,
-        options,
-    )
-    .await
-    .unwrap();
+    let mut builder = BACnetClient::generic_builder()
+        .transport(transport)
+        .segmentation(if segments {
+            Segmentation::SEGMENTED_BOTH
+        } else {
+            Segmentation::SEGMENTED_TRANSMIT
+        })
+        .apdu_segment_timeout_ms(TSEG_MS)
+        .max_segments(max_segments);
+    builder.options = options;
+    let client = builder.build().await.unwrap();
     Lab {
         client,
         input,
@@ -120,7 +120,7 @@ impl Lab {
     /// Prove the client sent nothing more so far: it answers an
     /// unsegmented ReadProperty, which it doesn't execute, with a Reject,
     /// and that Reject is the next frame. Once the reassembly task runs, a
-    /// one-segment malformed COV follows, which the task acknowledges and
+    /// one-segment ReadProperty follows, which the task acknowledges and
     /// rejects after everything handed to it before: segments go through
     /// its queue, so the dispatch's answer alone proves nothing about them.
     async fn quiet(&mut self) {
@@ -128,7 +128,8 @@ impl Lab {
         if self.table().is_none() {
             return;
         }
-        let fence = segment(0xed, COV, 0, 1, false, Bytes::new());
+        let read = ConfirmedServiceChoice::READ_PROPERTY;
+        let fence = segment(0xed, read, 0, 1, false, Bytes::from_static(&[0x0c]));
         self.from(&PEER, &fence).await;
         segment_ack(self.next(&PEER).await, 0xed, 0, false, 1);
         let Apdu::Reject(reject) = self.next(&PEER).await else {
@@ -285,7 +286,7 @@ fn aborted(apdu: Apdu, invoke_id: u8, reason: AbortReason) {
     assert_eq!((abort.invoke_id, abort.abort_reason), (invoke_id, reason));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_segmented_cov_notification_is_acknowledged_segment_by_segment_and_published_once() {
     let mut lab = lab(true).await;
     let mut events = lab.client.cov_notifications();
@@ -308,7 +309,7 @@ async fn a_segmented_cov_notification_is_acknowledged_segment_by_segment_and_pub
     lab.client.stop().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_segmented_cov_multiple_is_acknowledged_once_a_window() {
     let mut lab = lab(true).await;
     let mut events = lab.client.cov_notifications();
@@ -333,7 +334,7 @@ async fn a_segmented_cov_multiple_is_acknowledged_once_a_window() {
     lab.client.stop().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_duplicate_is_dropped_and_a_gap_draws_a_negative_ack() {
     let mut lab = lab(true).await;
     let mut events = lab.client.cov_notifications();
@@ -418,7 +419,7 @@ async fn a_transfer_that_makes_no_progress_is_aborted() {
     lab.client.stop().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_requesters_abort_ends_its_transfer_and_draws_nothing() {
     let mut lab = lab(true).await;
     let parts = segments(10, COV, &cov_body(45), 8, 1);
@@ -444,7 +445,7 @@ async fn a_requesters_abort_ends_its_transfer_and_draws_nothing() {
     lab.client.stop().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn two_peers_reassemble_at_once_and_one_peer_is_capped() {
     let mut lab = lab(true).await;
     let mut events = lab.client.cov_notifications();
@@ -495,7 +496,7 @@ async fn two_peers_reassemble_at_once_and_one_peer_is_capped() {
 /// A client that takes no segments, as an endpoint's does on a Device that
 /// declares NO_SEGMENTATION or SEGMENTED_TRANSMIT, answers the first
 /// segment with SEGMENTATION_NOT_SUPPORTED and keeps nothing.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_client_that_takes_no_segments_aborts_the_first_segment() {
     let mut lab = lab(false).await;
     let mut events = lab.client.cov_notifications();
@@ -513,10 +514,35 @@ async fn a_client_that_takes_no_segments_aborts_the_first_segment() {
     lab.client.stop().await.unwrap();
 }
 
+/// A segmented request for a service the client doesn't execute is
+/// reassembled and then rejected as unrecognized, as an unsegmented one is
+/// (Clause 18.9): the peer isn't told the client takes no segments.
+#[tokio::test]
+async fn a_segmented_request_the_client_does_not_execute_is_rejected_whole() {
+    let mut lab = lab(true).await;
+    let read = Bytes::from_static(&[0x0c, 0x02, 0x00, 0x00, 0x01, 0x19, 0x4d]);
+    let parts = segments(13, ConfirmedServiceChoice::READ_PROPERTY, &read, 4, 1);
+    assert_eq!(parts.len(), 2);
+    for (seq, part) in parts.iter().enumerate() {
+        lab.from(&PEER, part).await;
+        segment_ack(lab.next(&PEER).await, 13, seq as u8, false, 1);
+    }
+    let Apdu::Reject(reject) = lab.next(&PEER).await else {
+        panic!("expected a Reject");
+    };
+    assert_eq!(
+        (reject.invoke_id, reject.reject_reason),
+        (13, RejectReason::UNRECOGNIZED_SERVICE)
+    );
+    lab.quiet().await;
+    assert_eq!(lab.transfers(), Some((0, 0)));
+    lab.client.stop().await.unwrap();
+}
+
 /// The requester didn't hear the last Segment-ACK or the answer and sends
 /// the last segment again: its transfer is over, so the segment draws an
 /// Abort (Clause 5.4.5.1), and the notification isn't published again.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn the_last_segment_sent_again_after_the_answer_draws_an_abort() {
     let mut lab = lab(true).await;
     let mut events = lab.client.cov_notifications();
@@ -544,7 +570,7 @@ async fn the_last_segment_sent_again_after_the_answer_draws_an_abort() {
 /// A client that states it takes four segments keeps no more of one
 /// request: the fifth ends the transfer with BUFFER_OVERFLOW, while four
 /// complete.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn the_segment_count_the_client_states_caps_a_request() {
     let mut lab = lab_stating(true, Some(4)).await;
     let mut events = lab.client.cov_notifications();
@@ -574,9 +600,44 @@ async fn the_segment_count_the_client_states_caps_a_request() {
     lab.client.stop().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_segmented_event_notification_is_published_once() {
+    let mut lab = lab(true).await;
+    let mut events = lab.client.event_notifications();
+    let body = event_payload(Some(&[0, 0xff]));
+    let parts = segments(
+        14,
+        ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION,
+        &body,
+        20,
+        2,
+    );
+    assert!(parts.len() >= 2);
+    for part in &parts {
+        lab.from(&PEER, part).await;
+    }
+    let last = parts.len() - 1;
+    segment_ack(lab.next(&PEER).await, 14, 0, false, 2);
+    for seq in (2..last).step_by(2) {
+        segment_ack(lab.next(&PEER).await, 14, seq as u8, false, 2);
+    }
+    segment_ack(lab.next(&PEER).await, 14, last as u8, false, 2);
+    simple_ack(
+        lab.next(&PEER).await,
+        14,
+        ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION,
+    );
+    let event = events.recv().await.unwrap();
+    assert_eq!(event.notification.process_identifier, 42);
+    assert_eq!(event.source_mac.as_slice(), PEER);
+    lab.quiet().await;
+    assert!(events.try_recv().is_err());
+    lab.client.stop().await.unwrap();
+}
+
 /// Behind a router: each answer goes back to it, with the peer's network
 /// and address as its destination.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_routed_requesters_segments_are_answered_through_its_router() {
     let mut lab = lab(true).await;
     let behind = NpduAddress {
@@ -602,7 +663,7 @@ async fn a_routed_requesters_segments_are_answered_through_its_router() {
 /// On MS/TP a segment that expects a reply gets its Segment-ACK as that
 /// reply. One that draws nothing lets the reply sender go, so the link
 /// answers Reply Postponed; the whole request's answer goes out on its own.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn on_mstp_a_segment_ack_is_the_reply_frame() {
     let mut lab = lab(true).await;
     let parts = segments(16, COV, &cov_body(51), 8, 2);
@@ -673,7 +734,6 @@ async fn a_drop_midway_leaves_nothing_behind() {
     assert_eq!(log.len(), sent);
 }
 
-/// The worker has accepted the first segment and is stalled sending its ACK.
 #[tokio::test(start_paused = true)]
 async fn full_handoff_drops_repeated_final_segment_without_terminating_the_queued_request() {
     let mut lab = lab(true).await;

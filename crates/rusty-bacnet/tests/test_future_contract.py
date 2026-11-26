@@ -160,7 +160,7 @@ class NativeFutureInventoryTests(unittest.TestCase):
             # endpoint/builders.rs holds the methods the three owners share.
             **{name: [source / f"endpoint/{stem}.rs" for stem in (*stems, "builders")]
                for name, stems in (
-                ("BipEndpoint", ("bip", "bip_observation")),
+                ("BipEndpoint", ("bip",)),
                 ("ScEndpoint", ("sc",)),
                 ("MstpEndpoint", ("mstp",)),
             )},

@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-async fn running_client() -> ClientInner {
+pub(super) async fn running_client() -> ClientInner {
     pyo3::Python::initialize();
     let state = Arc::new(ClientState::default());
     *state.client.write().await = Some(Started::new(
@@ -18,7 +18,7 @@ async fn running_client() -> ClientInner {
             .await
             .unwrap(),
         bacnet_ops::WritePolicy::default(),
-        None,
+        bacnet_ops::ResolveScope::Local,
     ));
     state
 }
@@ -72,7 +72,9 @@ async fn failed_shutdown_keeps_client_closed_to_operations_until_retry() {
     let state = running_client().await;
     state.closing.store(true, Ordering::Release);
     *state.shutdown.lock().await = Some(tokio::spawn(async {
-        Err(Error::Encoding("injected shutdown failure".into()))
+        Err(Error::Transport(std::io::Error::other(
+            "injected shutdown failure",
+        )))
     }));
     let error = close(Arc::clone(&state)).await.unwrap_err();
     assert!(error.to_string().contains("injected shutdown failure"));
@@ -215,4 +217,41 @@ async fn a_failed_native_stop_is_recorded_without_a_waiter() {
         .unwrap()
         .unwrap();
     assert_eq!(state.liveness(), Liveness::Stopped);
+}
+
+/// The `state` of the `BacnetStateError` a lifecycle check raised (#2819).
+fn state_of(error: pyo3::PyErr) -> String {
+    use pyo3::prelude::*;
+    Python::attach(|py| {
+        let class = crate::errors::state_error_type(py).unwrap().bind(py);
+        assert!(error.value(py).get_type().is(class), "{error}");
+        error.value(py).getattr("state").unwrap().extract().unwrap()
+    })
+}
+
+/// Each of the client's own lifecycle checks raises `BacnetStateError`
+/// naming its state (#2819): a second start, a call once a standalone
+/// client stopped (it starts again), a call while a stop is under way, and
+/// a call on an endpoint's client once it stopped (it never starts again).
+#[tokio::test]
+async fn lifecycle_refusals_name_their_state() {
+    let state = running_client().await;
+    assert_eq!(
+        state_of(starting(&state).await.err().unwrap()),
+        "already_started"
+    );
+    close(Arc::clone(&state)).await.unwrap();
+    assert_eq!(
+        state_of(started(&state).await.err().unwrap()),
+        "not_running"
+    );
+    assert_eq!(
+        state_of(high_level(&state).await.err().unwrap()),
+        "not_running"
+    );
+    state.closing.store(true, Ordering::Release);
+    assert_eq!(state_of(started(&state).await.err().unwrap()), "stopping");
+    assert_eq!(state_of(starting(&state).await.err().unwrap()), "stopping");
+    let seated: ClientInner = Arc::new(ClientState::seated());
+    assert_eq!(state_of(started(&seated).await.err().unwrap()), "closed");
 }

@@ -134,6 +134,36 @@ impl Net {
         net
     }
 
+    /// [`Self::start`] for a session bound to a port the test picked and
+    /// freed (#2718). A failed start comes back for `rerun_on_lost_port` when
+    /// the session's own bind found another socket on the port, and panics
+    /// otherwise (`lost_port`, #2776).
+    pub(super) async fn start_on(plan: ConnectPlan) -> std::io::Result<Self> {
+        let (sink, events) = EventSink::channel(EVENT_CHANNEL_CAPACITY);
+        let (commands, rx) = mpsc::channel(16);
+        let task = coordinator::spawn(Some(plan), None, sink, rx, Default::default());
+        let mut net = Self {
+            app: new_app(None),
+            events,
+            commands,
+            task,
+        };
+        while !matches!(net.app.link, Link::Up { .. }) {
+            let event = tokio::time::timeout(STEP, net.events.recv())
+                .await
+                .expect("timed out waiting for the connection")
+                .expect("the worker is running");
+            if let Some(error) = super::connect_failure(&event) {
+                let error = error.clone();
+                net.stop().await;
+                return Err(super::lost_port(&error));
+            }
+            let commands = worker(&mut net.app, event);
+            net.send(commands).await;
+        }
+        Ok(net)
+    }
+
     fn now() -> std::time::Instant {
         tokio::time::Instant::now().into_std()
     }

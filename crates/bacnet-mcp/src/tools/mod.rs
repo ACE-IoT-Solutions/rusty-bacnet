@@ -11,6 +11,7 @@
 //! is more than a rendering: its second text block is the Turtle.
 
 pub(crate) mod alarms;
+mod batches;
 mod bbmd;
 mod decode;
 pub(crate) mod describe;
@@ -19,6 +20,8 @@ pub(crate) mod export;
 mod find;
 #[cfg(test)]
 mod future_size_tests;
+mod inventory;
+mod inventory_data;
 mod list;
 mod log_pages;
 mod log_records;
@@ -82,6 +85,7 @@ const SPECS: &[Spec] = &[
     decode::SPEC,
     watch::SPEC,
     export::SPEC,
+    inventory::SPEC,
 ];
 
 /// The write tools, listed only when the policy offers writes.
@@ -107,6 +111,17 @@ fn listed(policy: &Policy) -> impl Iterator<Item = (&'static Spec, bool)> + '_ {
                 .filter(move |_| writes)
                 .map(|spec| (spec, true)),
         )
+}
+
+/// The tool `name`'s description, for the tests that tie the numbers it
+/// quotes to measured ones.
+#[cfg(test)]
+pub(crate) fn description(name: &str) -> &'static str {
+    let spec = SPECS
+        .iter()
+        .chain(WRITE_SPECS)
+        .find(|spec| spec.name == name);
+    spec.expect("a tool of this server").description
 }
 
 /// Every tool's name, in list order, for the given policy.
@@ -159,6 +174,7 @@ enum Request {
     Decode(decode::Args),
     Watch(watch::Args),
     Export(export::Args),
+    Inventory(inventory::Args),
 }
 
 fn parse<A: DeserializeOwned>(args: &Map<String, Value>) -> Result<A, ErrorData> {
@@ -188,6 +204,7 @@ fn request(name: &str, args: &Map<String, Value>) -> Result<Request, ErrorData> 
         decode::NAME => Request::Decode(parse(args)?),
         watch::NAME => Request::Watch(parse(args)?),
         export::NAME => Request::Export(parse(args)?),
+        inventory::NAME => Request::Inventory(parse(args)?),
         other => {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
@@ -242,6 +259,7 @@ pub(crate) async fn call<T: TransportPort + 'static>(
                 let out = &mut turtle;
                 boxed(move || export::run(ctx, call, a, args, out)).await
             }
+            Request::Inventory(a) => boxed(move || inventory::run(ctx, call, a, args)).await,
         }
     };
     // A cancelled call (`notifications/cancelled`, or the host going away)
@@ -262,6 +280,9 @@ pub(crate) async fn call<T: TransportPort + 'static>(
         Err(_) => Err(out_of_budget(&call, budget)),
     };
     let mut result = finish(ctx, name, &call, outcome);
+    if name == inventory::NAME {
+        inventory::oversized_text(&mut result);
+    }
     if let Some(turtle) = turtle.filter(|_| result.is_error == Some(false)) {
         if let Some(ContentBlock::Text(text)) = result.content.first_mut() {
             text.text.push('\n');
@@ -284,6 +305,7 @@ fn out_of_budget(call: &Call, budget: Duration) -> ToolError {
         ToolError::Timeout {
             device: None,
             after_ms: u64::try_from((budget + GRACE).as_millis()).unwrap_or(u64::MAX),
+            busy: None,
         }
     }
 }
@@ -539,7 +561,7 @@ pub(crate) fn start<T: TransportPort + 'static>(
         Some(token) => ctx
             .cursors
             .open(token, tool, &ctx.principal, args)
-            .map_err(|why| ToolError::invalid("cursor", format!("not a usable cursor: {why}"))),
+            .map_err(unusable),
     }
 }
 
@@ -551,6 +573,38 @@ pub(crate) fn next<T: TransportPort + 'static>(
     position: u64,
 ) -> Value {
     json!(ctx.cursors.seal(tool, &ctx.principal, args, position))
+}
+
+/// Where a call paged by row starts: the key of the row its cursor resumes
+/// after, or `None` on its first page (#2606).
+pub(crate) fn start_after<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
+    tool: &str,
+    cursor: Option<&str>,
+    args: &Map<String, Value>,
+) -> Result<Option<Vec<u8>>, ToolError> {
+    cursor
+        .map(|token| {
+            ctx.cursors
+                .open_after(token, tool, &ctx.principal, args)
+                .map_err(unusable)
+        })
+        .transpose()
+}
+
+/// The cursor resuming `tool` after the row whose key is `key`.
+pub(crate) fn next_after<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
+    tool: &str,
+    args: &Map<String, Value>,
+    key: &[u8],
+) -> Value {
+    json!(ctx.cursors.seal_after(tool, &ctx.principal, args, key))
+}
+
+/// A cursor that didn't open, and why.
+pub(crate) fn unusable(why: &str) -> ToolError {
+    ToolError::invalid("cursor", format!("not a usable cursor: {why}"))
 }
 
 /// Structured content past this is paged.

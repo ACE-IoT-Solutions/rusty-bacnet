@@ -9,20 +9,23 @@
 //! `stop()` raises what any call raises then, and the first call after a
 //! restart makes the handle again from what named it.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use bacnet_ops::PropertyRef;
 use bacnet_ops::client::Wanted;
 use bacnet_ops::target::AddressStyle;
-use bacnet_ops::{CovSupport, PropertyRef};
 use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::sync::MutexExt;
 use pyo3::prelude::*;
 
 use super::errors::ops_err;
+use super::points::{ReadInventory, cov_label, objects_arg, once_each, options};
 use super::preview::PyWritePreview;
 use super::priorities::{PyWritten, priority_arg};
 use super::readings::{PyDeviceSummary, PyObjectList, PyReadings};
-use super::specs::{Named, object_arg, property_arg, property_item, value_arg};
+use super::specs::{Named, object_arg, property_arg, property_item, refuse_text, value_arg};
 use super::value::PyValue;
+use super::walk::PyPointIterator;
 use super::{OpsClient, OpsDevice};
 use crate::client::{DeviceTie, Held};
 use crate::py_async::{attach, future_into_py};
@@ -46,8 +49,9 @@ impl Seen {
     }
 }
 
-/// A `Device`'s state, shared with its calls' futures.
-struct Core {
+/// A `Device`'s state, shared with its calls' futures and its point
+/// iterators.
+pub(super) struct Core {
     tie: DeviceTie,
     named: Named,
     seen: Mutex<Seen>,
@@ -63,8 +67,37 @@ impl Core {
         Ok((held, style))
     }
 
+    /// Run `call` on the handle, held with the client's lease for it.
+    pub(super) async fn run<F, R>(
+        &self,
+        call: impl FnOnce(OpsDevice, AddressStyle) -> F,
+    ) -> PyResult<R>
+    where
+        F: Future<Output = PyResult<R>>,
+    {
+        // Boxed, as the deepest async chain in this crate runs through
+        // here: a station lookup down to a link's send. Unboxed, the
+        // crate needed rustc's whole default recursion limit, 128, when
+        // this was boxed (#2617), and boxed 109; the chain below has grown
+        // since, and boxed the crate now needs 115 (114 fails), as it did
+        // before this hold moved into `run`. Boxing it as a trait object
+        // needs the same. One allocation per Python Device call, off the
+        // Rust request path.
+        let (held, style) = Box::pin(self.hold()).await?;
+        // The call's own clone goes before the lease does: `held`
+        // outlives the call's future.
+        let result = call(held.device.clone(), style).await;
+        self.see(Seen::of(&held.device));
+        result
+    }
+
+    /// Its tie to the client.
+    pub(super) fn tie(&self) -> &DeviceTie {
+        &self.tie
+    }
+
     fn see(&self, seen: Seen) {
-        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = seen;
+        *self.seen.locked() = seen;
     }
 
     /// What the handle says of itself now, or last said.
@@ -72,20 +105,14 @@ impl Core {
         if let Some(seen) = self.tie.peek(Seen::of) {
             self.see(seen);
         }
-        let seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        let seen = self.seen.locked();
         seen.clone()
     }
 }
 
 /// The handle `named` names on `client`.
 async fn make(client: OpsClient, named: &Named) -> PyResult<OpsDevice> {
-    // A router's application given no resolve scope asks nowhere.
-    let asks = client.resolve_scope() != bacnet_ops::ResolveScope::Local
-        || !matches!(
-            client.low_level().transport(),
-            crate::app_transport::AppTransport::Router(_)
-        );
-    super::device(&client, named, asks).await
+    super::device(&client, named).await
 }
 
 /// One device, as a `BACnetClient` reaches it: what `await
@@ -137,19 +164,7 @@ impl PyDevice {
         R: for<'a> IntoPyObject<'a> + Send + 'static,
     {
         let core = Arc::clone(&self.core);
-        future_into_py(py, async move {
-            // Boxed, as the deepest async chain in this crate runs through
-            // here: a station lookup down to a link's send. Unboxed, the
-            // crate needs rustc's full default recursion limit, 128 (127
-            // fails); boxed, 109 (108 fails). One allocation per Python
-            // Device call, off the Rust request path.
-            let (held, style) = Box::pin(core.hold()).await?;
-            // The call's own clone goes before the lease does: `held`
-            // outlives the call's future.
-            let result = call(held.device.clone(), style).await;
-            core.see(Seen::of(&held.device));
-            result
-        })
+        future_into_py(py, async move { core.run(call).await })
     }
 }
 
@@ -194,13 +209,7 @@ impl PyDevice {
     /// a watch made). `"unknown"` while the client is stopped.
     fn cov_support(&self) -> &'static str {
         let support = self.core.tie.peek(OpsDevice::cov_support);
-        match support.unwrap_or_default() {
-            CovSupport::NotOffered => "not-offered",
-            CovSupport::Offered => "offered",
-            CovSupport::Accepted => "accepted",
-            CovSupport::Refused => "refused",
-            _ => "unknown",
-        }
+        cov_label(support.unwrap_or_default())
     }
 
     /// Read one property: one ReadProperty, as a `Value`.
@@ -249,16 +258,22 @@ impl PyDevice {
     /// device that stops answering part way ends the read with what was
     /// read, and `Readings.stopped` says so; so does a later request the
     /// client's own link fails (a route lost, a send refused). A read
-    /// raises only when nothing could be read: a bad item TypeError or
-    /// ValueError (ALL, REQUIRED and OPTIONAL among them: `read_object`
-    /// reads those) before the Future is made; on await a device that
-    /// can't be placed BacnetLookupError, and a link that fails the first
-    /// request what a single read raises for it.
+    /// raises only when nothing could be read: `properties` as one str,
+    /// bytes or bytearray, or a bad item, TypeError or ValueError (ALL,
+    /// REQUIRED and OPTIONAL among them: `read_object` reads those) before
+    /// the Future is made; on await a device that can't be placed
+    /// BacnetLookupError, and a link that fails the first request what a
+    /// single read raises for it.
     fn read_many<'py>(
         &self,
         py: Python<'py>,
         properties: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        refuse_text(
+            properties,
+            "properties",
+            "['ai:1', 'ao:2 priority-array[8]']",
+        )?;
         let wanted = properties
             .try_iter()?
             .map(|item| property_item(&item?))
@@ -276,10 +291,11 @@ impl PyDevice {
     /// Read one object's properties in one ReadPropertyMultiple (or by
     /// ReadProperty each once the device has refused that), as `Readings`:
     /// every property when `properties` is left out, else those listed
-    /// (`PropertyIdentifier`s or text, whole properties only). A property
-    /// the device refused has its `Reading.error` set. A device that stops
-    /// answering raises BacnetTimeoutError and keeps nothing, since an
-    /// object's rows go together: `stopped` is always None here.
+    /// (`PropertyIdentifier`s or text, whole properties only; one str,
+    /// bytes or bytearray raises TypeError before the Future is made). A
+    /// property the device refused has its `Reading.error` set. A device
+    /// that stops answering raises BacnetTimeoutError and keeps nothing,
+    /// since an object's rows go together: `stopped` is always None here.
     #[pyo3(signature = (object, properties=None))]
     fn read_object<'py>(
         &self,
@@ -291,6 +307,7 @@ impl PyDevice {
         let listed = properties
             .filter(|properties| !properties.is_none())
             .map(|properties| {
+                refuse_text(properties, "properties", "['pv', 'units']")?;
                 properties
                     .try_iter()?
                     .map(|item| {
@@ -455,6 +472,161 @@ impl PyDevice {
         })
     }
 
+    /// The device's objects as point records, as an `Inventory`: the
+    /// device's summary, its Object_List, then the objects of `types` (all
+    /// by default; `ObjectType`s or text such as `"ai"`) in batches of
+    /// ReadPropertyMultiple, up to 16 objects or 32 properties a request
+    /// (ReadProperty each once the device has refused that). Each record
+    /// holds the object's name, description, units or state texts and
+    /// whether it takes commands; `values` adds its Present_Value,
+    /// Status_Flags, Event_State, Reliability and priority in control,
+    /// `settings` its COV_Increment, range, Relinquish_Default and
+    /// Polarity, `details` its Device_Type and Profile_Name.
+    ///
+    /// The whole read is one call: it holds the client throughout, so a
+    /// `stop()` waits for it, and nothing comes back until every object is
+    /// read. For a large device, `points` hands the same records out a
+    /// batch at a time.
+    ///
+    /// A property the device can't give is a problem on its record, never
+    /// raised. A device that goes silent while its objects are read ends
+    /// the read with the records read so far: `Inventory.stopped` says why
+    /// and `Inventory.unread` lists the rest. Raised: a bad argument
+    /// TypeError or ValueError, before the Future is made; on await a
+    /// device that can't be placed BacnetLookupError, and one that doesn't
+    /// answer the summary or the Object_List, or refuses the list, what a
+    /// single read raises (a list read element by element that fails at
+    /// one element names it).
+    #[pyo3(signature = (*, types=None, values=false, settings=false, details=false))]
+    fn inventory<'py>(
+        &self,
+        py: Python<'py>,
+        types: Option<&Bound<'py, PyAny>>,
+        values: bool,
+        settings: bool,
+        details: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options = options(types, values, settings, details)?;
+        self.call(py, move |device, style| async move {
+            let read = device.inventory(&options).await;
+            let read = read.map_err(|error| ops_err(error, style))?;
+            // Made an `Inventory` when it reaches Python, on the bridge's
+            // blocking thread, once the lease has gone.
+            Ok(ReadInventory(Box::new(read), style))
+        })
+    }
+
+    /// The device's points as an async iterator, read as they are
+    /// iterated: a `PointIterator` of `Point` records, as `inventory`
+    /// reads them, for a large device or a screen that fills as it goes.
+    /// The await reads the Object_List (whole, or element by element),
+    /// keeping the objects of `types`, each once; or, with `objects`
+    /// (`ObjectIdentifier`s or text), takes those of `types`, each once, in
+    /// order, and reads nothing. Iterating reads the next batch of objects
+    /// whenever the last batch's points are out: one ReadPropertyMultiple
+    /// while the device takes them, so a large device's first points come
+    /// at once and an `async for` broken off reads no more. Each batch
+    /// holds the client for its read alone; `inventory` reads the whole
+    /// device in one call.
+    ///
+    /// A device that stops answering raises from `__anext__`, once the
+    /// points read before it are out; iterating again tries the first
+    /// object not read again. A cancelled `__anext__` stops its request,
+    /// and the next reads that batch again, so no point is lost. Raised: a
+    /// bad argument TypeError or ValueError, before the Future is made; on
+    /// await what `inventory` raises for the Object_List.
+    #[pyo3(signature = (objects=None, *, types=None, values=false, settings=false, details=false))]
+    fn points<'py>(
+        &self,
+        py: Python<'py>,
+        objects: Option<&Bound<'py, PyAny>>,
+        types: Option<&Bound<'py, PyAny>>,
+        values: bool,
+        settings: bool,
+        details: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let options = options(types, values, settings, details)?;
+        let named = objects
+            .filter(|objects| !objects.is_none())
+            .map(objects_arg)
+            .transpose()?;
+        let core = Arc::clone(&self.core);
+        future_into_py(py, async move {
+            let listed = match named {
+                // The lease, as every call takes it: a stopped client
+                // raises here, with nothing sent.
+                Some(named) => core.run(|_, _| async move { Ok(named) }).await?,
+                None => {
+                    let list = |device: OpsDevice, style| async move {
+                        let list = device.list_objects_whole().await;
+                        list.map_err(|error| ops_err(error, style))
+                    };
+                    core.run(list).await?
+                }
+            };
+            let objects = once_each(listed, |object| options.reads(object.object_type()));
+            Ok(PyPointIterator::new(core, objects, options))
+        })
+    }
+
+    /// Watch `points` of the device, as a `Watch`: an async iterator of
+    /// `WatchUpdate`s, each point's latest value and how its watch goes.
+    ///
+    /// Each item of `points` is what `read_many` takes: text (`"ai:1"`,
+    /// `"ao:2 priority-array[8]"`), an `ObjectIdentifier` (its
+    /// Present_Value), or an `(object, property)` or `(object, property,
+    /// index)` tuple; each point once. A Present_Value is watched by
+    /// SubscribeCOV on its object, any other property or element by
+    /// SubscribeCOVProperty. Each point is read once, then subscribed for
+    /// `lifetime` seconds at a time (1 to 28800), renewed before each
+    /// lifetime ends; a point the device won't subscribe, or every point
+    /// with `subscribe=False`, is polled, with the device's other polled
+    /// points, every `poll_interval` seconds (1 to 3600). A keyword left
+    /// None takes the client's (`watch_lifetime`, `watch_poll_interval`,
+    /// `watch_subscribe`); watches with equal settings share their
+    /// subscriptions.
+    ///
+    /// A handle made from an instance (`follows`) watches its device
+    /// wherever it answers: once the watch's own reads find the device at
+    /// another address and its old one no longer answering as it, the
+    /// points move there, each update saying so (`moved`, a `WatchMove`)
+    /// and where it is watched (`address`); while another device answers
+    /// at its address the points are `"unreachable"` (`why.kind ==
+    /// "replaced"`), never taken for it. A handle made from an address
+    /// watches that address: a device that moves away is reported
+    /// (`"gone"`, `why.kind == "moved"`), another device there too
+    /// (`"replaced"`). An announcement alone moves nothing.
+    ///
+    /// The watch runs on its own until it ends: `close()` (or leaving
+    /// `async with`), the object going away, or the client's `stop()`.
+    /// Its iterator then raises StopAsyncIteration, and its subscriptions
+    /// are cancelled, waiting up to 5 s for the device's answers. Raised: a
+    /// bad argument TypeError or ValueError (one str, no points, more than
+    /// 4096, ALL, REQUIRED or OPTIONAL, a lifetime outside 1 to 28800, a
+    /// poll_interval outside 1 to 3600, a subscribe that isn't a bool)
+    /// before the Future is made; on await what any call raises on a
+    /// stopped client, BacnetLookupError for a following handle whose
+    /// device can't be placed, and RuntimeError when the client already
+    /// holds watches of 256 different settings. Nothing is sent until the
+    /// watch starts.
+    #[pyo3(
+        signature = (points, *, lifetime=None, poll_interval=None, subscribe=None),
+        text_signature = "($self, points, *, lifetime=None, poll_interval=None, subscribe=None)"
+    )]
+    fn watch<'py>(
+        &self,
+        py: Python<'py>,
+        points: &Bound<'py, PyAny>,
+        lifetime: Option<&Bound<'py, PyAny>>,
+        poll_interval: Option<&Bound<'py, PyAny>>,
+        subscribe: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let wanted = super::watch::points_arg(points)?;
+        let overrides = super::watch::Overrides::new(lifetime, poll_interval, subscribe)?;
+        let core = Arc::clone(&self.core);
+        future_into_py(py, super::watch::open(core, wanted, overrides))
+    }
+
     /// The device instance: as known (`instance`), or from one read of the
     /// Device object by the wildcard instance, remembered afterwards.
     fn resolve_instance<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -502,7 +674,7 @@ fn optional_priority(
 
 /// Refuse a property that stands for many, when the call is made, as the
 /// read itself would on await.
-fn many_refused(property: PropertyIdentifier) -> PyResult<()> {
+pub(super) fn many_refused(property: PropertyIdentifier) -> PyResult<()> {
     let many = [
         PropertyIdentifier::ALL,
         PropertyIdentifier::REQUIRED,

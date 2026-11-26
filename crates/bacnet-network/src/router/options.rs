@@ -54,7 +54,6 @@ pub struct RouterOptions<
     authorizer: Option<ControlAuthorizer>,
     network_control: bool,
     engine: Options,
-    pub(super) isolated_ports: Vec<usize>,
     receivers: PhantomData<fn() -> (A, C)>,
 }
 
@@ -82,7 +81,6 @@ impl RouterOptions {
             authorizer: None,
             network_control: false,
             engine: OPTIONS,
-            isolated_ports: Vec::new(),
             receivers: PhantomData,
         }
     }
@@ -95,20 +93,6 @@ impl Default for RouterOptions {
 }
 
 impl<A, C> RouterOptions<A, C> {
-    /// Isolate the selected zero-based indices in the input port list.
-    ///
-    /// Distinct selected ports exchange no transit traffic through this
-    /// router. Ordinary ports can still reach every port. Route discovery
-    /// and management replies on isolated ports omit peer-isolated routes.
-    /// The router's local application can still use every configured port.
-    /// The default selection is empty. Startup refuses an out-of-range
-    /// index before starting any transport. Repeated indices are equivalent
-    /// to selecting the port once.
-    pub fn isolated_ports(mut self, ports: impl IntoIterator<Item = usize>) -> Self {
-        self.isolated_ports = ports.into_iter().collect();
-        self
-    }
-
     /// Return the local APDU receiver as an [`AdmissionReceiver`], which
     /// exposes queue-admission snapshots and enforces a per-source quota.
     ///
@@ -149,6 +133,12 @@ impl<A, C> RouterOptions<A, C> {
     /// [`ControlPolicy::Hardened`] denies a protected control unless an
     /// authorizer approves it, as a silent drop. Read the totals with
     /// [`BACnetRouter::control_snapshot`].
+    ///
+    /// The protected controls are the messages that change the routing
+    /// table, and a routing-table query that carries an SNET (#2715): the
+    /// router answers one with its whole table, toward a source on another
+    /// network that the query only claims. So a hardened router with no
+    /// authorizer answers a table query from its own networks only.
     pub fn control_policy(mut self, policy: ControlPolicy) -> Self {
         self.policy = policy;
         self
@@ -238,6 +228,31 @@ impl<A, C> RouterOptions<A, C> {
         self
     }
 
+    /// Take routing-table updates that arrive from another network (#2717).
+    ///
+    /// Off by default: the router drops an Initialize-Routing-Table update
+    /// (a port count other than zero) that carries an SNET, silently, and
+    /// counts it in [`Counters::denied`](super::Counters::denied), before
+    /// the [policy](Self::control_policy) or the
+    /// [authorizer](Self::control_authorizer) hears of it. One update can
+    /// remove or redirect any learned route, and an SNET says it came
+    /// through another router from a node none of this router's networks
+    /// can vouch for. Clause 6.6.3.8 has a router apply the update it
+    /// receives and names no limit on who sends one; this default is the
+    /// router's own.
+    ///
+    /// On, such an update goes to the wire-control gate as one from the
+    /// router's own networks does, with its SNET in
+    /// [`ControlAuthContext::source_net`](super::control_policy::ControlAuthContext::source_net),
+    /// so an authorizer can still pick which to take. Turn it on only for a
+    /// site that manages router tables from a station on another network.
+    /// Updates with no SNET, and table queries from any network, are the
+    /// same either way.
+    pub fn remote_table_updates(mut self) -> Self {
+        self.engine.remote_table_updates = true;
+        self
+    }
+
     /// Drop a global broadcast that repeats one seen within
     /// [`Duplicates::ttl`] (#1698): off unless this sets it.
     ///
@@ -254,13 +269,24 @@ impl<A, C> RouterOptions<A, C> {
     /// The same record covers the network messages the router passes on
     /// with no origin, I-Am-Router, Router-Busy and Router-Available
     /// (#1810), which carry no hop count, so around a loop nothing else
-    /// stops them. A repeat within the time to live is neither applied to
-    /// the table nor passed on. An I-Am-Router is kept by its data alone,
-    /// so two routers announcing the same networks within one time to live
-    /// look like one, and the second is dropped until it announces again.
+    /// stops them. A repeat within the time to live is never passed on.
+    /// An I-Am-Router is kept by its data alone, so two routers announcing
+    /// the same networks within one time to live look like one. The second
+    /// is still learned from where that keeps a route on its port (#2713):
+    /// it adds a network the table lacks, and refreshes a route through
+    /// its own port, which takes its sender as the next router and, under
+    /// hardened convergence, drops a pending claim from another port, as a
+    /// claim that is no repeat does. A route through another port stays
+    /// where it is, since that is how a copy come round a loop arrives. So
+    /// when another station sends a router's list first on one port and
+    /// the router sends it on a different port inside the time to live,
+    /// the route stays with that station past the time to live: until the
+    /// router announces again after it, or the route goes 300 s (the
+    /// learned age) unconfirmed. A known limit, kept by decision.
     /// A Router-Busy or Router-Available is kept by its sender (arrival
-    /// network and link source) and data, so another router's identical
-    /// message is still applied, and accepting one forgets its opposite
+    /// network and link source) and data, and a repeat of one is not
+    /// applied to the table. Another router's identical message is still
+    /// applied, and accepting one forgets its opposite
     /// from the same sender, so Busy, Available, Busy within one time to
     /// live applies all three; at most four such resets per sender within
     /// one time to live, so a pair looping round a ring still ends. A
@@ -316,7 +342,6 @@ impl<A, C> RouterOptions<A, C> {
             authorizer: self.authorizer,
             network_control: self.network_control,
             engine: self.engine,
-            isolated_ports: self.isolated_ports,
             receivers: PhantomData,
         }
     }
@@ -332,7 +357,6 @@ impl<A, C> fmt::Debug for RouterOptions<A, C> {
             )
             .field("network_control", &self.network_control)
             .field("engine", &self.engine)
-            .field("isolated_ports", &self.isolated_ports)
             .field("apdus", &std::any::type_name::<A>())
             .field("controls", &std::any::type_name::<C>())
             .finish()

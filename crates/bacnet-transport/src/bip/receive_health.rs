@@ -1,5 +1,6 @@
 //! Local readiness of the sockets a B/IP receive loop reads.
 
+use bacnet_types::sync::MutexExt as _;
 use std::sync::{Arc, Mutex, Weak};
 
 use super::BipTransport;
@@ -38,16 +39,13 @@ impl BipReceiveHealth {
     /// Read the current socket state without sending a packet.
     pub fn snapshot(&self) -> BipReceiveHealthSnapshot {
         self.current
-            .lock()
-            .unwrap()
+            .locked()
             .upgrade()
-            .map_or_else(BipReceiveHealthSnapshot::default, |run| {
-                *run.lock().unwrap()
-            })
+            .map_or_else(BipReceiveHealthSnapshot::default, |run| *run.locked())
     }
 
     pub(super) fn stop(&self) {
-        *self.current.lock().unwrap() = Weak::new();
+        *self.current.locked() = Weak::new();
     }
 }
 
@@ -71,24 +69,24 @@ impl ReceiveRun {
         count: usize,
         group: bool,
     ) {
-        *self.0.lock().unwrap() = BipReceiveHealthSnapshot {
+        *self.0.locked() = BipReceiveHealthSnapshot {
             primary_receive_active: true,
             broadcast_listeners_required: if required { count } else { 0 },
             broadcast_listeners_active: count,
             group_listener_required: group,
             group_listener_active: group,
         };
-        *monitor.current.lock().unwrap() = Arc::downgrade(&self.0);
+        *monitor.current.locked() = Arc::downgrade(&self.0);
     }
 
     pub(super) fn closed(&self, subnet_count: usize, group: bool) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.locked();
         state.broadcast_listeners_active = subnet_count;
         state.group_listener_active = group;
     }
 
     pub(super) fn replace_group(&self, active: bool) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.locked();
         state.group_listener_required = active;
         state.group_listener_active = active;
     }

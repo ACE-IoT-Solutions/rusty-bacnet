@@ -168,9 +168,12 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// The NPDU names no destination network, so routers act on it
     /// themselves rather than pass it on, as Who-Is-Router-To-Network and
     /// What-Is-Network-Number need (Clauses 6.4.1 and 6.4.19). A
-    /// Who-Is-Router-To-Network with an explicit destination requires one
-    /// station's address. What-Is-Network-Number also accepts the link's
-    /// broadcast MAC as a local broadcast. Only the two questions in
+    /// Who-Is-Router-To-Network sent to a `destination_mac` needs one
+    /// station's own address ([`Self::is_local_unicast_station`]): any
+    /// other is refused with [`Error::Transport`] of kind
+    /// [`InvalidInput`](std::io::ErrorKind::InvalidInput) and nothing is
+    /// sent, never a broadcast instead. What-Is-Network-Number also accepts
+    /// the link's broadcast MAC as a local broadcast. Only the two questions in
     /// [`SENDABLE_NETWORK_MESSAGES`] are sent; any other type,
     /// Initialize-Routing-Table included (it has
     /// [`Self::send_routing_table_query`], which takes no payload), is
@@ -182,10 +185,10 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         destination_mac: Option<&[u8]>,
     ) -> Result<(), Error> {
         if !SENDABLE_NETWORK_MESSAGES.contains(&message_type) {
-            return Err(Error::Encoding(format!(
+            return Err(Error::InvalidArgument(Refusal::text(format!(
                 "network message type {message_type} is not one a non-routing node sends; \
                  only Who-Is-Router-To-Network and What-Is-Network-Number are"
-            )));
+            ))));
         }
         self.send_local_message(message_type, payload, false, destination_mac)
             .await
@@ -206,17 +209,21 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     /// that is what lets the router answer inside the reply window
     /// instead of waiting for the token.
     ///
-    /// `router_mac` is the immediate peer for this query: a link-wide
-    /// broadcast destination, or an empty one, is refused before anything
-    /// is sent.
+    /// `router_mac` is the immediate peer for this query and must be one
+    /// router's own address ([`Self::is_local_unicast_station`]): any other,
+    /// a broadcast, group or empty one among them, is refused with
+    /// [`Error::Transport`] of kind
+    /// [`InvalidInput`](std::io::ErrorKind::InvalidInput) before anything
+    /// is sent, as is a `destination` on a reserved network or with an
+    /// empty or oversized address.
     pub async fn send_routing_table_query(
         &self,
         router_mac: &[u8],
         destination: Option<&NpduAddress>,
     ) -> Result<(), Error> {
         if !self.is_local_unicast_station(router_mac).await? {
-            return Err(Error::Encoding(
-                "a routing-table query goes to one router's own address on this link, using unicast".into(),
+            return Err(not_one_station(
+                "a routing-table query goes to one router's own address on this link, using unicast",
             ));
         }
         if destination.is_some_and(|address| {
@@ -224,8 +231,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
                 || address.mac_address.is_empty()
                 || address.mac_address.len() > bacnet_npdu::MAX_MAC_LEN
         }) {
-            return Err(Error::Encoding(
-                "a routed table query needs one valid destination station".into(),
+            return Err(not_one_station(
+                "a routed table query needs one valid destination station",
             ));
         }
         let npdu = Npdu {
@@ -240,10 +247,10 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         self.transport.send_unicast(&buf, router_mac).await
     }
 
-    /// Whether `mac` can be a router's own address for
-    /// [`Self::send_routing_table_query`]: not empty, and not one of the
-    /// link's local broadcast destinations.
-    pub fn is_routing_table_target(&self, mac: &[u8]) -> bool {
+    /// Whether `mac` is neither empty nor one of the link's local broadcast
+    /// destinations: the first test of
+    /// [`Self::is_local_unicast_station`].
+    fn is_routing_table_target(&self, mac: &[u8]) -> bool {
         !mac.is_empty() && !self.local_broadcasts.contains(mac)
     }
 
@@ -254,7 +261,7 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         if !self.is_routing_table_target(mac) || self.transport.is_group_destination(mac) {
             return Ok(false);
         }
-        router_station(self.transport.data_link(), mac).await
+        station_form(self.transport.data_link(), mac).await
     }
 
     /// Build and send one local network message. Private: its callers fix
@@ -277,9 +284,8 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
         match destination_mac {
             Some(mac) if message_type == NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK => {
                 if !self.is_local_unicast_station(mac).await? {
-                    return Err(Error::Encoding(
-                        "directed router discovery needs one local station's unicast address"
-                            .into(),
+                    return Err(not_one_station(
+                        "directed router discovery needs one local station's unicast address",
                     ));
                 }
                 self.transport.send_unicast(&buf, mac).await
@@ -292,16 +298,22 @@ impl<T: TransportPort + 'static> NetworkLayer<T> {
     }
 }
 
+/// A destination refused, with nothing sent, because it names no one
+/// station: the error kind a transport gives a MAC it cannot address.
+fn not_one_station(why: &'static str) -> Error {
+    Error::Transport(std::io::Error::new(std::io::ErrorKind::InvalidInput, why))
+}
+
 /// Check the form of a station's MAC on the sending link. In particular
 /// six octets represent an IP and port only on B/IP.
-async fn router_station(
+async fn station_form(
     link: Option<bacnet_types::data_link::DataLink>,
     mac: &[u8],
 ) -> Result<bool, Error> {
     use bacnet_types::data_link::DataLink;
 
     Ok(match link {
-        Some(DataLink::Bip) => bacnet_transport::bip::is_router_station(mac)
+        Some(DataLink::Bip) => bacnet_transport::bip::is_unicast_station(mac)
             .await
             .map_err(Error::Transport)?,
         Some(DataLink::Bip6) => mac.len() == 3,

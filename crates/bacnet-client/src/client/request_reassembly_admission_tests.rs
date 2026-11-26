@@ -42,11 +42,12 @@ async fn a_due_transfer_expires_before_a_busy_peers_queued_segments() {
             .unwrap();
     }
     let worker = tokio::spawn(BACnetClient::reassemble(
-        None,
         Arc::downgrade(&lab.client.network),
         receiver,
         Arc::new(SyncMutex::new(table)),
         Outlets {
+            _hold: None,
+            event_tx: lab.client.event_tx.clone(),
             cov_tx: lab.client.cov_tx.clone(),
             policy: cov_notifications::default_confirmed_cov_notification_ack_policy(),
             registry: None,
@@ -109,4 +110,25 @@ async fn strict_worker_declines_multiple_and_checks_the_current_lease_at_complet
     }
     assert!(events.try_recv().is_err());
     lab.client.stop().await.unwrap();
+}
+
+/// A node closing the seat fences the worker but leaves its join available
+/// to a client stop racing the node's remaining cleanup.
+#[tokio::test(start_paused = true)]
+async fn coordinated_close_retains_the_blocked_workers_join_for_client_stop() {
+    let mut lab = lab(true).await;
+    let handle = lab.client.transport().handle();
+    handle.block_next_send();
+    lab.from(&PEER, &segments(17, COV, &cov_body(52), 8, 1)[0])
+        .await;
+    handle.wait_blocked().await;
+    let table = lab.table().unwrap();
+    {
+        let mut tsm = lab.client.tsm.lock();
+        tsm.close_coordinated();
+        assert!(tsm.request_reassembly.as_ref().unwrap().task.is_some());
+    }
+    lab.client.stop().await.unwrap();
+    assert!(table.upgrade().is_none());
+    assert!(lab.table().is_none());
 }

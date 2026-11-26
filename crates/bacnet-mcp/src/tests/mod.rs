@@ -15,15 +15,20 @@ mod attach_shared;
 mod bbmd;
 mod budget;
 mod confirm;
+mod discover_paging;
 mod discovery;
 mod export;
 mod handoff;
+mod inventory;
+mod inventory_cost;
+mod inventory_limits;
 mod known;
 mod legacy;
 mod limits;
 mod listen;
 mod logs;
 mod notify;
+mod one_station;
 mod paging;
 mod plan;
 mod protocol;
@@ -112,6 +117,33 @@ fn whole_list_read(npdu: &[u8]) -> Option<u8> {
     }
 }
 
+/// The invoke ID of `npdu` when it is a local, unsegmented
+/// ReadPropertyMultiple request (service 14).
+fn rpm_request(npdu: &[u8]) -> Option<u8> {
+    match npdu {
+        [0x01, control, apdu, _, invoke_id, 0x0E, ..]
+            if control & 0x28 == 0 && apdu & 0xF8 == 0 =>
+        {
+            Some(*invoke_id)
+        }
+        _ => None,
+    }
+}
+
+/// What the client's side of the lab link does to the client's requests,
+/// switched on from a test.
+#[derive(Default)]
+pub(crate) struct LinkFaults {
+    /// Refuse every unicast send: nothing leaves (#2610).
+    refuse: std::sync::atomic::AtomicBool,
+    /// Once this many frames have gone, refuse every unicast as a stopped
+    /// link does (#1833).
+    stop_after: Mutex<Option<usize>>,
+    /// Answer each ReadPropertyMultiple with a Reject (unrecognized
+    /// service), as a device without the service does (#2779).
+    reject_rpm: std::sync::atomic::AtomicBool,
+}
+
 /// The link MAC of alias `instance`: 10.0.0.3:47808 on, after the lab.
 pub(crate) fn alias_mac(instance: u32) -> [u8; 6] {
     let host = u8::try_from(instance - LAB + 2).unwrap();
@@ -126,7 +158,8 @@ pub(crate) fn alias_mac(instance: u32) -> [u8; 6] {
 /// Answers a whole Object_List read with an Abort when `indexed_only`, as a
 /// device that can only send it element by element does. Once `mute_after`
 /// requests have gone, the device stops answering: later requests are
-/// logged but never delivered.
+/// logged but never delivered. `faults` refuses sends or rejects
+/// ReadPropertyMultiple once a test sets them.
 pub(crate) fn recording(
     inner: LoopbackTransport,
     aliases: Vec<([u8; 6], Arc<LoopbackTransport>)>,
@@ -134,8 +167,9 @@ pub(crate) fn recording(
     received: Arc<Mutex<Vec<Instant>>>,
     indexed_only: bool,
     mute_after: Arc<Mutex<Option<usize>>>,
-    refuse: Arc<std::sync::atomic::AtomicBool>,
+    faults: Arc<LinkFaults>,
 ) -> (TestTransport, TestTransportHandle) {
+    use std::sync::atomic::Ordering::Relaxed;
     // Number controls on, so a Network-Number-Is a test injects teaches
     // the client its network's number; the client sends none unasked.
     let builder = TestTransport::builder()
@@ -147,6 +181,7 @@ pub(crate) fn recording(
     let inbox = builder.handle();
     let handle = builder.handle();
     let log = Arc::clone(&sent);
+    let refuse = Arc::clone(&faults);
     let transport = builder
         .on_inbound(move |npdu| {
             received.lock().unwrap().push(Instant::now());
@@ -161,11 +196,17 @@ pub(crate) fn recording(
                 .unwrap()
                 .push((Instant::now(), frame.mac.to_vec()));
             // A link that refuses to send: nothing leaves (#2610).
-            let refused = !frame.broadcast && refuse.load(std::sync::atomic::Ordering::Relaxed);
+            let refused = !frame.broadcast && refuse.refuse.load(Relaxed);
+            let count = log.lock().unwrap().len();
+            let stop = *refuse.stop_after.lock().unwrap();
+            let stopped = !frame.broadcast && stop.is_some_and(|after| count > after);
             async move {
+                if stopped {
+                    return Err(bacnet_transport::port::stopped());
+                }
                 match refused {
-                    true => Err(bacnet_types::error::Error::Encoding(
-                        "the link refused the send".into(),
+                    true => Err(bacnet_types::error::Error::invalid_argument(
+                        "the link refused the send",
                     )),
                     false => Ok(()),
                 }
@@ -176,9 +217,19 @@ pub(crate) fn recording(
                 let sent = sent.lock().unwrap().len();
                 mute_after.lock().unwrap().is_some_and(|after| sent > after)
             };
-            let abort = (!frame.broadcast && !muted && indexed_only)
+            let unicast = !frame.broadcast && !muted;
+            // An Abort PDU from the device: segmentation not supported (4);
+            // a Reject PDU: unrecognized service (9).
+            let answer = match (unicast && indexed_only)
                 .then(|| whole_list_read(&frame.npdu))
-                .flatten();
+                .flatten()
+            {
+                Some(invoke_id) => Some(vec![0x01, 0x00, 0x71, invoke_id, 4]),
+                None => (unicast && faults.reject_rpm.load(Relaxed))
+                    .then(|| rpm_request(&frame.npdu))
+                    .flatten()
+                    .map(|invoke_id| vec![0x01, 0x00, 0x60, invoke_id, 9]),
+            };
             let (inbox, aliases) = (inbox.clone(), aliases.clone());
             async move {
                 if muted {
@@ -190,12 +241,12 @@ pub(crate) fn recording(
                     }
                     return true;
                 }
-                if let Some(invoke_id) = abort {
-                    // An Abort PDU from the device: segmentation not supported (4).
-                    let abort = bytes::Bytes::from(vec![0x01, 0x00, 0x71, invoke_id, 4]);
+                if let Some(answer) = answer {
+                    let answer = bytes::Bytes::from(answer);
                     if let Some(inbox) = inbox.inbound() {
                         let source = bacnet_types::MacAddr::from_slice(&frame.mac);
-                        let back = ReceivedNpdu::unverified(abort, source, false, Vec::new(), None);
+                        let back =
+                            ReceivedNpdu::unverified(answer, source, false, Vec::new(), None);
                         let _ = inbox.send(back).await;
                     }
                     return false;
@@ -243,6 +294,8 @@ pub(crate) const ALIASES: std::ops::Range<u32> = 1202..1206;
 pub(crate) struct Lab {
     pub(crate) agent: Agent,
     pub(crate) sent: SendLog,
+    /// Every frame the client sent, whole (the link MAC and the NPDU).
+    pub(crate) frames: bacnet_transport::test_transport::SendLog,
     pub(crate) received: Arc<Mutex<Vec<Instant>>>,
     server: BACnetServer<TestTransport>,
     /// The [`ALIASES`]' devices, in order.
@@ -254,7 +307,7 @@ pub(crate) struct Lab {
     forwarding: Vec<JoinHandle<()>>,
     serving: JoinHandle<()>,
     mute: Arc<Mutex<Option<usize>>>,
-    refuse: Arc<std::sync::atomic::AtomicBool>,
+    faults: Arc<LinkFaults>,
     /// The client's request limits, to hold a device's gate from a test.
     pub(crate) limits: Arc<bacnet_ops::limits::RequestLimits>,
     /// A handle on the server, for calling its handler directly.
@@ -301,8 +354,11 @@ impl Lab {
         indexed_only: bool,
         site: bool,
     ) -> Self {
+        // The lab devices don't segment, so a long answer is cut short
+        // (MORE_ITEMS) and the tools page across answers (#2617).
         let identity = DeviceIdentity::new(LAB, 260)
             .unwrap()
+            .with_segmentation(Segmentation::NO_SEGMENTATION)
             .with_name("Lab device");
         let database = build_database_with_extra(&identity, lab_objects(extra, site)).unwrap();
         let (client_port, server_port) =
@@ -317,6 +373,7 @@ impl Lab {
             links.push((alias_mac(alias), Arc::new(client_port)));
             let identity = DeviceIdentity::new(alias, 260)
                 .unwrap()
+                .with_segmentation(Segmentation::NO_SEGMENTATION)
                 .with_name(format!("Lab device {alias}"));
             let database = build_database_with_extra(&identity, lab_objects(extra, site)).unwrap();
             let server = BACnetServer::generic_builder()
@@ -346,7 +403,7 @@ impl Lab {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let received = Arc::new(Mutex::new(Vec::new()));
         let mute = Arc::new(Mutex::new(None));
-        let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let faults = Arc::new(LinkFaults::default());
         let (recording, inbox) = recording(
             client_port,
             links.clone(),
@@ -354,13 +411,14 @@ impl Lab {
             Arc::clone(&received),
             indexed_only,
             Arc::clone(&mute),
-            Arc::clone(&refuse),
+            Arc::clone(&faults),
         );
         let config = ClientConfig {
             apdu_timeout_ms: 1_000,
             apdu_retries: 0,
             ..ClientConfig::default()
         };
+        let frames = recording.sent();
         let low = Arc::new(BACnetClient::start(config, recording).await.unwrap());
         // Each alias's answers reach the client's receive channel beside the
         // lab device's own.
@@ -410,6 +468,7 @@ impl Lab {
         Self {
             agent,
             sent,
+            frames,
             received,
             server,
             aliases,
@@ -418,7 +477,7 @@ impl Lab {
             forwarding,
             serving,
             mute,
-            refuse,
+            faults,
             limits,
             mcp,
             shutdown: Some(shutdown),
@@ -432,10 +491,26 @@ impl Lab {
         *self.mute.lock().unwrap() = Some(sent + more);
     }
 
+    /// Let `more` requests through from now, then refuse every unicast as
+    /// a stopped link does: each later request fails at once, unsent.
+    pub(crate) fn stop_link_after(&self, more: usize) {
+        let sent = self.sent.lock().unwrap().len();
+        *self.faults.stop_after.lock().unwrap() = Some(sent + more);
+    }
+
     /// From now on the client's link refuses to send any unicast: each
     /// request fails at once, unsent.
     pub(crate) fn refuse_sends(&self) {
-        self.refuse
+        self.faults
+            .refuse
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// From now on the device answers every ReadPropertyMultiple with a
+    /// Reject, as one without the service does (#2779).
+    pub(crate) fn refuse_rpm(&self) {
+        self.faults
+            .reject_rpm
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 

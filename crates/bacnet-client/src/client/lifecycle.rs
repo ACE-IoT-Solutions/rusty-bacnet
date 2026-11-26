@@ -3,6 +3,7 @@ use super::dispatch_turn::{Turn, TurnOrder};
 use super::seat::{Inbound, Own};
 use super::*;
 use bacnet_network::layer::ReceivedNetworkControl;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -16,15 +17,63 @@ impl ClientConfig {
     pub(super) fn validate_request_settings(&self) -> Result<(), Error> {
         validate_max_apdu_length(self.max_apdu_length)?;
         validate_max_segments(self.max_segments)?;
+        if self.segmentation.to_raw() > Segmentation::NO_SEGMENTATION.to_raw() {
+            return Err(Error::InvalidConfig(
+                Refusal::new(
+                    "invalid segmentation {}; expected SEGMENTED_BOTH, SEGMENTED_TRANSMIT, \
+                     SEGMENTED_RECEIVE or NO_SEGMENTATION",
+                )
+                .with_value(u64::from(self.segmentation.to_raw())),
+            ));
+        }
+        if self.apdu_segment_timeout_ms == Some(0) {
+            return Err(Error::invalid_config(
+                "invalid apdu-segment-timeout 0 ms; expected a positive value, or none for the \
+                 APDU timeout",
+            ));
+        }
         pacing::validate_interval_ms(self.min_request_interval_ms)
+    }
+
+    /// The segment timeout in milliseconds: the configured one, or the APDU
+    /// timeout.
+    pub(super) fn segment_timeout_ms(&self) -> u64 {
+        self.apdu_segment_timeout_ms.unwrap_or(self.apdu_timeout_ms)
+    }
+
+    /// Whether this client receives segments: SEGMENTED_BOTH (0) or
+    /// SEGMENTED_RECEIVE (2), the values with the low bit clear. Read on
+    /// every request's header, so it is one bit test, not a branch; the
+    /// build refuses any value past NO_SEGMENTATION (3).
+    #[inline(always)]
+    pub(super) fn receives_segments(&self) -> bool {
+        self.segmentation.to_raw() & 1 == 0
+    }
+
+    /// Whether this client transmits segments: SEGMENTED_BOTH (0) or
+    /// SEGMENTED_TRANSMIT (1), the values with the second bit clear.
+    #[inline(always)]
+    pub(super) fn transmits_segments(&self) -> bool {
+        self.segmentation.to_raw() & 2 == 0
+    }
+
+    /// Refuse a request that needs segments when this client sends none
+    /// ([`Self::segmentation`]), before anything is sent. Asked only of a
+    /// request too long for one APDU.
+    pub(super) fn check_segmented_request(&self) -> Result<(), Error> {
+        if self.transmits_segments() {
+            Ok(())
+        } else {
+            Err(bacnet_types::error::SegmentationError::LocalCannotTransmit.into())
+        }
     }
 
     pub(super) fn validate_window(&self) -> Result<(), Error> {
         if !(1..=127).contains(&self.proposed_window_size) {
-            return Err(Error::Encoding(format!(
-                "invalid proposed-window-size {}; expected 1..=127",
-                self.proposed_window_size
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new("invalid proposed-window-size {}; expected 1..=127")
+                    .with_value(u64::from(self.proposed_window_size)),
+            ));
         }
         Ok(())
     }
@@ -94,39 +143,102 @@ impl Controls {
     }
 }
 
+/// What the client's dispatch task owns: where its turns come from, and
+/// the client state and channels it hands each one to. Built once by
+/// `BACnetClient::assemble`. The fields are in the order the task's body
+/// first names them, the order its captures were in when the task was a
+/// block inside `assemble`.
+struct DispatchTask<S> {
+    /// Dropped when the task ends, however it ends (#2612).
+    routing_end: tokio::sync::watch::Sender<()>,
+    /// Where the APDUs and network controls come from.
+    inbound: S,
+    /// Requests' cleanups (`TransactionGuard`).
+    cleanup_rx: mpsc::UnboundedReceiver<TransactionCleanup>,
+    /// Network reports' subscribers.
+    network_report_tx: broadcast::Sender<bacnet_network::layer::ReceivedNetworkReport>,
+    /// The routing-table queries waiting for their answers.
+    routing_query: Arc<routing_table::RoutingQueries>,
+    /// The Number owner's queue, on a link that takes the Number controls.
+    number_tx: Option<mpsc::Sender<bacnet_network::network_number::NumberControl>>,
+    /// The routed paths' limits, which network rejects teach.
+    routed_path_limits: Arc<RoutedPathLimits>,
+    /// Transaction state machine.
+    tsm: Arc<SyncMutex<Tsm>>,
+    /// SegmentACK routes to the segmented requests being sent.
+    seg_ack_senders: Arc<SyncMutex<HashMap<SegAckKey, SegmentAckRoute>>>,
+    /// Tests' view of the cleanups applied.
+    #[cfg(test)]
+    segmented_cleanup: Arc<SegmentedCleanupHook>,
+    /// Confirmed requests ignored for coming from a group address.
+    group_source_drops: Arc<AtomicU64>,
+    /// Event notifications' subscribers.
+    event_tx: broadcast::Sender<ReceivedEventNotification>,
+    /// Throttle on warnings about APDUs that don't decode.
+    decode_warning: Arc<WarnThrottle>,
+    /// Discovered-device table.
+    device_table: Arc<network_number::Discovery>,
+    /// COV notifications' subscribers.
+    cov_tx: broadcast::Sender<COVEvent>,
+    cov_registry: Option<Arc<cov_registry::Registry>>,
+    reassembly_hold: Option<bacnet_endpoint_core::seat::SeatHold>,
+    /// When to acknowledge a confirmed COV notification.
+    confirmed_cov_ack_policy: ConfirmedCOVNotificationAckPolicy,
+    /// Device events' subscribers.
+    device_tx: broadcast::Sender<DeviceEvent>,
+    /// Device collision events' subscribers.
+    device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
+    /// I-Have answers' subscribers.
+    i_have_tx: broadcast::Sender<ReceivedIHave>,
+    /// Throttle on warnings about responses refused.
+    response_warning: Arc<WarnThrottle>,
+    /// The receive-side limits this client puts on the wire.
+    response_limits: ResponseLimits,
+    /// The device purge, which ends with the loop.
+    device_purge: tokio::task::AbortHandle,
+}
+
 /// Every [`DEVICE_PURGE_INTERVAL`], drop the devices not heard from in
 /// [`DEVICE_MAX_AGE`] and announce each as lost, then each contest that
-/// lost a claimant. A task of its own, so the dispatch loop doesn't poll
-/// this timer on every turn (#1978 item 8); the loop ends it when it ends
-/// itself, and `stop()` and drop abort both.
-fn spawn_device_purge(
+/// lost a claimant. Beside it, polled in the same task, the checks of the
+/// routed paths the dispatch task marked (`route_checks`, #2823): a check's
+/// waits never hold a purge back. A task of its own, so the dispatch loop
+/// doesn't poll this timer on every turn (#1978 item 8); the loop ends it
+/// when it ends itself, and `stop()` and drop abort both, the checks with
+/// it.
+fn spawn_device_purge<T: TransportPort + 'static>(
     device_table: Arc<network_number::Discovery>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
+    route_checks: route_checks::RouteChecks<T>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(DEVICE_PURGE_INTERVAL);
-        // Tokio intervals tick immediately; consume that tick so purges run
-        // on the configured cadence.
-        interval.tick().await;
-        loop {
+        let purge = async {
+            let mut interval = tokio::time::interval(DEVICE_PURGE_INTERVAL);
+            // Tokio intervals tick immediately; consume that tick so purges
+            // run on the configured cadence.
             interval.tick().await;
-            // The events go out under the table's lock, as a broadcast send
-            // never waits. The dispatch task adds a device and announces it
-            // in that order, so a device it adds back after this purge is
-            // announced after its Lost event, never before.
-            let mut table = device_table.lock();
-            let purged = table.purge_stale_collect(DEVICE_MAX_AGE);
-            for device in purged.lost {
-                let _ = device_tx.send(DeviceEvent {
-                    kind: DeviceEventKind::Lost,
-                    device,
-                });
+            loop {
+                interval.tick().await;
+                // The events go out under the table's lock, as a broadcast
+                // send never waits. The dispatch task adds a device and
+                // announces it in that order, so a device it adds back after
+                // this purge is announced after its Lost event, never before.
+                let mut table = device_table.lock();
+                let purged = table.purge_stale_collect(DEVICE_MAX_AGE);
+                for device in purged.lost {
+                    let _ = device_tx.send(DeviceEvent {
+                        kind: DeviceEventKind::Lost,
+                        device,
+                    });
+                }
+                for instance in purged.contested {
+                    let _ = device_collision_tx.send(DeviceCollisionEvent::of(&table, instance));
+                }
             }
-            for instance in purged.contested {
-                let _ = device_collision_tx.send(DeviceCollisionEvent::of(&table, instance));
-            }
-        }
+        };
+        let checks = route_checks.run(&device_table, (&device_tx, &device_collision_tx));
+        tokio::join!(purge, checks);
     })
 }
 
@@ -153,7 +265,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         options.validate()?;
 
         let mut network = NetworkLayer::new(transport);
-        let network_control_rx = network.enable_network_control_receiver()?;
+        let (network_control_rx, control_drops) =
+            network.enable_network_control_receiver_counting_drops()?;
         let apdu_rx = network.start().await?;
         let _bucket = cap_max_apdu_to_transport(
             config.max_apdu_length,
@@ -161,29 +274,33 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         )?;
         let coordinator = Arc::new(OutboundTransactionCoordinator::new());
         let inbound = Own::new(Arc::new(network), apdu_rx, network_control_rx);
-        let cov_timeout = config
-            .segmented_response_accepted
-            .then(|| Duration::from_millis(config.apdu_timeout_ms));
         Ok(Self::assemble(
             config,
             options,
             inbound,
             coordinator,
-            cov_timeout,
+            Some(control_drops),
         ))
     }
 
     /// Build the client on a started network layer: its state, its dispatch
     /// task and its Number work. `inbound` is where its APDUs and controls
     /// come from: its own layer's receivers, or a seat's queues (#2617).
-    /// Nothing here waits, and the caller has checked `config` and `options`.
+    /// `control_drops` counts the controls its own layer's queue turned
+    /// away; `None` for a seat, which can't read its node's. Nothing here
+    /// waits, and the caller has checked `config` and `options`.
     pub(super) fn assemble<S: Inbound<T>>(
-        config: ClientConfig,
+        mut config: ClientConfig,
         options: ClientOptions,
         mut inbound: S,
         coordinator: Arc<OutboundTransactionCoordinator>,
-        cov_segment_timeout: Option<Duration>,
+        control_drops: Option<bacnet_network::layer::QueueAdmissionCounters>,
     ) -> Self {
+        // A client that takes no segments states no segment count either:
+        // settled here once, so no request's header asks.
+        if !config.receives_segments() {
+            config.max_segments = None;
+        }
         let network = Arc::clone(inbound.network());
         let local_mac = MacAddr::from_slice(network.local_mac());
         // On a link that takes the local Number controls, the client asks
@@ -206,10 +323,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let device_table_dispatch = Arc::clone(&device_table);
         inbound.bind(&tsm, &device_table);
         let seat = inbound.seat();
-        let cov_segments = cov_segment_timeout.map(|timeout| request_reassembly::Settings {
-            timeout,
-            hold: seat.as_ref().and_then(|seat| seat.hold()),
-        });
+        let reassembly_hold = seat.as_ref().and_then(|seat| seat.hold());
         let (cov_tx, _) = broadcast::channel::<COVEvent>(options.cov_channel_capacity);
         let cov_tx_dispatch = cov_tx.clone();
         let cov_registry = options
@@ -247,7 +361,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let seg_ack_senders: Arc<SyncMutex<HashMap<SegAckKey, SegmentAckRoute>>> =
             Arc::new(SyncMutex::new(HashMap::new()));
         let seg_ack_senders_dispatch = Arc::clone(&seg_ack_senders);
-        let (cleanup_tx, mut cleanup_rx) = mpsc::unbounded_channel::<TransactionCleanup>();
+        let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel::<TransactionCleanup>();
         #[cfg(test)]
         let segmented_cleanup = Arc::new(SegmentedCleanupHook::default());
         #[cfg(test)]
@@ -269,166 +383,46 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         #[cfg(test)]
         let response_warning_hook = Arc::clone(&response_warning);
 
+        let route_checks = route_checks::RouteChecks::new(
+            Arc::clone(&network),
+            network_report_tx.clone(),
+            control_drops,
+            Duration::from_millis(config.apdu_timeout_ms),
+        );
         let device_purge_task = spawn_device_purge(
             Arc::clone(&device_table),
             device_tx.clone(),
             device_collision_tx.clone(),
+            route_checks,
         );
         let device_purge = device_purge_task.abort_handle();
-        let dispatch_task = tokio::spawn(async move {
-            // Dropped when this task ends, however it ends (#2612).
-            let _routing_end = routing_end;
-            let mut seg_state: HashMap<SegKey, SegmentedReceiveState> = HashMap::new();
-            let mut order = TurnOrder::default();
-
-            loop {
-                let turn = std::future::poll_fn(|cx| {
-                    inbound.poll_turn(&mut order, cx, |cx| cleanup_rx.poll_recv(cx))
-                })
-                .await;
-                match turn {
-                    Turn::Control(control) => {
-                        // Read once; subscribers first, and a broadcast
-                        // send never waits.
-                        let number = bacnet_network::network_number::NumberControl::parse(&control);
-                        network_reports::publish(
-                            &network_report_tx_dispatch,
-                            &control,
-                            number,
-                            &routing_query_dispatch.outstanding,
-                        );
-                        if let Some((tx, parsed)) = number_tx.as_ref().zip(number) {
-                            if tx.try_send(parsed).is_err() {
-                                debug!(
-                                    "client Number control queue full or closed; dropping control"
-                                );
-                            }
-                        } else {
-                            // Preserve the original envelope and ingress sequence for Reject correlation.
-                            routed_path_limits_dispatch
-                                .handle_network_control(&tsm_dispatch, control)
-                                .await;
-                        }
-                    }
-                    Turn::Cleanup(cleanup) => {
-                        let Some(cleanup) = cleanup else {
-                            break;
-                        };
-                        if cleanup.cancel_tsm {
-                            tsm_dispatch.lock().cancel_transaction_for_owner(
-                                &cleanup.mac,
-                                cleanup.invoke_id,
-                                &cleanup.owner,
-                            );
-                        }
-                        // Cleanup is provenance-agnostic: drop any reassembly
-                        // snapshot for this (mac, invoke) with a matching
-                        // owner, regardless of trust context (fail-closed).
-                        let found = seg_state
-                            .keys()
-                            .find(|key| {
-                                key.0 == cleanup.mac
-                                    && key.1 == cleanup.invoke_id
-                                    && seg_state
-                                        .get(*key)
-                                        .is_some_and(|state| state.owner.same_as(&cleanup.owner))
-                            })
-                            .cloned();
-                        #[cfg(test)]
-                        let removed = found.is_some();
-                        if let Some(found) = found {
-                            seg_state.remove(&found);
-                        }
-                        if let Some(expected_sender) = cleanup.seg_ack_sender {
-                            let key = (cleanup.mac, cleanup.invoke_id);
-                            let mut senders = seg_ack_senders_dispatch.lock();
-                            if senders.get(&key).is_some_and(|route| {
-                                route.owner.same_as(&cleanup.owner)
-                                    && route.sender.same_channel(&expected_sender)
-                            }) {
-                                senders.remove(&key);
-                            }
-                        }
-                        #[cfg(test)]
-                        segmented_cleanup_dispatch.record_processed(removed);
-                    }
-                    Turn::Apdu(received) => {
-                        let Some(received) = received else {
-                            break;
-                        };
-                        let network_dispatch = inbound.network();
-                        match apdu::decode_apdu(received.apdu.clone()) {
-                            // Its answer would go back to a group address,
-                            // to every node there (#1504).
-                            Ok(Apdu::ConfirmedRequest(_))
-                                if network_dispatch
-                                    .transport()
-                                    .is_group_destination(&received.source_mac) =>
-                            {
-                                group_source_drops_dispatch.fetch_add(1, Ordering::Relaxed);
-                                debug!("Ignoring a ConfirmedRequest from a group address");
-                            }
-                            // Beside a server role, which answers for the
-                            // device, only a confirmed COV notification, of
-                            // either form, is the client's to answer (#2617).
-                            Ok(Apdu::ConfirmedRequest(request))
-                                if !inbound.answers_for_device()
-                                    && !dispatch::seated_client_answers(&request) =>
-                            {
-                                dispatch::heard_for_the_server(
-                                    &event_tx_dispatch,
-                                    &received,
-                                    &request,
-                                    &decode_warning,
-                                );
-                            }
-                            Ok(decoded) => {
-                                Self::dispatch_apdu(
-                                    DispatchContext {
-                                        tsm: &tsm_dispatch,
-                                        device_table: &device_table_dispatch,
-                                        network: network_dispatch,
-                                        cov_tx: &cov_tx_dispatch,
-                                        cov_registry: dispatch_registry.as_ref(),
-                                        cov_segments: cov_segments.as_ref(),
-                                        event_tx: &event_tx_dispatch,
-                                        confirmed_cov_ack_policy: &confirmed_cov_ack_policy,
-                                        device_tx: &device_tx_dispatch,
-                                        device_collision_tx: &device_collision_tx_dispatch,
-                                        i_have_tx: &i_have_tx_dispatch,
-                                        seg_ack_senders: &seg_ack_senders_dispatch,
-                                        decode_warning: &decode_warning,
-                                        response_warning: &response_warning,
-                                    },
-                                    &mut seg_state,
-                                    InboundApdu {
-                                        source_mac: &received.source_mac,
-                                        source_network: &received.source_network,
-                                        provenance: received.provenance.clone(),
-                                        response_route: received.response_route(),
-                                        is_group: received.is_group,
-                                        reply_tx: received.reply_tx,
-                                    },
-                                    decoded,
-                                    response_limits,
-                                )
-                                .await;
-                            }
-                            Err(e) => {
-                                warn_throttled!(
-                                    decode_warning,
-                                    error = %e,
-                                    "Failed to decode received APDU"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            // The receive queue closed: no device can be heard from again,
-            // so the purge ends with the loop, as it did inside it.
-            device_purge.abort();
-        });
+        let dispatch_task = tokio::spawn(Self::dispatch_task(DispatchTask {
+            routing_end,
+            inbound,
+            cleanup_rx,
+            network_report_tx: network_report_tx_dispatch,
+            routing_query: routing_query_dispatch,
+            number_tx,
+            routed_path_limits: routed_path_limits_dispatch,
+            tsm: tsm_dispatch,
+            seg_ack_senders: seg_ack_senders_dispatch,
+            #[cfg(test)]
+            segmented_cleanup: segmented_cleanup_dispatch,
+            group_source_drops: group_source_drops_dispatch,
+            event_tx: event_tx_dispatch,
+            decode_warning,
+            device_table: device_table_dispatch,
+            cov_tx: cov_tx_dispatch,
+            cov_registry: dispatch_registry,
+            reassembly_hold,
+            confirmed_cov_ack_policy,
+            device_tx: device_tx_dispatch,
+            device_collision_tx: device_collision_tx_dispatch,
+            i_have_tx: i_have_tx_dispatch,
+            response_warning,
+            response_limits,
+            device_purge,
+        }));
 
         // Shared: each paced request's guard keeps the pacer it reports to.
         let pacer = Arc::new(pacing::RequestPacer::new(Duration::from_millis(
@@ -479,6 +473,182 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
+    /// The client's dispatch task: take each turn, a network control, a
+    /// request's cleanup or a received APDU, as [`TurnOrder`] orders them,
+    /// and handle it before taking the next, until the receive queue or
+    /// the cleanup channel closes. Moved as it stood from `assemble`
+    /// (#2558), reaching what it captured through `task`.
+    ///
+    /// Not an `async fn`, which would hold `task` twice: the block below
+    /// captures it once (#1713).
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "an async fn would hold its moved arguments twice (#1713)"
+    )]
+    fn dispatch_task<S: Inbound<T>>(
+        mut task: DispatchTask<S>,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            // Dropped when this task ends, however it ends (#2612).
+            let _routing_end = task.routing_end;
+            let mut seg_state: HashMap<SegKey, SegmentedReceiveState> = HashMap::new();
+            let mut order = TurnOrder::default();
+
+            loop {
+                let turn = std::future::poll_fn(|cx| {
+                    task.inbound
+                        .poll_turn(&mut order, cx, |cx| task.cleanup_rx.poll_recv(cx))
+                })
+                .await;
+                match turn {
+                    Turn::Control(control) => {
+                        // Read once; subscribers first, and a broadcast
+                        // send never waits.
+                        let number = bacnet_network::network_number::NumberControl::parse(&control);
+                        network_reports::publish(
+                            &task.network_report_tx,
+                            &control,
+                            number,
+                            &task.routing_query.outstanding,
+                        );
+                        if let Some((tx, parsed)) = task.number_tx.as_ref().zip(number) {
+                            if tx.try_send(parsed).is_err() {
+                                debug!(
+                                    "client Number control queue full or closed; dropping control"
+                                );
+                            }
+                        } else {
+                            // Preserve the original envelope and ingress sequence for Reject correlation.
+                            // The data link, read here and not kept by the task,
+                            // names the router in a reject's error (#2724).
+                            let link = task.inbound.network().transport().data_link();
+                            task.routed_path_limits
+                                .handle_network_control(&task.tsm, control, link)
+                                .await;
+                        }
+                    }
+                    Turn::Cleanup(cleanup) => {
+                        let Some(cleanup) = cleanup else {
+                            break;
+                        };
+                        if cleanup.cancel_tsm {
+                            task.tsm.lock().cancel_transaction_for_owner(
+                                &cleanup.mac,
+                                cleanup.invoke_id,
+                                &cleanup.owner,
+                            );
+                        }
+                        // Cleanup is provenance-agnostic: drop any reassembly
+                        // snapshot for this (mac, invoke) with a matching
+                        // owner, regardless of trust context (fail-closed).
+                        let found = seg_state
+                            .keys()
+                            .find(|key| {
+                                key.0 == cleanup.mac
+                                    && key.1 == cleanup.invoke_id
+                                    && seg_state
+                                        .get(*key)
+                                        .is_some_and(|state| state.owner.same_as(&cleanup.owner))
+                            })
+                            .cloned();
+                        #[cfg(test)]
+                        let removed = found.is_some();
+                        if let Some(found) = found {
+                            seg_state.remove(&found);
+                        }
+                        if let Some(expected_sender) = cleanup.seg_ack_sender {
+                            let key = (cleanup.mac, cleanup.invoke_id);
+                            let mut senders = task.seg_ack_senders.lock();
+                            if senders.get(&key).is_some_and(|route| {
+                                route.owner.same_as(&cleanup.owner)
+                                    && route.sender.same_channel(&expected_sender)
+                            }) {
+                                senders.remove(&key);
+                            }
+                        }
+                        #[cfg(test)]
+                        task.segmented_cleanup.record_processed(removed);
+                    }
+                    Turn::Apdu(received) => {
+                        let Some(received) = received else {
+                            break;
+                        };
+                        let network_dispatch = task.inbound.network();
+                        match apdu::decode_apdu(received.apdu.clone()) {
+                            // Its answer would go back to a group address,
+                            // to every node there (#1504).
+                            Ok(Apdu::ConfirmedRequest(_))
+                                if network_dispatch
+                                    .transport()
+                                    .is_group_destination(&received.source_mac) =>
+                            {
+                                task.group_source_drops.fetch_add(1, Ordering::Relaxed);
+                                debug!("Ignoring a ConfirmedRequest from a group address");
+                            }
+                            // Beside a server role, which answers for the
+                            // device, only a confirmed COV notification, of
+                            // either form, is the client's to answer (#2617).
+                            Ok(Apdu::ConfirmedRequest(request))
+                                if !task.inbound.answers_for_device()
+                                    && !dispatch::seated_client_answers(&request) =>
+                            {
+                                dispatch::heard_for_the_server(
+                                    &task.event_tx,
+                                    &received,
+                                    &request,
+                                    &task.decode_warning,
+                                );
+                            }
+                            Ok(decoded) => {
+                                Self::dispatch_apdu(
+                                    &DispatchContext {
+                                        tsm: &task.tsm,
+                                        device_table: &task.device_table,
+                                        network: network_dispatch,
+                                        cov_tx: &task.cov_tx,
+                                        cov_registry: task.cov_registry.as_ref(),
+                                        reassembly_hold: task.reassembly_hold.as_ref(),
+                                        event_tx: &task.event_tx,
+                                        confirmed_cov_ack_policy: &task.confirmed_cov_ack_policy,
+                                        device_tx: &task.device_tx,
+                                        device_collision_tx: &task.device_collision_tx,
+                                        i_have_tx: &task.i_have_tx,
+                                        seg_ack_senders: &task.seg_ack_senders,
+                                        routed_path_limits: &task.routed_path_limits,
+                                        decode_warning: &task.decode_warning,
+                                        response_warning: &task.response_warning,
+                                    },
+                                    &mut seg_state,
+                                    InboundApdu {
+                                        source_mac: &received.source_mac,
+                                        source_network: &received.source_network,
+                                        provenance: received.provenance.clone(),
+                                        response_route: received.response_route(),
+                                        is_group: received.is_group,
+                                        reply_tx: received.reply_tx,
+                                    },
+                                    decoded,
+                                    task.response_limits,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn_throttled!(
+                                    task.decode_warning,
+                                    error = %e,
+                                    "Failed to decode received APDU"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // The receive queue closed: no device can be heard from again,
+            // so the purge ends with the loop, as it did inside it.
+            task.device_purge.abort();
+        }
+    }
+
     /// Confirmed requests ignored since start because the link-layer address
     /// they came from is a group destination of the transport
     /// ([`TransportPort::is_group_destination`]), such as a B/IP broadcast or
@@ -506,6 +676,38 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         self.routed_path_limits.dropped_rejects()
     }
 
+    /// Answers dropped since start because they named a device and one of
+    /// its open requests but came by another path than that request took
+    /// (#2831): from another station on this link than the router a routed
+    /// request went to, or relayed with this network's own number as SNET
+    /// for a request sent straight to the device. A routed frame's SNET and
+    /// SADR are written by whoever sends it; the link station it comes from
+    /// is the part a sender can't choose on most links. So another station
+    /// can no longer complete a request by sending the answer itself: such
+    /// an answer is neither kept nor answered, and the request waits for
+    /// the device's own. A site whose router relays a local device's
+    /// answers back onto this network sees those requests time out and
+    /// this count rise.
+    ///
+    /// Only this client's requests are counted, and a relayed answer for a
+    /// request sent straight to a device only once the client knows its
+    /// network's number. A server's own writes and notifications to a local
+    /// device that get only a relayed answer time out with a debug log; a
+    /// server counter comes with the server half of #2831.
+    ///
+    /// Not covered: an answer relayed through the request's own router
+    /// (that router would have to check where it came from); a request sent
+    /// by local broadcast ([`Station::routed_via_local_broadcast`]), which
+    /// names no router, so any router's relay completes it; a client on a
+    /// router's application port, whose requests the router's own table
+    /// routes; and B/IPv6, where a frame's source virtual address is the
+    /// sender's own claim. A rise means a station is answering for other
+    /// devices: one guessing invoke IDs, a router relaying a local device's
+    /// answers, or a second path to a network, which Clause 4.2 rules out.
+    pub fn off_path_answer_drops(&self) -> u64 {
+        self.routed_path_limits.off_path_answers()
+    }
+
     /// Reason-4 rejects dropped since start because the request they landed
     /// on had sent nothing above 228 octets of NPDU, the smallest size every
     /// router must forward (Table 6-1, #2665). A conforming router never
@@ -522,6 +724,18 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// Get the client's local MAC address.
     pub fn local_mac(&self) -> &[u8] {
         &self.local_mac
+    }
+
+    /// How long a confirmed request waits for its answer before it is sent
+    /// again or fails, as the builder set it.
+    pub fn apdu_timeout(&self) -> Duration {
+        Duration::from_millis(self.config.apdu_timeout_ms)
+    }
+
+    /// How many times a confirmed request is sent again before it fails, as
+    /// the builder set it.
+    pub fn apdu_retries(&self) -> u8 {
+        self.config.apdu_retries
     }
 
     /// Current BACnet max-APDU bucket advertised by this client.
@@ -560,6 +774,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         join_owned_task(&mut self.dispatch_task).await;
         join_owned_task(&mut self.device_purge_task).await;
         self.tsm.lock().cancel_all_transactions();
+        // The segmented requests the client was reassembling end with it.
         let reassembly = self.tsm.lock().request_reassembly.take();
         if let Some(reassembly) = reassembly {
             reassembly.end().await;

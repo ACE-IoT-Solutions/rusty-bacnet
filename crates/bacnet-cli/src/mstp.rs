@@ -332,19 +332,17 @@ pub(crate) async fn build_client_on<S: SerialPort>(
 #[cfg(feature = "serial")]
 pub(crate) type Serial = bacnet_transport::mstp_serial::TokioSerialPort;
 
-/// Check `mstp`'s settings, then open its serial port.
+/// Check `mstp`'s settings, then open its serial port. A port that
+/// doesn't open is the transport's error, which names the port (#1833).
 #[cfg(feature = "serial")]
 pub(crate) fn open_serial(mstp: &MstpArgs) -> Result<Serial, Error> {
     use bacnet_transport::mstp_serial::SerialConfig;
-    mstp.validate().map_err(Error::Encoding)?;
+    mstp.validate()
+        .map_err(|why| Error::InvalidConfig(bacnet_types::error::Refusal::text(why)))?;
     mstp.config().validate()?;
     Serial::open(&SerialConfig {
         port_name: mstp.port.clone(),
         baud_rate: mstp.baud,
-    })
-    .map_err(|error| match error {
-        Error::Encoding(message) => Error::Encoding(format!("{}: {message}", mstp.port)),
-        other => other,
     })
 }
 
@@ -358,7 +356,7 @@ pub(crate) async fn build_client(
     let mstp = args
         .mstp
         .as_ref()
-        .ok_or_else(|| Error::Encoding("--mstp is required for MS/TP".into()))?;
+        .ok_or_else(|| Error::invalid_config("--mstp is required for MS/TP"))?;
     let serial = open_serial(mstp)?;
     let mode = crate::mstp_thread::mode(thread);
     build_client_on(serial, mstp, args.timeout_ms, args.min_interval_ms, mode).await

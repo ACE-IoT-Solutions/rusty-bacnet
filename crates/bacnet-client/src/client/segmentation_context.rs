@@ -32,7 +32,7 @@ impl ResponseLimits {
         let advertised =
             advertised_max_segments(config.max_segments).map_or(usize::MAX, usize::from);
         Self {
-            segmented_response_accepted: config.segmented_response_accepted,
+            segmented_response_accepted: config.receives_segments(),
             max_reassembly_segments: advertised.min(SEQUENCE_NUMBER_SPACE),
         }
     }
@@ -74,13 +74,13 @@ pub(super) struct SegmentedRequestLimits<'a> {
     /// Routed-path lease to mark terminal when the request finishes. A
     /// request its node audits lets it go (#2617).
     pub(super) routed_path_lease: &'a mut Option<RoutedPathLease>,
-    /// The request's turn at the destination, which a request its node
-    /// audits takes along (#2617).
-    pub(super) pace: &'a mut pacing::PaceGuard,
     /// The network and MAC of the discovery-table row that sized the
     /// request, whose age the device's answer restarts; `None` when no row
     /// did (see `BACnetClient::note_answer`).
     pub(super) sized_by: Option<(u16, &'a [u8])>,
+    /// The data attributes the request carries (#2723), which its
+    /// transaction keeps once registered.
+    pub(super) attributes: super::data_attributes::Attributes<'a>,
 }
 
 /// Where and for whom a reassembly abort is sent and completed.

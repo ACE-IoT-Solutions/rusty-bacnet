@@ -47,7 +47,8 @@ async fn incomplete_window_silences_ndup_duplicates_then_naks_the_next() {
     let text = "duplicate-window";
     let chunks = split_into(&write_property_payload(text), 9);
 
-    // Wait for the server to accept the window before sending the next three segments.
+    // Segment zero is acknowledged at once with the window (Clause
+    // 5.4.5.1); each group of three counts from that acknowledgment (#2742).
     send_segment_with_window(&client, 25, 0, 3, true, &chunks[0]).await;
     expect_positive_ack(&mut rx, 25, 0).await;
     send_segment_with_window(&client, 25, 1, 3, true, &chunks[1]).await;

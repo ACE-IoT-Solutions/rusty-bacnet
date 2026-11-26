@@ -178,9 +178,11 @@ impl<R: SnapshotRecord> LogStore<R> {
         let loaded = persistence.load(oid)?;
         if let Some(snapshot) = &loaded {
             if snapshot.object_identifier != oid {
-                return Err(Error::Encoding(
-                    "log snapshot belongs to another object".into(),
-                ));
+                return Err(bacnet_types::error::PersistenceError::new(
+                    bacnet_types::error::PersistenceErrorKind::OtherObject,
+                    "log snapshot belongs to another object",
+                )
+                .into());
             }
             codec::validate(snapshot).map_err(|error| Error::from(error.in_format(codec::WHAT)))?;
         }
@@ -203,7 +205,7 @@ impl<R: SnapshotRecord> LogStore<R> {
                 snapshot.generation = committed
                     .load(Ordering::Acquire)
                     .checked_add(1)
-                    .ok_or_else(|| Error::OutOfRange("log snapshot generation exhausted".into()))?;
+                    .ok_or_else(|| Error::limit_reached("log snapshot generation exhausted"))?;
                 persistence.commit(&snapshot)?;
                 committed.store(snapshot.generation, Ordering::Release);
                 Ok(())

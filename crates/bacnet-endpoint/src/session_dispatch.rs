@@ -78,9 +78,13 @@ pub(super) async fn next_event(parts: &mut DispatchParts, next: &mut usize) -> D
     .await
 }
 
-pub(super) async fn handle_terminal(parts: &mut DispatchParts, received: ReceivedApdu) {
-    let Some(apdu) = decode_terminal(&received) else {
-        let mut counters = parts.shared.counters.lock().await;
+/// An answer in the session's own answer queue. A client's answers go to
+/// its seat and a seated server's to its own, so what a lease holds here is
+/// an acknowledgment for the source Audit's pool on a session with no
+/// server, or an answer whose role has gone.
+pub(super) fn handle_terminal(parts: &mut DispatchParts, received: ReceivedApdu) {
+    let Ok(apdu) = bacnet_encoding::apdu::decode_apdu(received.apdu.clone()) else {
+        let mut counters = parts.shared.counters();
         counters.unclaimed_terminal += 1;
         if let Some(reply_tx) = received.reply_tx {
             drop(reply_tx);
@@ -94,7 +98,7 @@ pub(super) async fn handle_terminal(parts: &mut DispatchParts, received: Receive
         apdu,
         Apdu::ConfirmedRequest(_) | Apdu::UnconfirmedRequest(_)
     ) {
-        let mut counters = parts.shared.counters.lock().await;
+        let mut counters = parts.shared.counters();
         counters.unclaimed_terminal += 1;
         if let Some(reply_tx) = received.reply_tx {
             drop(reply_tx);
@@ -102,18 +106,19 @@ pub(super) async fn handle_terminal(parts: &mut DispatchParts, received: Receive
         return;
     }
     // Exactly one shared-coordinator admit per terminal APDU (exact-once
-    // terminal claim). Equal numeric IDs are unambiguous: the admitted
-    // lease owner selects requester vs notification.
-    let outcome = admit_once(
-        &parts.coordinator,
-        &received,
+    // terminal claim), by the answer's envelope and the session's known
+    // network number. Equal numeric IDs are unambiguous: the admitted
+    // lease's owner says whose it is.
+    let outcome = parts.coordinator.admit_from_source(
+        received.source_mac.as_slice(),
+        received.source_network.as_ref(),
         parts.local_network.get(),
         &apdu,
     );
     let admission = match outcome {
         Ok(AdmissionOutcome::Admitted(admission)) => admission,
         Ok(_) => {
-            let mut counters = parts.shared.counters.lock().await;
+            let mut counters = parts.shared.counters();
             counters.unclaimed_terminal += 1;
             if let Some(reply_tx) = received.reply_tx {
                 drop(reply_tx);
@@ -121,7 +126,7 @@ pub(super) async fn handle_terminal(parts: &mut DispatchParts, received: Receive
             return;
         }
         Err(CoordinatorError::StatePoisoned) => {
-            let mut counters = parts.shared.counters.lock().await;
+            let mut counters = parts.shared.counters();
             counters.unclaimed_terminal += 1;
             if let Some(reply_tx) = received.reply_tx {
                 drop(reply_tx);
@@ -129,49 +134,35 @@ pub(super) async fn handle_terminal(parts: &mut DispatchParts, received: Receive
             return;
         }
     };
-    if is_requester_lease(&admission) {
-        let Some(requester) = parts.requester.as_ref() else {
-            // Lease was admitted but has no consumer: release the exact
-            // lease so exhaustion → release → reuse still holds.
-            let _ = parts.coordinator.release(admission.token());
-            let mut counters = parts.shared.counters.lock().await;
-            counters.no_client_role += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        };
-        // `complete_pre_admitted` delivers via the exact token without
-        // re-admitting; a `false` means the TSM no longer owns it (lost
-        // consumer / stale), the coordinator lease was already completed
-        // inside the TSM path on success.
-        let _ = requester
-            .complete_pre_admitted(admission, apdu, received)
-            .await;
-    } else {
-        let Some(notifications) = parts.notifications.as_ref() else {
-            let _ = parts.coordinator.release(admission.token());
-            let mut counters = parts.shared.counters.lock().await;
-            counters.no_client_role += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        };
-        let _ = notifications.complete_pre_admitted(admission, &apdu);
-        // Notification replies carry no reply sender; drop one if present.
-        if let Some(reply_tx) = received.reply_tx {
-            drop(reply_tx);
+    let pool = parts
+        .notifications
+        .as_ref()
+        .filter(|_| admission.metadata().owner() == LeaseOwner::Notification);
+    match pool {
+        Some(notifications) => {
+            let _ = notifications.complete_pre_admitted(admission, &apdu);
         }
+        // The lease was admitted but has no consumer here: a client's whose
+        // seat gave the answer back because the client has gone, or a
+        // server's with no pool of the session's. Release the exact lease,
+        // so exhaustion → release → reuse still holds.
+        None => {
+            let _ = parts.coordinator.release(admission.token());
+            parts.shared.counters().no_client_role += 1;
+        }
+    }
+    // An answer carries no reply sender; drop one if present.
+    if let Some(reply_tx) = received.reply_tx {
+        drop(reply_tx);
     }
 }
 
-pub(super) async fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutcome) {
+pub(super) fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutcome) {
     // Policy-outcome ownership: the session counts every classifier outcome
     // (malformed/unsupported/group-source/route-closed) instead of dropping
     // it. What a full queue had no room for never reaches it: ingress counts
     // that by class (#2635).
-    let mut counters = shared.counters.lock().await;
+    let mut counters = shared.counters();
     counters.ingress_policy += 1;
     let _ = outcome.reason;
     // Policy outcomes own the full envelope including a possible one-use

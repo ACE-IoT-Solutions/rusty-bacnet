@@ -65,9 +65,11 @@ impl BACnetServer {
         time_sync_policy=None,
         utc_offset_minutes=0,
         daylight_savings=false,
+        clock_zone_writable=false,
+        device_storage_path=None,
         share_port_by_address=false,
         share_wildcard_port=false,
-        segmentation_supported=crate::types::PySegmentation { inner: bacnet_types::enums::Segmentation::NO_SEGMENTATION },
+        segmentation_supported=crate::types::PySegmentation { inner: bacnet_types::enums::Segmentation::SEGMENTED_BOTH },
         apdu_segment_timeout_ms=5000,
         bbmd=None,
         foreign_device=None,
@@ -141,6 +143,8 @@ impl BACnetServer {
         time_sync_policy: Option<&Bound<'_, pyo3::types::PyDict>>,
         utc_offset_minutes: i16,
         daylight_savings: bool,
+        clock_zone_writable: bool,
+        device_storage_path: Option<String>,
         share_port_by_address: bool,
         share_wildcard_port: bool,
         segmentation_supported: crate::types::PySegmentation,
@@ -246,6 +250,7 @@ impl BACnetServer {
         let time_sync_policy = super::time_sync_policy::time_sync_policy(time_sync_policy)?;
         let clock_zone = server::ClockConfig::new(utc_offset_minutes, daylight_savings)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let device_storage = crate::object_options::device_storage(device_storage_path)?;
         if transport == "sc" {
             crate::tls::required_sc_credentials(
                 sc_ca_cert.as_deref(),
@@ -315,14 +320,17 @@ impl BACnetServer {
             cov_policy,
             time_sync_policy,
             clock_zone,
+            clock_zone_writable,
+            device_storage,
             audit_notification_sink: None,
             audit_reporters: None,
-            audit_recipient: std::sync::Mutex::new(None),
+            audit_recipient: Arc::new(std::sync::Mutex::new(None)),
             device_bindings: std::collections::BTreeMap::new(),
-            forwarding_configuration_started: AtomicBool::new(false),
+            forwarding_configuration_started: Arc::new(AtomicBool::new(false)),
+            start_in_flight: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
-            pending_objects: std::sync::Mutex::new(Vec::new()),
-            pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
+            pending_objects: Arc::new(std::sync::Mutex::new(Vec::new())),
+            pending_forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
             router,
         })
@@ -331,6 +339,6 @@ impl BACnetServer {
     /// Test seam for verifying that fallible startup leaves registrations intact.
     #[doc(hidden)]
     fn _pending_registration_count(&self) -> PyResult<usize> {
-        Ok(self.lock_pending()?.len())
+        Ok(self.lock_pending().len())
     }
 }

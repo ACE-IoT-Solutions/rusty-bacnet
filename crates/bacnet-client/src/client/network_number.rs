@@ -23,6 +23,8 @@ use bacnet_types::network_number::NetworkNumber;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Notify, watch};
 
+use crate::poll_gate::PollGate;
+
 pub(super) const CAPACITY: usize = 256;
 
 /// [`Asking::sends`]: the client sends.
@@ -65,8 +67,9 @@ pub(super) struct Asking {
     /// what keeps no transaction (#2617). Never other than open for a client
     /// with a transport of its own.
     sends: AtomicU8,
-    /// Held across a send, so two needs at once ask once.
-    sending: tokio::sync::Mutex<()>,
+    /// Held across a send, so two needs at once ask once. A need takes it
+    /// only as it is polled (#2759).
+    sending: PollGate,
     /// Wakes the owner to ask for the dispatch task, which never waits on
     /// Number egress.
     wanted: Notify,
@@ -162,7 +165,7 @@ impl Asking {
         if self.is_sealed() {
             return;
         }
-        let Ok(_one) = self.sending.try_lock() else {
+        let Some(_one) = self.sending.try_lock() else {
             return;
         };
         if needed() && ask(network).await {
@@ -179,7 +182,7 @@ impl Asking {
         if self.is_sealed() || !needed() {
             return;
         }
-        let Ok(_one) = self.sending.try_lock() else {
+        let Some(_one) = self.sending.try_lock() else {
             return;
         };
         if needed() {
@@ -198,6 +201,14 @@ impl Asking {
 pub(super) struct Discovery {
     pub(super) table: SyncMutex<DeviceTable>,
     pub(super) asking: Asking,
+    /// Peers sent a segmented request's whole first window at once (#2742),
+    /// after the table and the asking, so neither moves. Only a segmented
+    /// request proposing a window above one touches it.
+    pub(super) whole_first_window: SyncMutex<Option<Box<super::first_window::WholeFirstWindow>>>,
+    /// Wakes the purge task when the dispatch task has held a routed I-Am
+    /// that came through another station than its row's router, so the
+    /// task checks the path (#2823). Last, so nothing before it moves.
+    pub(super) route_cue: Notify,
 }
 
 impl Discovery {
@@ -208,6 +219,8 @@ impl Discovery {
                 seated,
                 ..Asking::new(numbers)
             },
+            whole_first_window: SyncMutex::new(None),
+            route_cue: Notify::new(),
         }
     }
 }

@@ -22,6 +22,10 @@
 //!   [`MAX_NPDU`], the longest any data link here carries.
 //! - [`Mac`]: a link-layer address of up to [`MAX_MAC_LEN`] octets, stored
 //!   inline.
+//! - [`RemoteBroadcast`]: the DADR forms that name a broadcast or a group
+//!   on a remote network rather than one station, which a confirmed request
+//!   may not go to; the caller's one-station mark lifts the ones that are
+//!   a station on some network.
 //!
 //! The other network-layer messages' payloads, the routing table and the
 //! router itself are `bacnet-router-core`'s.
@@ -55,6 +59,7 @@
 #![warn(missing_debug_implementations)]
 #![warn(clippy::must_use_candidate)]
 
+mod broadcast;
 mod codes;
 mod encode;
 mod limits;
@@ -63,6 +68,7 @@ mod priority;
 mod reject;
 mod view;
 
+pub use broadcast::RemoteBroadcast;
 pub use codes::{NetworkMessageType, RejectMessageReason};
 pub use encode::EncodeError;
 pub use limits::NpduLimits;

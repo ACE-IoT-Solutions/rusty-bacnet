@@ -170,8 +170,8 @@ async fn types_narrow_what_is_read() {
 /// With values each object's Present_Value and Status_Flags come in the
 /// same requests, two more properties an object, so the thirteen objects
 /// take three batches instead of two; the texts name units and states.
-/// Without, neither is asked for. Settings add the range and the
-/// relinquish default.
+/// Without, neither is asked for. Settings add the range, the relinquish
+/// default and a Binary Input's and Output's Polarity.
 #[tokio::test(start_paused = true)]
 async fn values_and_settings_are_read_when_asked() {
     let (client, server, log) = lab_logged(Faults::default()).await;
@@ -187,7 +187,14 @@ async fn values_and_settings_are_read_when_asked() {
 
     let with_values = InventoryOptions::new().with_values(true);
     let inventory = device.inventory(&with_values).await.unwrap();
-    assert_eq!(count(&log, RPM), 3 + 1 + 3, "{inventory:?}");
+    // Values add four properties an object, five on an output (#2620):
+    // the Device 5 (its name from the summary), the input 7, the analog
+    // output and values 8 each, the binary input 8, the binary output and
+    // value 9 each, the multi-state input 8, output and value 9 each, the
+    // integer value 8 and the trend log 6. At 32 a batch that is 4 + 3 +
+    // 3 + 3 objects (28, 25, 26 and 23 properties): four batches, against
+    // three before.
+    assert_eq!(count(&log, RPM), 3 + 1 + 4, "{inventory:?}");
     assert_eq!(count(&log, RP), 2, "the Object_List, twice");
     let point = |object_type, instance| inventory.point(oid(object_type, instance)).unwrap();
     let ai = point(ObjectType::ANALOG_INPUT, 1);
@@ -196,6 +203,8 @@ async fn values_and_settings_are_read_when_asked() {
     assert_eq!(value.text, "0 °F", "the units are named");
     let flags = ai.status_flags.as_ref().unwrap();
     assert!(matches!(flags.data, Datum::Bits { .. }), "{flags:?}");
+    let clear = bacnet_types::bitstring::StatusFlags::empty();
+    assert_eq!(ai.flags(), Some(clear), "{flags:?}");
     let bo = point(ObjectType::BINARY_OUTPUT, 1)
         .present_value
         .as_ref()
@@ -213,17 +222,43 @@ async fn values_and_settings_are_read_when_asked() {
         let mut valued = valued.clone();
         valued.present_value = None;
         valued.status_flags = None;
+        valued.command_priority = None;
+        valued.event_state = None;
+        valued.reliability = None;
         assert_eq!(&valued, plain);
     }
 
     let settings = InventoryOptions::new().with_settings(true);
     let inventory = device.inventory(&settings).await.unwrap();
+    // Here the summary and three batches, as many as without Polarity,
+    // only because the second batch (the Binary Input to the Multi-state
+    // Value) comes to exactly the 32 properties a batch holds; a device
+    // with more binary objects takes more requests for it.
+    assert_eq!(count(&log, RPM), 8 + 1 + 3, "{inventory:?}");
     let av = inventory.point(oid(ObjectType::ANALOG_VALUE, 1)).unwrap();
     assert_eq!(av.relinquish_default.as_ref().unwrap().as_f64(), Some(0.0));
     assert_eq!(av.cov_increment.as_ref().unwrap().as_f64(), Some(0.0));
     assert!(av.present_value.is_none());
     let ai = inventory.point(oid(ObjectType::ANALOG_INPUT, 1)).unwrap();
     assert!(ai.relinquish_default.is_none(), "an input has none");
+    // A Binary Input's and Output's Polarity, named; a Binary Value has
+    // none to read, and no problem for it.
+    for object_type in [ObjectType::BINARY_INPUT, ObjectType::BINARY_OUTPUT] {
+        let polarity = inventory
+            .point(oid(object_type, 1))
+            .unwrap()
+            .polarity
+            .as_ref();
+        assert_eq!(polarity.unwrap().text, "normal", "{object_type}");
+    }
+    let bv = inventory.point(oid(ObjectType::BINARY_VALUE, 1)).unwrap();
+    assert!(bv.polarity.is_none() && bv.problems.is_empty(), "{bv:?}");
+    assert!(
+        inventory
+            .points
+            .iter()
+            .all(|point| point.problems.is_empty())
+    );
     drop(device);
     stop(client, server).await;
 }
@@ -412,6 +447,44 @@ async fn a_list_that_fails_part_way_is_an_error() {
     stop(client, server).await;
 }
 
+/// `Device::list_objects_whole` gives the whole list, or fails as the
+/// inventory does where `list_objects` keeps part of it: naming the
+/// element, a timeout still a timeout.
+#[tokio::test(start_paused = true)]
+async fn a_whole_list_or_the_element_that_failed() {
+    let (client, server, _) = lab_logged(Faults::default()).await;
+    let device = lab_device(&client).await;
+    let whole = device.list_objects_whole().await.unwrap();
+    assert_eq!(whole, lab_objects());
+    drop(device);
+    stop(client, server).await;
+
+    // The refused whole list, element 0, elements 1 and 2; then element 3
+    // goes unanswered.
+    let faults = Faults {
+        pass: 4,
+        reject_whole_list: true,
+        ..Faults::default()
+    };
+    let (client, server, _) = lab_logged(faults).await;
+    let device = lab_device(&client).await;
+    let error = device.list_objects_whole().await.unwrap_err();
+    assert!(error.timed_out(), "{error}");
+    let text = error.to_string();
+    assert!(text.starts_with("Object_List element 3 of 13: "), "{text}");
+    let named = matches!(
+        error,
+        OpsError::ObjectList {
+            index: 3,
+            total: 13,
+            ..
+        }
+    );
+    assert!(named, "{error:?}");
+    drop(device);
+    stop(client, server).await;
+}
+
 /// An Object_List that names an object twice gives it one record, at its
 /// first place.
 #[tokio::test(start_paused = true)]
@@ -481,87 +554,71 @@ async fn answers_pair_with_their_objects() {
 
 /// A reader whose stop flag goes up is cancelled: before the next batch,
 /// and before the next ReadProperty of a batch read property by property,
-/// so a stop doesn't wait out the batch.
+/// so a stop doesn't wait out the batch. What was read before it is kept
+/// in the halt, as a silent device's is in the inventory (#2620): the
+/// objects read whole, and the rest as `unread`.
 #[tokio::test(start_paused = true)]
 async fn a_stop_flag_cancels_the_reading() {
-    let flag = Arc::new(AtomicBool::new(false));
-    let faults = Faults {
-        cancel: Some((2, Arc::clone(&flag))),
-        ..Faults::default()
+    /// The raw inventory of the lab through a link with `faults`, whose
+    /// flag goes up as request `at` leaves, and the services sent.
+    async fn cancelled_at(at: usize, faults: Faults) -> (Option<Box<Inventory>>, Vec<u8>) {
+        let flag = Arc::new(AtomicBool::new(false));
+        let faults = Faults {
+            cancel: Some((at, Arc::clone(&flag))),
+            ..faults
+        };
+        let (client, server, log) = lab_logged(faults).await;
+        let mut reader = Reader {
+            client: client.low_level(),
+            device: lab_at(),
+            instance: Some(LAB),
+            rate: client.limits(),
+            cancel: &flag,
+            rpm: true,
+        };
+        let read = crate::raw::read_inventory(&mut reader, &InventoryOptions::new()).await;
+        stop(client, server).await;
+        match read {
+            Err(InventoryHalt::Cancelled(partial)) => (partial, services(&log)),
+            read => panic!("not cancelled: {read:?}"),
+        }
+    }
+    let objects = lab_objects();
+    let read = |inventory: &Inventory| -> Vec<ObjectIdentifier> {
+        inventory.points.iter().map(|point| point.object).collect()
     };
-    let (client, server, log) = lab_logged(faults).await;
-    let mut reader = Reader {
-        client: client.low_level(),
-        device: lab_at(),
-        instance: Some(LAB),
-        rate: client.limits(),
-        cancel: &flag,
-        rpm: true,
-    };
-    // The flag goes up as the Object_List's request leaves.
-    let read = crate::raw::read_inventory(&mut reader, &InventoryOptions::new()).await;
-    assert!(matches!(read, Err(InventoryHalt::Cancelled)), "{read:?}");
-    assert_eq!(services(&log), [RPM, RP], "no object asked for");
-    stop(client, server).await;
+
+    // As the summary's request leaves: no list, so nothing to keep.
+    let (partial, sent) = cancelled_at(1, Faults::default()).await;
+    assert!(partial.is_none(), "{partial:?}");
+    assert_eq!(sent, [RPM]);
+
+    // As the Object_List's: every object unread, none asked for.
+    let (partial, sent) = cancelled_at(2, Faults::default()).await;
+    let partial = partial.unwrap();
+    assert!(partial.points.is_empty() && partial.stopped.is_none());
+    assert_eq!(partial.unread, objects);
+    assert_eq!(partial.device.name().as_deref(), Some("Lab \"AHU\""));
+    assert_eq!(sent, [RPM, RP], "no object asked for");
+
+    // As the first batch's: its nine records kept, the next not asked.
+    let (partial, sent) = cancelled_at(3, Faults::default()).await;
+    let partial = partial.unwrap();
+    assert_eq!(read(&partial), objects[..9]);
+    assert_eq!(partial.unread, objects[9..]);
+    assert!(partial.stopped.is_none(), "the device didn't stop it");
+    assert_eq!(sent, [RPM, RP, RPM]);
 
     // By ReadProperty: the refused RPM, 13 + 1, the Device's Description,
     // and the flag goes up as the input's second property is asked for.
+    // The Device object, read whole, is kept; the input, read in part,
+    // is not.
     let last = 1 + 14 + 1 + 2;
-    let flag = Arc::new(AtomicBool::new(false));
-    let faults = Faults {
-        cancel: Some((last, Arc::clone(&flag))),
-        ..refusing_rpm()
-    };
-    let (client, server, log) = lab_logged(faults).await;
-    let mut reader = Reader {
-        client: client.low_level(),
-        device: lab_at(),
-        instance: Some(LAB),
-        rate: client.limits(),
-        cancel: &flag,
-        rpm: true,
-    };
-    let read = crate::raw::read_inventory(&mut reader, &InventoryOptions::new()).await;
-    assert!(matches!(read, Err(InventoryHalt::Cancelled)), "{read:?}");
-    assert_eq!(services(&log).len(), last, "none of the batch's other 30");
-    stop(client, server).await;
-}
-
-/// One object's record costs one request and is the inventory's own; an
-/// object the device doesn't have is a record of problems, and a silent
-/// device an error.
-#[tokio::test(start_paused = true)]
-async fn one_record_reads_as_the_inventory_does() {
-    let (client, server, log) = lab_logged(Faults::default()).await;
-    let device = lab_device(&client).await;
-    let options = InventoryOptions::new().with_values(true);
-    let inventory = device.inventory(&options).await.unwrap();
-    let before = services(&log).len();
-    for expected in &inventory.points {
-        let read = device.point_record(expected.object, &options).await;
-        assert_eq!(&read.unwrap(), expected);
-    }
-    assert_eq!(services(&log).len() - before, inventory.points.len());
-    let by_text = device.point_record("msv:1", &options).await.unwrap();
-    assert_eq!(by_text.object, oid(ObjectType::MULTI_STATE_VALUE, 1));
-
-    let missing = device.point_record("ai:99", &options).await.unwrap();
-    assert!(missing.name.is_none());
-    assert_eq!(missing.problems.len(), 5, "{missing:?}");
-    // A record read on its own asks for everything, the Device's name too.
-    let own = device.point_record(oid(ObjectType::DEVICE, LAB), &options);
-    assert_eq!(own.await.unwrap().name.as_deref(), Some("Lab \"AHU\""));
-    let parse = device.point_record("nothing", &options).await.unwrap_err();
-    assert!(matches!(parse, OpsError::Parse { .. }), "{parse}");
-    drop(device);
-    stop(client, server).await;
-
-    let (client, server) = lab(passing(0)).await;
-    let device = lab_device(&client).await;
-    let error = device.point_record("ai:1", &options).await.unwrap_err();
-    assert!(error.unreachable(), "{error}");
-    drop(device);
-    stop(client, server).await;
+    let (partial, sent) = cancelled_at(last, refusing_rpm()).await;
+    let partial = partial.unwrap();
+    assert_eq!(read(&partial), objects[..1]);
+    assert_eq!(partial.unread, objects[1..]);
+    assert_eq!(sent.len(), last, "none of the batch's other 30");
 }
 
 /// `count` analog inputs, each `name` a few characters.

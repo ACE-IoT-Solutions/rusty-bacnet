@@ -5,10 +5,12 @@ use super::request_peer::{CanonicalRequester, canonical_requester};
 use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_transport::port::{DirectScIdentity, TransportProvenance};
+use bacnet_types::sync::MutexExt;
 
-// Local detection bounds, not transaction lifetimes. Above either bound,
+// Local detection bounds, not transaction lifetimes. Above the entry bound,
 // Clause 5.3.5.3 permits normal service when exact duplicate detection is unavailable.
 const MAX_ENTRIES: usize = 256;
+// Above this an entry keeps the request's digest, not its data (#2751).
 const MAX_TRACKED_SERVICE_REQUEST_BYTES: usize = 64 * 1024;
 
 struct Entry {
@@ -19,10 +21,35 @@ struct Entry {
     request: ConfirmedRequest,
 }
 
+impl Entry {
+    /// Whether this entry is under that requester, direct identity and
+    /// invoke ID: the key duplicates are judged under, and an answer in
+    /// progress is ended under (#2770).
+    #[inline]
+    fn is_under(
+        &self,
+        requester: &CanonicalRequester,
+        direct_identity: &Option<DirectScIdentity>,
+        invoke_id: u8,
+    ) -> bool {
+        self.requester == *requester
+            && self.direct_identity == *direct_identity
+            && self.invoke_id == invoke_id
+    }
+}
+
 #[derive(Default)]
 struct TrackerState {
     next_id: u64,
     entries: Vec<Entry>,
+    /// What a repeated segment of a reassembled request still executing is
+    /// answered with (#2751). Only the segmented branch reads or writes it;
+    /// `begin` and the drop of a pending request never touch it.
+    segmented: Vec<segment_repeats::Record>,
+    /// The answers sent in segments, oldest first (#2770). `begin` reads
+    /// them only once an entry under its request's key is pending, and the
+    /// drop of a pending request never touches them.
+    answers: Vec<answers::Answer>,
 }
 
 /// Exact duplicate detection only while the ordinary server transaction is live.
@@ -35,11 +62,21 @@ pub(super) struct ConfirmedRequestTracker {
     pub(super) lso: Arc<super::lso_replay::LsoReplayCache>,
     /// See [`super::BACnetServer::group_source_request_drops`].
     group_source_drops: AtomicU64,
+    /// Keys for the digest of an oversized request: this tracker's own, so
+    /// a peer can't craft two requests with one digest ahead of time
+    /// (#2751). Last, after every field the plain path reads.
+    digest_keys: std::collections::hash_map::RandomState,
 }
 
 pub(super) enum ConfirmedRequestAdmission {
     Duplicate,
     New(PendingConfirmedRequest),
+    /// Dropped, not executed (#2770): another request than the one
+    /// answered in segments under its requester and invoke ID, midway
+    /// through that answer, which it ends (the answer's task sends the
+    /// Abort); or any request under them while an Abort there is still to
+    /// be handed to the transport. The answer's entry lasts until then.
+    AbortsAnswer,
 }
 
 /// Non-cloneable ownership of one pending transaction. Move into its response
@@ -57,25 +94,24 @@ impl ConfirmedRequestTracker {
         source_mac: &[u8],
         source_network: Option<&NpduAddress>,
         provenance: TransportProvenance,
-        request: ConfirmedRequest,
+        mut request: ConfirmedRequest,
     ) -> ConfirmedRequestAdmission {
         if request.service_request.len() > MAX_TRACKED_SERVICE_REQUEST_BYTES {
-            return ConfirmedRequestAdmission::New(PendingConfirmedRequest::untracked(self));
+            digest(&self.digest_keys, &mut request);
         }
         let requester = canonical_requester(source_mac, source_network);
         let direct_identity = provenance.direct_sc_identity();
         let invoke_id = request.invoke_id;
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.entries.iter().any(|entry| {
-            entry.requester == requester
-                && entry.direct_identity == direct_identity
-                && entry.invoke_id == invoke_id
-                && entry.request == request
-        }) {
-            return ConfirmedRequestAdmission::Duplicate;
+        let mut state = self.state.locked();
+        // Nothing more for a request with no entry under its key pending.
+        if let Some(first) = state
+            .entries
+            .iter()
+            .position(|entry| entry.is_under(&requester, &direct_identity, invoke_id))
+            && let Some(admission) =
+                state.admit_same_key(first, &requester, &direct_identity, invoke_id, &request)
+        {
+            return admission;
         }
         if state.entries.len() >= MAX_ENTRIES {
             return ConfirmedRequestAdmission::New(PendingConfirmedRequest::untracked(self));
@@ -99,6 +135,24 @@ impl ConfirmedRequestTracker {
         })
     }
 }
+/// Keep an oversized request by its header and a digest of its service data
+/// (its length and a keyed SipHash of it), not the data: only a reassembled
+/// request can be this long, so a request that came whole never gets here.
+/// Two such requests with equal headers and digests count as the same
+/// request. The `segmented` flag marks the digest form: no request `begin`
+/// is given has it set, so the form never equals one kept whole (#2751).
+#[cold]
+#[inline(never)]
+fn digest(keys: &std::collections::hash_map::RandomState, request: &mut ConfirmedRequest) {
+    use std::hash::BuildHasher;
+    let hash = keys.hash_one(&request.service_request[..]);
+    let mut kept = Vec::with_capacity(16);
+    kept.extend_from_slice(&(request.service_request.len() as u64).to_be_bytes());
+    kept.extend_from_slice(&hash.to_be_bytes());
+    request.service_request = bytes::Bytes::from(kept);
+    request.segmented = true;
+}
+
 impl ConfirmedRequestTracker {
     /// Whether to ignore a confirmed request from link-layer `source_mac`
     /// because that address reaches a group of nodes (`is_group`, the
@@ -145,19 +199,43 @@ impl PendingConfirmedRequest {
             id: None,
         }
     }
-}
-impl Drop for PendingConfirmedRequest {
-    fn drop(&mut self) {
+
+    /// The entry this owns, if the tracker follows the request.
+    pub(super) fn id(&self) -> Option<u64> {
+        self.id
+    }
+
+    /// Note that `handle` answers this request in segments (#2770).
+    pub(super) fn answering(&self, handle: &Arc<super::segmented_send::SegmentedSendHandle>) {
         if let Some(id) = self.id {
-            self.tracker
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .entries
-                .retain(|entry| entry.id != id);
+            self.tracker.note_answer(id, handle);
         }
     }
 }
+
+impl ConfirmedRequestTracker {
+    /// End pending entry `id` now, ahead of its owner. The owner's drop
+    /// then finds nothing to end: `begin` never gives an id twice.
+    /// `#[inline]`: every confirmed request's guard ends its entry here.
+    #[inline]
+    pub(super) fn end(&self, id: u64) {
+        self.state.locked().entries.retain(|entry| entry.id != id);
+    }
+}
+
+impl Drop for PendingConfirmedRequest {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.tracker.end(id);
+        }
+    }
+}
+
+#[path = "confirmed_segment_repeats.rs"]
+mod segment_repeats;
+
+#[path = "confirmed_answers.rs"]
+mod answers;
 
 #[cfg(test)]
 #[path = "confirmed_tracker_tests.rs"]

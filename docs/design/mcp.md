@@ -150,9 +150,9 @@ From `bacnet-cli` into `bacnet-ops`, without behaviour changes (#2065):
 
 Phase 1 moved the capture screen's decoder the same way, for
 `bacnet_decode`: `decode/frame.rs`, `decode/tree.rs` and the network and
-application layer reader became `bacnet_ops::decode`; #2560 later moved the
-field trees to the tool crate. They returned to `bacnet_ops::decode::tree`
-for the Python binding (#2633). Also,
+application layer reader became `bacnet_ops::decode`, where the field
+trees stay (`bacnet_ops::decode::tree`; the Python binding reads them too,
+#2633). Also,
 `output::format_property_value` became `bacnet_ops::format::format_property_value`.
 
 Every item the CLI or MCP needs is `pub` and documented; helpers private to
@@ -181,7 +181,7 @@ and read at the address that claims it, a routed one through its router.
 | `read_trend(device, log, cursor, page_size)` | one page of a Trend Log, Trend Log Multiple, Event Log or Audit Log, with where to read next |
 | `alarms(device, after)` | one GetEventInformation answer |
 | `alarm_summary(device)`, `enrollment_summary(device, request)` | one GetAlarmSummary or GetEnrollmentSummary answer (phase 1) |
-| `discover_routers(network, None, wait, deadline)` | one Who-Is-Router-To-Network, under the local network's rate, and the routers that answered (phase 1) |
+| `discover_routers(RouterDiscovery)` | one Who-Is-Router-To-Network, under the local network's rate, and the routers that answered (phase 1) |
 
 A property the device can't give is a typed `PropertyError`, not text: the
 device's error (class and code, a structured Error PDU reduced to both),
@@ -240,9 +240,10 @@ client, and `device_events`.
 Rules:
 
 1. **Few, composable tools**, named `bacnet_*` so they can't collide when a
-   host aggregates servers. Twelve read tools (nine in phase 1, `bacnet_watch`
-   in phase 2, `bacnet_read_log_records` after it, #2103, and the experimental
-   `bacnet_export_223`, #2436), two write tools (phase 3).
+   host aggregates servers. Thirteen read tools (nine in phase 1, `bacnet_watch`
+   in phase 2, `bacnet_read_log_records` after it, #2103, the experimental
+   `bacnet_export_223`, #2436, and `bacnet_inventory`, #2779), two write tools
+   (phase 3).
 2. **`tools/list` depends on the launch configuration and the caller's
    authorization, never on runtime state.** The 2026-07-28 revision forbids a
    list that varies per connection. Write tools appear only when the profile
@@ -253,7 +254,8 @@ Rules:
 4. **Targets are numeric.** A device is an instance, `dnet:instance` for
    the one claiming it on that network, or the address of a device in the
    discovery table (`ip:port`, `mstp:N`, `bip6:0xVMAC`, `dnet:0xMAC` behind
-   a router), in the shared target grammar (#2560). Devices are known, allowed
+   a router, `dnet:0xMAC:one-station` for a MAC that looks like a broadcast
+   but is one station), in the shared target grammar (#2560). Devices are known, allowed
    and cached by address, so two networks holding one instance are two
    devices, and an instance two addresses claim is refused, naming both. An
    object is `type:instance` (`ai:1`, `analog-output:3`). Write tools never
@@ -275,7 +277,7 @@ openWorldHint: false`.
 
 | Tool | Phase | Annotations | Inputs (outline) | Result (outline) |
 |---|---|---|---|---|
-| `bacnet_discover` | 1 | RO, idempotent | `send` (default true), `scope` (local, network, directed, global), `network`, `address`, `range`, `wait_s` (1 to 30), `cursor` | devices: instance, address, network, vendor, max APDU, segmentation, last seen; names only on request |
+| `bacnet_discover` | 1 | RO, idempotent | `send` (default true), `scope` (local, network, directed, global), `network`, `address`, `range`, `wait_s` (1 to 30), `cursor` | devices: instance, address, network, vendor, max APDU, segmentation, last seen; names only on request; a cursor naming the last row listed (instance, network, MAC), so the next page starts after it (#2606) |
 | `bacnet_find_object` | 1 | RO | `name`, `description`, `object` or `types`; `range`, `cursor` | matches: device, object, name and description (untrusted); devices incomplete or skipped |
 | `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s`, `bbmd` and `bbmds` (built in #2102) | routers and the networks they reach; networks with routers, speed, rate and devices; with `bbmd`, the BBMDs' BDT and FDT and a consistency verdict |
 | `bacnet_read` | 1 | RO, idempotent | `device`, `reads` (up to 100: object, properties or `all`/`required`, index), `preset` (`point`, `device`), `format` (display, typed, both) | results per property: value or BACnet error; `via` rpm or rp |
@@ -287,6 +289,7 @@ openWorldHint: false`.
 | `bacnet_watch` | 2 | RO, not idempotent | `points` (1 to 32: device, object, property), `cursor` | each point's values and watch state, or `changed: false` without values when unchanged since the cursor's call; a cursor holding the hub's sequence number |
 | `bacnet_decode` | 1 | local, pure | `hex`, `link` (bip, bip6, mstp, sc, npdu, apdu, auto) | decoded layers as a field tree and a one-line summary; no traffic, so it works in passive mode |
 | `bacnet_export_223` | after 4 (#2436), experimental | RO | `device`, `base_iri`, `types`, `write_priority`, `cursor` | a page of the device's points as a proposed Standard 223 model in Turtle (a second text block, a document of its own under 24 kB unless one point alone is larger) and a summary of the page: objects listed and matching, the page's start, points by type and unmapped units; a cursor holding the next object's place among the matching ones and a fingerprint of them, so a list changed between pages is refused |
+| `bacnet_inventory` | after 4 (#2779) | RO, idempotent | `device`, `types`, `values`, `settings`, `details`, `cursor` | a page of the device's point records with the CLI's JSON field names, device text enveloped, under 24 kB unless one record alone is larger; objects listed and matching, by type, the page's start, what remains and the next object, and why the page ended (`ended`); the page's problems (count, objects, the first ten); paged and fingerprinted as the 223 export, read in batches (`Device::point_records`, #2785) |
 | `bacnet_write` | 3 | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | `device`, `writes` (1 to 20: object, property, index, typed value or null to relinquish, priority), `batch` (WPM), `reason` | outcome per write (ack, error, timeout, not sent), ledger ids, a revert hint |
 | `bacnet_revert` | 3 | destructive | ledger ids, or all of this principal's | outcome per entry |
 
@@ -370,7 +373,7 @@ the user.
 | `bacnet://device/{instance}/object/{type}:{n}` | the point preset | one managed SubscribeCOV per object with a finite lifetime (300 s, renewed), or polling at 10 s or slower when the device refuses COV |
 | `.../property/{prop}` | one property | SubscribeCOVProperty, or polling |
 | `bacnet://alarms`, `bacnet://device/{instance}/alarms` | active and unacknowledged alarms | GetEventInformation polled (60 s per device, rate limited) |
-| `bacnet://session` | level, expiry, grants, limits, rate meter, COV footprint | updated on arm, plan-grant spend, or expiry (#2160) |
+| `bacnet://session` | level, expiry, grants, limits, rate meter, COV footprint, routed path limits and the reject counters (read-only, #2667) | updated on arm, plan-grant spend, or expiry (#2160) |
 | `bacnet://ledger` | this principal's ledger entries still in effect | updated on each settle or revert (#2160) |
 
 Mechanics:

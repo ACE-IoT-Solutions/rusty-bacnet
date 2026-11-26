@@ -34,7 +34,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
             segmented: true,
             more_follows: !is_last,
-            segmented_response_accepted: self.config.segmented_response_accepted,
+            segmented_response_accepted: self.config.receives_segments(),
             max_segments: self.config.max_segments,
             max_apdu_length: context.advertised_max_apdu,
             invoke_id: context.invoke_id,
@@ -55,9 +55,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             return response_rx
                 .await
                 .map(OutgoingSegmentSend::Terminal)
-                .map_err(|_| Error::Encoding("TSM response channel closed".into()));
+                .map_err(|_| super::requests::cut_off(true));
         }
-        let send = self.send_confirmed_target_apdu(context.target, &buf);
+        let send = self.send_confirmed_target_apdu(context.target, &buf, context.owner);
         tokio::pin!(send);
 
         if first_final_issue {
@@ -69,7 +69,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 return response_rx
                     .await
                     .map(OutgoingSegmentSend::Terminal)
-                    .map_err(|_| Error::Encoding("TSM response channel closed".into()));
+                    .map_err(|_| super::requests::cut_off(true));
             };
 
             // Poll without a TSM lock. Dispatch defers terminal admission while
@@ -92,7 +92,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 return response_rx
                     .await
                     .map(OutgoingSegmentSend::Terminal)
-                    .map_err(|_| Error::Encoding("TSM response channel closed".into()));
+                    .map_err(|_| super::requests::cut_off(true));
             }
             if send_completed {
                 return Ok(OutgoingSegmentSend::Sent);
@@ -105,7 +105,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 response = &mut *response_rx => {
                     return response
                         .map(OutgoingSegmentSend::Terminal)
-                        .map_err(|_| Error::Encoding("TSM response channel closed".into()));
+                        .map_err(|_| super::requests::cut_off(true));
                 }
                 // A transaction that left the TSM resolves the response arm
                 // above; progress stays silent.

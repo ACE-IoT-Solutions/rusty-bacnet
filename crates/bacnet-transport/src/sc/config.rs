@@ -2,6 +2,7 @@
 //! [`ScTransport`], kept out of the transport loop file to stay within the
 //! file-size cap.
 
+use bacnet_types::sync::MutexExt;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::watch;
@@ -39,6 +40,7 @@ impl<W: WebSocketPort> ScTransport<W> {
             state_tx,
             recv_task: StdMutex::new(None),
             stop_gate: crate::stopping::StopGate::default(),
+            abort_mark: Arc::default(),
             connect_timeout_ms: 10_000,
             heartbeat_interval_ms: heartbeat::DEFAULT_HEARTBEAT_INTERVAL_MS,
             heartbeat_timeout_ms: heartbeat::DEFAULT_HEARTBEAT_TIMEOUT_MS,
@@ -121,10 +123,7 @@ impl<W: WebSocketPort> ScTransport<W> {
 
     /// Set a failover WebSocket to try if the primary connection fails (builder-style).
     pub fn with_failover(mut self, ws: W) -> Self {
-        *self
-            .failover_ws
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ws);
+        *self.failover_ws.get_mut_locked() = Some(ws);
         self
     }
 
@@ -145,10 +144,12 @@ impl<W: WebSocketPort> ScTransport<W> {
     /// When the BACnet/SC connection drops, the transport will attempt to reconnect
     /// using exponential backoff as configured. Configure [`Self::with_connector`]
     /// for true transport-level recovery from a dead WebSocket/TCP/TLS connection;
-    /// otherwise reconnect attempts can only reuse the current WebSocket object,
-    /// except after a rejection NAK exhausts its heartbeat budget. That socket
-    /// cannot be reused: recovery needs a fresh connector or unused failover
-    /// socket under the existing retry policy, or remains disconnected.
+    /// otherwise recovery can only send one Connect-Request on the current
+    /// WebSocket object. If that fails, the socket is closed (Annex AB.6.2.2)
+    /// and not tried again. After a rejection NAK exhausts its heartbeat
+    /// budget, the socket is not reused at all. Either way recovery goes on
+    /// only through a connector or an unused failover socket, and otherwise
+    /// gives up, also with unlimited retries.
     /// The local VMAC is preserved across reconnections.
     ///
     /// [`TransportPort::start`](crate::port::TransportPort::start) validates this configuration before any transport

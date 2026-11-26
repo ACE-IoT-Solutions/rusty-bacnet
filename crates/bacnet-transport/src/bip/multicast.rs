@@ -87,12 +87,13 @@
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use bacnet_bip_core::LocalSubnet;
 use bacnet_types::bip_port::IpMulticast;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Refusal};
+use bacnet_types::sync::MutexExt;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
@@ -159,8 +160,8 @@ impl BipMulticast {
     /// a group whose members are more IP routers apart than that.
     pub fn with_ttl(self, ttl: u8) -> Result<Self, Error> {
         if ttl == 0 {
-            return Err(config(
-                "a B/IP multicast TTL must be 1 to 255; 0 would keep it on this host".into(),
+            return Err(Error::invalid_config(
+                "a B/IP multicast TTL must be 1 to 255; 0 would keep it on this host",
             ));
         }
         Ok(Self { ttl, ..self })
@@ -173,8 +174,8 @@ impl BipMulticast {
     /// `set_multicast` refuses it.
     pub fn with_port(self, port: u16) -> Result<Self, Error> {
         if port == 0 {
-            return Err(config(
-                "a B/IP multicast group's port must be nonzero".into(),
+            return Err(Error::invalid_config(
+                "a B/IP multicast group's port must be nonzero",
             ));
         }
         Ok(Self {
@@ -226,29 +227,32 @@ pub(super) fn subnet(multicast: Option<BipMulticast>, subnet: SocketAddrV4) -> L
     }
 }
 
+/// A group refused for an address it names, which the text quotes.
 fn config(message: String) -> Error {
-    Error::Encoding(message)
+    Error::InvalidConfig(Refusal::text(message))
 }
 
 /// Why a node bound to `interface` at `transport_port` (0 for a port the
 /// OS picks) can't use `multicast`: checked when it is configured, at
 /// start and for a group written to the Network Port.
-fn refusal(interface: Ipv4Addr, transport_port: u16, multicast: &BipMulticast) -> Option<String> {
+fn refusal(
+    interface: Ipv4Addr,
+    transport_port: u16,
+    multicast: &BipMulticast,
+) -> Option<&'static str> {
     if interface.is_unspecified() {
         return Some(
             "B/IP multicast needs an explicit interface address to join the group on; \
-             0.0.0.0 is refused"
-                .into(),
+             0.0.0.0 is refused",
         );
     }
     if cfg!(windows) && multicast.port.is_some_and(|port| port != transport_port) {
-        return Some("on Windows a B/IP multicast group's port must be the transport's own".into());
+        return Some("on Windows a B/IP multicast group's port must be the transport's own");
     }
     if multicast.port.is_none() && transport_port == 0 {
         return Some(
             "a B/IP multicast group needs a port: give the transport a nonzero port or the \
-             group its own (BipMulticast::with_port)"
-                .into(),
+             group its own (BipMulticast::with_port)",
         );
     }
     None
@@ -268,7 +272,7 @@ impl GroupSwap {
     /// the one it reads; `None` closes it.
     #[cfg_attr(windows, allow(dead_code))]
     fn offer(&self, listener: Option<Listener>) {
-        *self.next.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
+        *self.next.locked() = Some(listener);
         self.ready.notify_one();
     }
 
@@ -277,12 +281,7 @@ impl GroupSwap {
     pub(super) async fn next(&self) -> Option<Listener> {
         loop {
             self.ready.notified().await;
-            if let Some(listener) = self
-                .next
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-            {
+            if let Some(listener) = self.next.locked().take() {
                 return listener;
             }
         }
@@ -487,12 +486,12 @@ impl MulticastControl {
     }
 
     /// Why this transport can't use `multicast`, if it can't.
-    pub(super) fn refusal(&self, multicast: &BipMulticast) -> Option<String> {
+    pub(super) fn refusal(&self, multicast: &BipMulticast) -> Option<&'static str> {
         refusal(self.interface, self.configured_port, multicast)
     }
 
     fn lock(&self) -> MutexGuard<'_, ControlState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.locked()
     }
 
     /// The group in effect.
@@ -851,7 +850,9 @@ impl GroupChange for MulticastControl {
             .fail_next_subnet
             .swap(false, std::sync::atomic::Ordering::Relaxed)
         {
-            Err(Error::Encoding("injected link failure".into()))
+            Err(Error::Transport(std::io::Error::other(
+                "injected link failure",
+            )))
         } else {
             node.set_subnet(subnet)
         };
@@ -933,7 +934,7 @@ impl super::BipTransport {
     /// keeps that change. A BBMD's row is read-only.
     pub fn set_multicast(&mut self, multicast: Option<BipMulticast>) -> Result<(), Error> {
         if let Some(refused) = multicast.and_then(|group| self.multicast.refusal(&group)) {
-            return Err(config(refused));
+            return Err(Error::invalid_config(refused));
         }
         self.multicast.set(multicast);
         Ok(())
@@ -989,11 +990,7 @@ impl super::BipTransport {
             subnet,
             swap: swap.clone(),
             bbmd,
-            lease: self
-                .network_port_lease
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone(),
+            lease: self.network_port_lease.locked().clone(),
             tap: self.frame_tap.clone(),
         });
         swap
@@ -1008,18 +1005,16 @@ impl super::BipTransport {
         let refused = if foreign {
             Some(
                 "a B/IP foreign device broadcasts through its BBMD, so it can't also be a \
-                 multicast group member"
-                    .to_string(),
+                 multicast group member",
             )
         } else if self.share_port_by_address {
             Some(
                 "a B/IP multicast node can't also share its port by address; give each node \
-                 on the host its own port and the group a shared one"
-                    .to_string(),
+                 on the host its own port and the group a shared one",
             )
         } else {
             self.multicast.refusal(multicast)
         };
-        refused.map_or(Ok(()), |refused| Err(config(refused)))
+        refused.map_or(Ok(()), |refused| Err(Error::invalid_config(refused)))
     }
 }

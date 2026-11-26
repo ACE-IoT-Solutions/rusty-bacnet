@@ -5,14 +5,17 @@ use bacnet_types::enums::PropertyIdentifier as P;
 
 use crate::property_metadata::{
     PropertyConformance::{Optional, RequiredRead},
-    PropertyMetadata,
+    PropertyMetadata, PropertyPresenceCondition,
     PropertyWriteCapability::{Always, ReadOnly},
 };
+
+/// Present only on a Device that segments, which requires it (#2617).
+const SEGMENTING: Option<PropertyPresenceCondition> = Some(PropertyPresenceCondition::Segmentation);
 
 // The full implemented set, ordered by raw identifier. Conditional rows keep
 // their optional base code; effective sets below select only readable rows.
 const BASE: &[PropertyMetadata] = &[
-    PropertyMetadata::new(P::APDU_SEGMENT_TIMEOUT, Optional, None, ReadOnly),
+    PropertyMetadata::new(P::APDU_SEGMENT_TIMEOUT, Optional, SEGMENTING, ReadOnly),
     PropertyMetadata::new(P::APDU_TIMEOUT, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(
         P::APPLICATION_SOFTWARE_VERSION,
@@ -49,7 +52,7 @@ const BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::PROTOCOL_REVISION, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::ACTIVE_COV_SUBSCRIPTIONS, Optional, None, ReadOnly),
     PropertyMetadata::new(P::DATABASE_REVISION, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::MAX_SEGMENTS_ACCEPTED, Optional, None, ReadOnly),
+    PropertyMetadata::new(P::MAX_SEGMENTS_ACCEPTED, Optional, SEGMENTING, ReadOnly),
     PropertyMetadata::new(P::LAST_RESTART_REASON, Optional, None, ReadOnly),
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
     // Table 12-13 footnote 18: included below only for a declared Multiple
@@ -112,6 +115,19 @@ pub(super) fn for_object(object: &DeviceObject) -> Cow<'_, [PropertyMetadata]> {
                 .collect(),
         )
     };
+    // A clock that takes a peer's zone writes makes both rows writable
+    // (#2395).
+    #[cfg(feature = "zone-writes")]
+    if clock && object.zone_writable() {
+        for row in rows.to_mut() {
+            if matches!(
+                row.property_identifier,
+                P::UTC_OFFSET | P::DAYLIGHT_SAVINGS_STATUS
+            ) {
+                row.write_capability = Always;
+            }
+        }
+    }
     if object.properties.contains_key(&P::BACKUP_AND_RESTORE_STATE) {
         rows.to_mut().extend([
             PropertyMetadata::new(P::BACKUP_FAILURE_TIMEOUT, Optional, None, Always),

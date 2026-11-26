@@ -317,13 +317,11 @@ fn syntax_faults_name_their_reject_reasons() {
     );
 }
 
-/// The alloc-only variants keep their text and take no Reject reason.
-#[cfg(feature = "alloc")]
+/// A decoding error becomes the Reject its kind names; a range refusal,
+/// which is no syntax fault, stays as it is (#1833 removed the untyped
+/// text forms this pinned for).
 #[test]
-fn owned_variants_take_no_reject_reason() {
-    for error in [Error::Encoding("x".into()), Error::OutOfRange("x".into())] {
-        assert_eq!(error.reject_reason(), None, "{error}");
-    }
+fn only_a_decoding_error_becomes_a_reject() {
     assert_eq!(
         Error::trailing(3, "more")
             .into_request_reject()
@@ -331,9 +329,23 @@ fn owned_variants_take_no_reject_reason() {
         Some(RejectReason::TOO_MANY_ARGUMENTS)
     );
     assert!(matches!(
-        Error::OutOfRange("x".into()).into_request_reject(),
-        Error::OutOfRange(_)
+        Error::range("x").into_request_reject(),
+        Error::Range(_)
     ));
+}
+
+/// The error is 64 octets on a 64-bit host, its tag in [`DecodeError`]'s
+/// niche, with persisted state's [`PersistenceError`] beside it, its
+/// context boxed so it is no wider than its static form: removing the two
+/// owned-text variants (#1833) left the error as it was, since the decoding
+/// error sets the size. A 32-bit target's 48 is checked in `decode.rs`.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn the_error_is_64_octets_on_a_64_bit_host() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<Error>(), 64);
+    assert_eq!(size_of::<Result<()>>(), 64);
+    assert_eq!(size_of::<PersistenceError>(), 56);
 }
 
 /// The static encoder and segmenter refusals take no Reject reason either
@@ -408,6 +420,29 @@ fn initiation_disabled_says_whether_the_request_went_out() {
     assert!(withheld.starts_with("no retry sent"), "{withheld}");
 }
 
+/// A request the client or its link cut off says whether the device may
+/// have carried it out (#1833), and no peer sent it; the text is true for a
+/// link that lost its connection too.
+#[test]
+fn a_cut_off_request_says_whether_it_may_have_been_carried_out() {
+    let unsent = Error::RequestCutOff { sent: false };
+    assert_eq!(
+        unsent.to_string(),
+        "the request ended without an answer: the client stopped, or its link stopped or lost \
+         its connection, before it was sent: the device did not get it"
+    );
+    let sent = Error::RequestCutOff { sent: true };
+    assert_eq!(
+        sent.to_string(),
+        "the request ended without an answer: the client stopped, or its link stopped or lost \
+         its connection, after it went out, and the device may have carried it out"
+    );
+    for cut_off in [unsent, sent] {
+        assert_eq!(cut_off.remote(), None);
+        assert_eq!(cut_off.reject_reason(), None);
+    }
+}
+
 #[test]
 fn send_too_long_keeps_the_observed_lengths_without_becoming_an_apdu_reject() {
     let error = Error::SendTooLong {
@@ -449,5 +484,160 @@ fn unsupported_transport_display_names_both_data_links() {
     assert_eq!(
         err.to_string(),
         "operation requires BACnet/IP; this transport is MS/TP"
+    );
+}
+
+/// A network reject names the router in its link's own address form, the
+/// network, and the reason by name beside its number; a reason the
+/// standard doesn't name by its number alone (#2724).
+#[cfg(feature = "std")]
+#[test]
+fn network_reject_display_names_router_network_and_reason() {
+    use bacnet_npdu::{Mac, RejectMessageReason as R};
+    let bip = Mac::from_array([192, 168, 1, 20, 0xBA, 0xC0]);
+    let cases = [
+        (
+            bip,
+            Some(DataLink::Bip),
+            R::NOT_DIRECTLY_CONNECTED,
+            "Reject-Message-To-Network from router 192.168.1.20:47808: no route to network 7 \
+             (not-directly-connected, reason 1)",
+        ),
+        // A loopback or unnamed link writes six octets as B/IP does.
+        (
+            bip,
+            None,
+            R::ADDRESSING_ERROR,
+            "Reject-Message-To-Network from router 192.168.1.20:47808: an address length it \
+             found invalid, for network 7 (addressing-error, reason 6)",
+        ),
+        (
+            bip,
+            Some(DataLink::Sc),
+            R::OTHER,
+            "Reject-Message-To-Network from router c0:a8:01:14:ba:c0: the message for network 7 \
+             was refused (other, reason 0)",
+        ),
+        (
+            Mac::from_array([5]),
+            Some(DataLink::Mstp),
+            R::from_raw(5),
+            "Reject-Message-To-Network from router mstp:5: a security refusal for network 7 \
+             (reason 5)",
+        ),
+        (
+            Mac::from_array([0x00, 0x04, 0xD2]),
+            Some(DataLink::Bip6),
+            R::ROUTER_BUSY,
+            "Reject-Message-To-Network from router bip6:0x0004D2: busy for network 7 \
+             (router-busy, reason 2)",
+        ),
+        (
+            Mac::from_array([0x00, 0x04, 0xD2]),
+            Some(DataLink::Bip),
+            R::from_raw(200),
+            "Reject-Message-To-Network from router 00:04:d2: the message for network 7 was \
+             refused (reason 200)",
+        ),
+    ];
+    for (router, link, reason, text) in cases {
+        let reject = NetworkReject::new(router, link, 7, reason);
+        let later = "; an earlier attempt may have reached the device";
+        assert_eq!(reject.what().to_string(), text);
+        assert_eq!(reject.to_string(), format!("{text}{later}"));
+        assert_eq!(
+            Error::NetworkRejected(Box::new(reject)).to_string(),
+            format!("{text}{later}")
+        );
+    }
+}
+
+/// Each reason's COMMUNICATION code, as an audit record's Result carries it.
+#[cfg(feature = "std")]
+#[test]
+fn network_reject_error_codes_follow_the_reason() {
+    use bacnet_npdu::{Mac, RejectMessageReason as R};
+    let code = |reason| NetworkReject::new(Mac::from_array([1]), None, 7, reason).error_code();
+    assert_eq!(
+        code(R::NOT_DIRECTLY_CONNECTED),
+        ErrorCode::NOT_ROUTER_TO_DNET
+    );
+    assert_eq!(code(R::ROUTER_BUSY), ErrorCode::ROUTER_BUSY);
+    assert_eq!(
+        code(R::UNKNOWN_MESSAGE_TYPE),
+        ErrorCode::UNKNOWN_NETWORK_MESSAGE
+    );
+    assert_eq!(code(R::MESSAGE_TOO_LONG), ErrorCode::MESSAGE_TOO_LONG);
+    assert_eq!(code(R::from_raw(5)), ErrorCode::SECURITY_ERROR);
+    assert_eq!(code(R::ADDRESSING_ERROR), ErrorCode::ADDRESSING_ERROR);
+    assert_eq!(code(R::OTHER), ErrorCode::OTHER);
+    assert_eq!(code(R::from_raw(9)), ErrorCode::OTHER);
+}
+
+/// An acknowledgement of the wrong kind names the service and both kinds,
+/// and says the request's outcome is unknown (#2721).
+#[test]
+fn unexpected_ack_display_names_the_service_and_both_kinds() {
+    let complex = Error::UnexpectedAck {
+        service: ConfirmedServiceChoice::WRITE_PROPERTY,
+        complex: true,
+    };
+    assert_eq!(
+        complex.to_string(),
+        "the device acknowledged write-property with a Complex-ACK, but that service is \
+         acknowledged with a Simple-ACK, with no data; whether it carried out the request is \
+         unknown"
+    );
+    let simple = Error::UnexpectedAck {
+        service: ConfirmedServiceChoice::READ_PROPERTY,
+        complex: false,
+    };
+    assert_eq!(
+        simple.to_string(),
+        "the device acknowledged read-property with a Simple-ACK, but that service is \
+         acknowledged with a Complex-ACK carrying its result; whether it carried out the \
+         request is unknown"
+    );
+}
+
+/// A reject for a request's one frame says the device never received it;
+/// one relayed from a farther router names that router beside the one it
+/// came through; a busy reject a request then timed out after reads as the
+/// timeout it is, naming the router (#2724).
+#[cfg(feature = "std")]
+#[test]
+fn network_reject_says_whether_the_device_can_have_the_request() {
+    use bacnet_npdu::{Mac, RejectMessageReason as R};
+    let reject = NetworkReject::new(
+        Mac::from_array([2]),
+        Some(DataLink::Mstp),
+        7,
+        R::NOT_DIRECTLY_CONNECTED,
+    );
+    assert!(!reject.single_frame);
+    let once = reject.after_one_frame();
+    assert!(once.single_frame);
+    assert_eq!(
+        once.to_string(),
+        "Reject-Message-To-Network from router mstp:2: no route to network 7 \
+         (not-directly-connected, reason 1); the request never reached the device"
+    );
+    let relayed = once.relayed_from(5, Mac::from_array([0x0A]));
+    assert_eq!(relayed.refused_by, Some((5, Mac::from_array([0x0A]))));
+    assert_eq!(
+        relayed.what().to_string(),
+        "Reject-Message-To-Network through router mstp:2, from 5:0x0A: no route to network 7 \
+         (not-directly-connected, reason 1)"
+    );
+    let busy = NetworkReject::new(
+        Mac::from_array([2]),
+        Some(DataLink::Mstp),
+        7,
+        R::ROUTER_BUSY,
+    );
+    assert_eq!(
+        Error::RouterBusyTimeout(Box::new(busy)).to_string(),
+        "BACnet abort: tsm-timeout; on the way, Reject-Message-To-Network from router mstp:2: \
+         busy for network 7 (router-busy, reason 2)"
     );
 }

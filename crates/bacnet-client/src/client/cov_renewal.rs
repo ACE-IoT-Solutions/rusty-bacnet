@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::sync::MutexExt;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::oneshot;
 use tokio::time::{Instant as TokioInstant, sleep_until};
@@ -71,14 +72,19 @@ impl ManagedCOVSubscriptionOptions {
 
     fn validate(&self, lifetime: u32) -> Result<(), Error> {
         if !(1..=MAX_COV_CHANNEL_CAPACITY).contains(&self.event_channel_capacity) {
-            return Err(Error::Encoding(format!(
-                "invalid managed COV subscription event channel capacity {}; expected 1..={}",
-                self.event_channel_capacity, MAX_COV_CHANNEL_CAPACITY
-            )));
+            return Err(Error::InvalidConfig(
+                Refusal::new(
+                    "invalid managed COV subscription event channel capacity {}; expected 1..={}",
+                )
+                .with_values(
+                    self.event_channel_capacity as u64,
+                    MAX_COV_CHANNEL_CAPACITY as u64,
+                ),
+            ));
         }
         if self.renewal_margin >= Duration::from_secs(u64::from(lifetime)) {
-            return Err(Error::Encoding(
-                "managed COV subscription renewal margin must be shorter than lifetime".into(),
+            return Err(Error::invalid_config(
+                "managed COV subscription renewal margin must be shorter than lifetime",
             ));
         }
         Ok(())
@@ -147,7 +153,7 @@ impl ManagedCOVSubscription {
 
     /// Return the latest observed renewal event, if any.
     pub fn last_event(&self) -> Option<ManagedCOVSubscriptionEvent> {
-        self.last_event.lock().ok().and_then(|event| event.clone())
+        self.last_event.locked().clone()
     }
 
     /// Stop renewing and wait for the renewal task to exit.
@@ -287,8 +293,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         options: ManagedCOVSubscriptionOptions,
     ) -> Result<ManagedCOVSubscription, Error> {
         if lifetime == 0 {
-            return Err(Error::Encoding(
-                "managed COV subscriptions require a finite non-zero lifetime".into(),
+            return Err(Error::invalid_argument(
+                "managed COV subscriptions require a finite non-zero lifetime",
             ));
         }
         let request = ManagedRequest::Object {
@@ -453,9 +459,7 @@ fn publish_managed_cov_event(
     last_event: &StdMutex<Option<ManagedCOVSubscriptionEvent>>,
     event: ManagedCOVSubscriptionEvent,
 ) {
-    if let Ok(mut last_event) = last_event.lock() {
-        *last_event = Some(event.clone());
-    }
+    *last_event.locked() = Some(event.clone());
     let _ = events_tx.send(event);
 }
 

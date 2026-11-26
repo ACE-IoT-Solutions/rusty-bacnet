@@ -67,7 +67,7 @@ async fn requesters_abort_leaves_the_nodes_outbound_read_alive_and_dcc_allows_re
                     .dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive),
             );
     session.start().await.unwrap();
-    let client = session.full_client().unwrap();
+    let client = session.client().unwrap();
     let mut events = client.cov_notifications();
     session.broadcast_i_am().await.unwrap();
     assert!(
@@ -175,7 +175,7 @@ async fn stopping_the_node_destroys_the_blocked_worker_while_its_client_is_retai
     let marker = Arc::new(());
     let gone = Arc::downgrade(&marker);
     let client = session
-        .full_client_with(
+        .client_with(
             ClientOptions::default().with_confirmed_cov_notification_ack_policy(move |_| {
                 let _keep = &marker;
                 ConfirmedCOVNotificationResponse::Ack

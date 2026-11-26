@@ -77,12 +77,17 @@ VMAC), or an MS/TP station. `"[ip]:port"` raises ValueError: use
 `resolve_vmac`. So does a `bip6:` address on any other transport.
 
 For B/IP, `interface` accepts an IPv4 literal or the exact OS interface
-name (the adapter friendly name on Windows), resolved to one usable IPv4 address.
+name (the adapter friendly name on Windows), resolved once, at
+construction, to one usable IPv4 address; `broadcast_address` is not
+derived from it. See "Selecting an interface" in docs/python-api.md.
 
 Properties:
 
 - `write_policy: WritePolicy`: The priorities `Device.write` and `relinquish` may use, as `write_policy=` set them.
-- `resolve_scope: Literal["local", "global"] | int | None`: Where a `device()` handle made from a bare instance asks for it, as `resolve_scope=` set it; None on `transport="router"` given none, which asks nowhere.
+- `resolve_scope: Literal["local", "global"] | int`: Where a `device()` handle made from a bare instance asks for it, as `resolve_scope=` set it.
+- `watch_lifetime: int`: The COV lifetime of a `Device.watch` that names none, in seconds, as `watch_lifetime=` set it.
+- `watch_poll_interval: float`: The poll interval of a `Device.watch` that names none, in seconds, as `watch_poll_interval=` set it.
+- `watch_subscribe: bool`: Whether a `Device.watch` that doesn't say subscribes its points for COV (False: polls them), as `watch_subscribe=` set it.
 
 ### BACnetClient.__init__
 
@@ -130,9 +135,22 @@ def __init__(
     router: Optional[BACnetRouter] = None,
     write_policy: Optional[WritePolicy] = None,
     resolve_scope: Literal["local", "global"] | int | None = None,
+    accept_complex_ack_for_simple_services: bool = False,
+    watch_lifetime: int = 300,
+    watch_poll_interval: float = 10.0,
+    watch_subscribe: bool = True,
     confirmed_cov_subscription_limit: int | None = None,
 ) -> None
 ```
+
+`watch_lifetime` (default 300), `watch_poll_interval` (default
+10.0) and `watch_subscribe` (default True): what a
+`Device.watch` takes unless it names its own `lifetime`,
+`poll_interval` or `subscribe` (#2603). Watches with equal
+settings share their subscriptions. A lifetime is 1 to 28800 s
+(eight hours, the longest every device must take), a poll interval
+1 to 3600 s, `watch_subscribe=False` polls every point; another
+value raises ValueError, another type TypeError.
 
 `write_policy` (default None, which is `WritePolicy()`): the
 priorities `Device.write` and `relinquish` may use. The default
@@ -146,11 +164,19 @@ don't look at it. Anything but a `WritePolicy` raises TypeError.
 one Who-Is when no address claims the instance (#2561): this
 network alone, `"global"` for every network, or a network number
 from 1 to 65534. A target that names its network (`"5:1234"`)
-asks there whatever this says. On `transport="router"`, which has
-no network of its own, `"local"` raises ValueError and None asks
-nowhere: a bare instance the client hasn't heard from raises
-`BacnetLookupError`. Another name or number raises ValueError,
-another type TypeError.
+asks there whatever this says. On `transport="router"`, which is
+on each of the router's networks, `"local"` asks every one of
+them (#2601). Another name or number raises ValueError, another
+type TypeError.
+
+`accept_complex_ack_for_simple_services` (default False): a device
+that acknowledges a request whose service takes a Simple-ACK, such
+as `write_property`, with a Complex-ACK fails the request with
+`BacnetError` (#2721), since whether it carried the request out is
+unknown. Set it True only for a device found in the field that
+answers so, whose Complex-ACK this client then takes as the success
+it means. A Simple-ACK where an answer must carry data, such as a
+`read_property`'s, stays an error either way.
 
 `transport="router"` with `router` (a `BACnetRouter` built
 with `application="client"` or `"client_and_server"`): run the
@@ -160,10 +186,11 @@ share from the running router, once per router start: before the
 router starts, or when a client already took it, entry raises
 RuntimeError. Requests go out through the router's table, so name
 each device by its network: discover it, then use the
-`_from_device` / `_to_device` methods. A send to an `ip:port`
-names no network and raises BacnetError. Once the router closes,
-each request fails at once with BacnetTransportError (errno
-ENOTCONN); stop the client as usual. With
+`_from_device` / `_to_device` methods. The local scope is each
+of the router's networks (#2601). A send to an `ip:port` names no
+one of them and raises BacnetError. Once the router closes,
+each request fails at once with BacnetStateError (state
+`"closed"`), with nothing sent; stop the client as usual. With
 `application="client_and_server"` the APDU timeout must be under
 60000 ms. `router` without `transport="router"`, or the reverse,
 raises ValueError.
@@ -347,7 +374,10 @@ decimal parts such as `"10:20"`, read as instance 20 on network
 - an address pins the handle there and sends nothing for a station
 on this network: `"192.168.1.10"` or `"192.168.1.10:47808"`,
 `"mstp:5"`, `"bip6:0x0004D2"`, an SC VMAC as six hex octets,
-a routed station as `"2:0x05"` (network 2, MAC 05), or a
+a routed station as `"2:0x05"` (network 2, MAC 05; a MAC that
+is one station though it looks like a broadcast, ARCNET's
+station 255 or a gateway's two-octet station, takes the suffix
+`":one-station"`, as `"5:0xFF:one-station"`), or a
 `(network, mac)` pair such as a lookup error's candidate. A
 routed station with no learned router is asked directly
 first;
@@ -399,6 +429,7 @@ def write_property_multiple(
 
 Write multiple properties on a remote device (WritePropertyMultiple).
 
+Pass a local address string or a routed station, with an explicit or learned next hop.
 `specs` is `[(object_id, [(property_id, value, priority, array_index), ...]), ...]`.
 Empty request/property lists, ALL/REQUIRED/OPTIONAL targets and u8
 priorities outside 1..16 raise ValueError synchronously for the whole
@@ -507,9 +538,12 @@ carries the station-addressed request by broadcast. Another
 number, or text that names a device instance or a routed target,
 raises `ValueError`, and another type `TypeError`, before
 anything is sent; a station the client's link can't reach raises
-`ValueError` on await. A client on `transport="router"` has no
-network of its own, so its Who-Is names a network, or every one: a
-local or directed one raises `ValueError` saying so.
+`ValueError` on await. A client on `transport="router"` is on
+each of the router's networks, so `"local"` sends one Who-Is to
+each, which the router delivers there and passes no further, and
+the devices answer as routed devices on their networks (#2601); a
+station's address names no one of those networks and raises
+`ValueError`, where a `RoutedTarget` names its network.
 
 Give `low` and `high` together or not at all, each from
 0 to 4194303: one alone, `low` above `high`, or a limit
@@ -569,9 +603,9 @@ remote network, through its router; any other text is one station's
 address, asked by unicast (#2561). Another number, or text that
 names a device instance or a routed target, raises `ValueError`,
 and another type `TypeError`, before anything is sent. A client on
-`transport="router"` has no network of its own, so its Who-Has
-names a network, or every one: a local or directed one raises
-`ValueError` saying so.
+`transport="router"` is on each of the router's networks:
+`"local"` asks every one of them (#2601), and a station's address,
+which names no one of them, raises `ValueError`.
 
 Give `low` and `high` together or not at all, each from
 0 to 4194303: one alone, `low` above `high`, or a limit
@@ -640,7 +674,7 @@ def discover_routers(
     self,
     network: Optional[int] = None,
     *,
-    destination: str | bytes | None = None,
+    router: str | bytes | None = None,
     wait: float = 3.0,
 ) -> Awaitable[list[DiscoveredRouter]]
 ```
@@ -652,11 +686,25 @@ can need VMAC resolution before the wait. Omit `destination` to
 broadcast a Who-Is-Router-To-Network for `network` (or every
 network) and collect the routers that answer for `wait` seconds, one
 per router MAC in the order first heard; for a `network`, only the
-routers listing it. An empty list when none answer. `network` 0 or
-65535 raises BacnetError (#1850). `wait` is 0 to 3600 seconds
-(`ValueError` otherwise). It holds the started client through
-resolution, sending and collection. `stop()` waits for the call
-to finish or be cancelled.
+routers listing it. An empty list when none answer.
+
+With `router`, the router's address on the local link (`bytes`
+such as a `DiscoveredRouter`'s `mac`, or address text as for
+`routing_table`), the question goes to that router alone and only
+its own answers count. A router asked about a network it does not
+know may ask further before it answers. An IPv6 socket address can
+need VMAC resolution before the wait. The router answers with a
+local broadcast, so a B/IP router on another IP subnet is heard only
+when a BBMD forwards its answer here, as a peer or by foreign-device
+registration: with no BBMD, an empty list is the expected result. A
+`router` that names no one
+station (empty, a broadcast or group address) raises ValueError, as
+`routing_table` does, and sends nothing.
+
+`network` 0 or 65535 raises BacnetError (#1850). `wait` is 0 to
+3600 seconds (`ValueError` otherwise). It holds the started client
+through resolution, sending and collection. `stop()` waits for the
+call to finish or be cancelled.
 
 ### BACnetClient.routing_table
 
@@ -678,8 +726,8 @@ asks; no argument can make it an update.
 
 For a local router, pass its MAC as `bytes` or a string in the
 binding's address forms (`"ip:port"`, `"bip6:N"`, hex octets, an
-MS/TP station). For a remote router, pass a RoutedTarget. An empty
-or broadcast link address raises ValueError.
+MS/TP station). For a remote router, pass a RoutedTarget. An empty,
+broadcast or group link address raises ValueError.
 
 A long table comes as several acknowledgements with nothing to mark
 the last, so the call returns once `quiet` seconds pass after the
@@ -703,15 +751,28 @@ empty table. A Reject-Message-To-Network from the router before any
 acknowledgement raises BacnetNetworkRejectError; rejects with
 reasons 1, 2 and 4 are ignored for local queries. Each bound is 0 to
 3600 seconds and `wait` may not exceed `total` (ValueError
-otherwise). A client stopped mid-call raises RuntimeError. A
+otherwise). A client stopped mid-call raises RuntimeError. A link
+that can't send the query for its own state or kind, such as a
+BACnet/SC link not connected to its hub, or a router-application
+client's link, which carries APDUs only, raises what that send's
+error raises (BacnetStateError with state `"not_connected"` for
+the first, BacnetError for the second), not ValueError. A
 RoutedTarget selects the remote router, using its explicit or cached
 next hop. Without either, one router-discovery window of up to
 `wait` seconds must identify a single local next hop for its network.
 Zero or multiple next hops, or a discovery overrun, raise BacnetError.
 Replies must carry the remote station's source network and address and
-arrive through the selected hop. A local-only reply may cause a timeout.
-A reject from the next hop for the requested DNET before the first
-ack ends a routed query. A simultaneous request through that path can
+arrive through the selected hop. An older router that answers a table
+query only on its own link never answers this client: the call raises
+BacnetTimeoutError, whose text for a routed query says so. A router
+that refuses table queries from other networks (a hardened hosted
+router with no authorizer, or a host that refuses the query class)
+drops a routed query silently, and the call raises BacnetTimeoutError
+too.
+A reject for the requested DNET that comes through the next hop
+before the first ack ends a routed query, whether the hop sent it or
+relayed it from a router further on (reason 4, message too long, is
+ignored: the query is too short to draw it). A simultaneous request through that path can
 produce the same reject because network messages have no invoke ID.
 One query runs at a time per client; a second call waits for
 the first. It holds the started client for the whole wait, so
@@ -744,11 +805,12 @@ B/IP, 61 on MS/TP) raises ValueError, as do a bad router or network.
 An `int` outside 0 to 65535 raises OverflowError, and a `bool`
 for `network` or `max_npdu` TypeError.
 
-The call waits for a request active on the path, or one queued for
-it, but not out the hold a request with no answer leaves (the APDU
-timeout times the attempts): the change applies at once, and the next
-request still waits the hold out, sized to the new limit. Nothing goes
-through the path. RuntimeError before start and after stop.
+The change applies at once (#2683): it waits neither for a request on
+the path nor out the hold a request with no answer leaves (the APDU
+timeout times the attempts). A request waiting out the hold still
+waits it out, then goes sized to the new limit; one already sent
+keeps its size. Nothing goes through the path. RuntimeError before
+start and after stop.
 
 ### BACnetClient.clear_routed_path_limit
 
@@ -759,7 +821,7 @@ def clear_routed_path_limit(self, router: str | bytes, network: int) -> Awaitabl
 Put the routed path through `router` to `network` back on the
 default, 228 octets, dropping the limit set or learned for it
 (#2667). Takes `router` and `network` as
-`configure_routed_path_max_npdu` does and waits the same way.
+`configure_routed_path_max_npdu` does and applies at once too.
 Nothing goes through the path. RuntimeError before start and after
 stop.
 
@@ -799,6 +861,19 @@ octets (#2665). A rise can mean a router that carries less than that:
 its requests end by timeout until `configure_routed_path_max_npdu`
 sets the path's limit; `routed_path_limits()` marks the paths.
 RuntimeError before start and after stop.
+
+### BACnetClient.off_path_answer_drops
+
+```python
+def off_path_answer_drops(self) -> Awaitable[int]
+```
+
+How many answers for a device's open request the client dropped
+since start because they came by another path than the request took
+(#2831): from another station than a routed request's router, or
+relayed with this network's own number as SNET for a request sent
+straight to the device. A rise means a station is answering for
+other devices. RuntimeError before start and after stop.
 
 ### BACnetClient.network_reports
 
@@ -1206,9 +1281,9 @@ source.
 An unsubscribed sender's broadcast can bring a
 `CovNotificationMultiple` too, so check `kind` (or use
 `isinstance`) before reading a `CovNotification`'s fields. A
-segmented confirmed notification is reassembled when receive segmentation is
-enabled. The endpoint client follows its Device's receive capability. A whole
-request retransmitted after completion can be published again.
+confirmed notification that comes in segments is reassembled, then
+acknowledged and yielded once (#2646), and a confirmed notification
+sent again, its answer lost, is published again.
 
 ### BACnetClient.delete_object
 
@@ -1797,7 +1872,10 @@ def write_bdt(
 ```
 
 Ask a BBMD to take `entries` (rows as `Bbmd(bdt=)` takes them)
-as its BDT. A BBMD that follows the 2020 standard refuses with 0x0010.
+as its BDT: the BVLC Write-Broadcast-Distribution-Table, the path
+for an older BBMD. A BBMD that follows the 2020 standard refuses with
+0x0010; write its Network Port's BBMD\_Broadcast\_Distribution\_Table
+with `PropertyValue.bdt(rows)` instead (#2710).
 
 ### BACnetClient.read_fdt
 
@@ -1880,18 +1958,22 @@ closing state for another stop attempt.
 
 Frozen SC client retry settings, copied when passed to BACnetClient.
 
-Delays must be nonzero, initial \<= maximum, and maximum \<= 86,400,000 ms.
+Delays must be nonzero, initial \<= maximum, and maximum \<= 600,000 ms
+(ten minutes, the most Annex AB.6.1 lets the reconnect wait grow to).
 Invalid settings raise ValueError; unsigned integer overflow raises
-OverflowError. With retry\_forever enabled, each backoff round tries the
-primary and then an available failover, ignoring max\_retries. Otherwise
-zero retries skips the active-hub retries after loss.
+OverflowError. Validation is not deployment qualification.
+
+After a lost connection each round waits its backoff, then tries the
+primary hub and, when that fails, the failover hub. max\_retries bounds
+the rounds; 0 turns recovery off (the initial connection and primary
+restoration still run). None keeps going while a hub can be dialled and
+needs initial\_delay\_ms \>= 1000, else ValueError.
 
 Properties:
 
 - `initial_delay_ms: int`
 - `max_delay_ms: int`
-- `max_retries: int`
-- `retry_forever: bool`
+- `max_retries: int | None`
 
 ### ScReconnect.__init__
 
@@ -1901,8 +1983,7 @@ def __init__(
     *,
     initial_delay_ms: int = 10000,
     max_delay_ms: int = 600000,
-    max_retries: int = 10,
-    retry_forever: bool = False,
+    max_retries: int | None = 10,
 ) -> None
 ```
 
@@ -2037,11 +2118,14 @@ Properties:
 One SC hub-connector event (#1829), frozen. Fields that don't apply
 to the event's kind are None.
 
-In finite recovery, losing the primary reads `disconnected`, then `reconnect_attempt` and
-`connect_failed` for each failed primary attempt, then
-`failover_engaged` and `connected` on the failover hub. Unlimited
-recovery reports each eligible hub attempt in primary-then-failover order.
-Both attempts share the round number and its one backoff. A primary
+Recovery runs in rounds that try the primary, then the failover hub.
+Losing the primary reads `disconnected`, then per round
+`reconnect_attempt` and `connect_failed` for the primary, and
+`reconnect_attempt`, `failover_engaged` and `connected` (or
+`connect_failed`) for the failover hub. Both attempts of a round share
+its number and its one backoff. `failover_engaged` comes once the
+failover dial succeeds, before its handshake, and can repeat once per
+round. A primary
 restore reads `primary_restored`, then `connected` on the primary;
 each failed restore probe, at most one per restore interval, reads
 `primary_restore_failed` (#1828).
@@ -2161,6 +2245,10 @@ Properties:
 
 One immutable decoded field, with its source span.
 
+Two nodes are equal, and hash alike, when their labels, spans,
+device-text flags and children all are. `copy` and `pickle` rebuild
+a node from those; nothing is decoded again.
+
 Properties:
 
 - `label: str`
@@ -2234,8 +2322,8 @@ Properties:
 - `forwarded: bool`: True when the frame carried an origin other than its sender: a BBMD forwarded it. Never on SC or MS/TP.
 - `source_network: Optional[int]`: SNET, when a router relayed the I-Am from another network.
 - `source_address: Optional[bytes]`: SADR, the device's MAC on `source_network`.
-- `destination_network: int | None`: DNET carried by the received NPDU.
-- `destination_address: bytes | None`: DADR, empty for a network broadcast and absent without a DNET.
+- `destination_network: Optional[int]`: DNET carried by the received NPDU.
+- `destination_address: Optional[bytes]`: DADR, empty for a network broadcast and absent without a DNET.
 - `broadcast: bool`: A link broadcast or a broadcast on a network. False for an MS/TP I-Am one station unicast to another, which the bus lets this station hear.
 - `device_address: Optional[str]`: The device's address as `BACnetClient.device()` takes it: `link_source` for a device on this link, `"5:0x07"` for one a router relayed. None when those name no one station. The calls that take an `address` don't take `"5:0x07"`: for a routed record, `read_property`, `read_property_multiple`, `read_range`, `read_log_page`, `write_property`, `atomic_read_file` and `atomic_write_file` take `RoutedTarget(rec.source_network, rec.source_address, router=rec.next_hop_router)`.
 - `next_hop_router: Optional[str]`: The router that relayed it, when `source_network` is set: its `link_source`.

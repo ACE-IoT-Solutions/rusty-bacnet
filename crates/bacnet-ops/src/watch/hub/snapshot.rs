@@ -3,9 +3,9 @@
 
 use tokio::time::Instant;
 
-use super::super::Why;
 use super::super::sample::Via;
 use super::super::support::CovSupport;
+use super::super::{Moved, Why};
 use crate::format::RawRow;
 
 /// Where a point's values come from now.
@@ -36,8 +36,9 @@ pub enum Phase {
     Stopped,
     /// Nothing watches it any more: no route to its address is known and
     /// [`WatchOptions::missing`](super::WatchOptions::missing) says not to
-    /// wait ([`Why::Missing`]), or its device answers at another address
-    /// now ([`Why::Moved`]). See [`Snapshot::note`].
+    /// wait ([`Why::Missing`]), its device answers at another address now
+    /// ([`Why::Moved`]), or another device answers at its address
+    /// ([`Why::Replaced`]). See [`Snapshot::note`].
     Gone,
 }
 
@@ -71,6 +72,10 @@ pub struct Snapshot {
     /// [`note`](Self::note), leaves it. `None` while subscribed, and
     /// before the first start ends.
     pub why: Option<Why>,
+    /// The latest move of a following point's device the hub took
+    /// (#2795): it watches the point at the new address since. `None` for a
+    /// pinned point, and before any move.
+    pub moved: Option<Moved>,
     /// What is known of COV for this point: the device's own answer to
     /// its subscription once asked, before that what the device declared
     /// or did for its other points.
@@ -99,6 +104,7 @@ impl Snapshot {
             polls: 0,
             renewals: 0,
             why: None,
+            moved: None,
             cov: CovSupport::Unknown,
         }
     }

@@ -21,7 +21,9 @@ struct TestPort {
 impl TransportPort for TestPort {
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         if self.fail_start {
-            return Err(Error::Encoding("injected start failure".into()));
+            return Err(Error::Transport(std::io::Error::other(
+                "injected start failure",
+            )));
         }
         let (tx, rx) = mpsc::channel(4);
         *self.incoming.get_mut().unwrap() = Some(tx);
@@ -38,7 +40,9 @@ impl TransportPort for TestPort {
         }
         self.incoming.lock().unwrap().take();
         if self.fail_stop {
-            Err(Error::Encoding("injected cleanup failure".into()))
+            Err(Error::Transport(std::io::Error::other(
+                "injected cleanup failure",
+            )))
         } else {
             Ok(())
         }
@@ -65,10 +69,7 @@ async fn native(ports: Vec<TestPort>) -> PyResult<StartedRouter> {
         ports
             .into_iter()
             .enumerate()
-            .map(|(index, transport)| RouterPort {
-                transport,
-                network_number: index as u16 + 1,
-            })
+            .map(|(index, transport)| RouterPort::new(transport, index as u16 + 1))
             .collect(),
         RouterOptions::new(),
     )
@@ -219,7 +220,7 @@ async fn unpublished_start_result_retains_cleanup_authority() {
     drop(publication);
     cleaned.await.unwrap();
     assert_eq!(stops.load(Ordering::SeqCst), 1);
-    assert!(owner.inspect(|_| ()).await.is_none());
+    assert!(owner.inspect(|_| ()).await.is_err());
 }
 
 #[tokio::test]

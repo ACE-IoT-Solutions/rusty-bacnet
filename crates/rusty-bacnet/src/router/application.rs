@@ -14,9 +14,10 @@ use bacnet_network::router::{
     BACnetRouter, RouterApplicationPort, RouterApplicationPorts, StartedRouter,
 };
 use bacnet_transport::port::TransportPort;
+use bacnet_types::sync::MutexExt;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 /// The longest APDU or segment wait a stack on a split entity may use: the
 /// ports forget a request 60 seconds after its last segment, retry or
@@ -123,7 +124,7 @@ impl Slots {
     }
 
     fn with<R>(&self, role: Role, f: impl FnOnce(&mut Option<RouterApplicationPort>) -> R) -> R {
-        let mut ports = self.ports.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut ports = self.ports.locked();
         match role {
             Role::Client => f(&mut ports.0),
             Role::Server => f(&mut ports.1),
@@ -143,8 +144,10 @@ pub(crate) struct RouterApplication {
 impl RouterApplication {
     /// Take this stack's port from the running router.
     ///
-    /// Raises `RuntimeError` when the router isn't running, or is closing,
-    /// and when this router start's port for the role is already taken.
+    /// Raises `BacnetStateError` when the router isn't running, or is
+    /// closing, with the state [`Lifecycle::inspect`] found (#2819), and
+    /// `RuntimeError` when this router start's port for the role is already
+    /// taken.
     pub(crate) async fn take(&self) -> PyResult<RouterApplicationPort> {
         let role = self.role;
         self.found(self.owner.inspect(|session| session.slots.take(role)).await)
@@ -162,18 +165,22 @@ impl RouterApplication {
         )
     }
 
-    fn found<T>(&self, lookup: Option<Option<T>>) -> PyResult<T> {
+    fn found<T>(&self, lookup: Result<Option<T>, bacnet_types::error::Lifecycle>) -> PyResult<T> {
         let role = self.role.name();
         match lookup {
-            None => Err(PyRuntimeError::new_err(format!(
-                "router not started or already closing: start the router before the {role} on \
-                 its application entity"
-            ))),
-            Some(None) => Err(PyRuntimeError::new_err(format!(
+            Err(state) => Err(crate::errors::lifecycle_error(
+                state,
+                format!(
+                    "router not started or already closing: start the router before the {role} \
+                     on its application entity"
+                ),
+            )),
+            // One holder per router start: a cap reached, not a state.
+            Ok(None) => Err(PyRuntimeError::new_err(format!(
                 "this router start's application {role} port is already taken: one {role} runs \
                  on it per router start, so restart the router to start another"
             ))),
-            Some(Some(found)) => Ok(found),
+            Ok(Some(found)) => Ok(found),
         }
     }
 }

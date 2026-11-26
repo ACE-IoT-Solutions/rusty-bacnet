@@ -86,7 +86,7 @@ async fn canceled_failed_start_retains_cleanup_until_stop_or_drop() {
             Lifecycle::Stopping as u8
         );
         assert!(!session.is_running());
-        assert!(session.client().is_none() && session.server().is_none());
+        assert!(session.client().is_err() && session.server().is_none());
         assert_eq!(session.active_leases(), 0);
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         assert!(session.start().await.is_err());
@@ -138,7 +138,7 @@ async fn post_profile_requester_failure_uninstalls_source_owner_and_releases_dat
     .unwrap()
     .with_database(database())
     .with_source_audit_reporter(selected());
-    assert!(session.start().await.is_err());
+    let refused = session.start().await.unwrap_err();
     assert_eq!(observed.starts.load(Ordering::SeqCst), 1);
     assert_eq!(observed.stops.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -147,7 +147,9 @@ async fn post_profile_requester_failure_uninstalls_source_owner_and_releases_dat
     );
     assert!(session.source_recipient.is_none() && session.source_audit.is_none());
     assert!(session.notifications.is_none());
-    let mut db = session.database.as_ref().unwrap().write().await;
+    // The terminal start hands the database back (#2766).
+    assert!(session.database.is_none());
+    let mut db = refused.into_parts().1.expect("the database comes back");
     assert!(!source(&db, selected()));
     assert!(!bacnet_objects::property_metadata::has_property(
         &db.get(&oid(ObjectType::DEVICE, 123))

@@ -6,7 +6,7 @@ use bacnet_network::layer::{NetworkLayer, ReceivedApdu, RoutedTarget};
 use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_types::error::{self, Error, Refusal};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -16,8 +16,16 @@ use crate::seat::SeatSlot;
 /// layer queues for a control receiver.
 const NUMBER_CONTROL_QUEUE: usize = 256;
 
-fn shutdown_error() -> Error {
-    Error::Encoding("endpoint shutdown".into())
+/// What a send or a seat meets once the endpoint has shut: closed for good,
+/// as a started endpoint never starts again (#1833).
+pub(crate) fn shutdown_error() -> Error {
+    Error::state(error::Lifecycle::Closed, "endpoint shutdown")
+}
+
+/// A start of an ingress that has started, or whose network a start took
+/// (#1833).
+fn started_once(label: &'static str) -> Error {
+    Error::state(error::Lifecycle::AlreadyStarted, label)
 }
 
 const EFFECTIVE_GROUP_APDU_ERROR: &str =
@@ -41,9 +49,9 @@ tokio::task_local! {
     /// How long a test holds the start just after the classifier spawns.
     pub(crate) static AFTER_CLASSIFIER_SPAWN: std::time::Duration;
 }
-pub(crate) use routing::reserve;
 use routing::{ControlTee, IngressDrops, IngressQueues, next_apdu, route_received};
 pub use routing::{DROP_LOG_INTERVAL, IngressDropCounters};
+pub(crate) use routing::{copied_when_reassembled, reserve, share_reassembled};
 
 /// What [`EndpointIngress::observe_sources`] calls with each APDU from
 /// another network that it shows.
@@ -257,11 +265,11 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
     #[doc(hidden)]
     pub fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
         if self.lifecycle != Lifecycle::Ready {
-            return Err(Error::Encoding("ingress already started".into()));
+            return Err(started_once("ingress already started"));
         }
         self.network
             .as_mut()
-            .ok_or_else(|| Error::Encoding("missing network".into()))?
+            .ok_or_else(|| started_once("missing network"))?
             .retain_network_port_lease_internal(lease)
     }
 
@@ -295,20 +303,20 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         Error,
     > {
         if self.lifecycle != Lifecycle::Ready {
-            return Err(Error::Encoding(
-                "endpoint ingress cannot be started more than once".into(),
+            return Err(started_once(
+                "endpoint ingress cannot be started more than once",
             ));
         }
         if self.queue_capacity == 0 {
-            return Err(Error::Encoding(
-                "endpoint ingress queue capacity must be greater than zero".into(),
+            return Err(Error::invalid_config(
+                "endpoint ingress queue capacity must be greater than zero",
             ));
         }
 
         let network = self
             .network
             .as_mut()
-            .ok_or_else(|| Error::Encoding("endpoint ingress network owner is missing".into()))?;
+            .ok_or_else(|| started_once("endpoint ingress network owner is missing"))?;
         self.lifecycle = Lifecycle::Starting;
         // Every link's controls are taken, for a client seat (#2617). The
         // endpoint's own Number owner gets them only on a link that takes
@@ -364,10 +372,11 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
             local_network: network.local_network_number().clone(),
             group_destinations: network.transport().group_destinations(),
         };
-        let network =
-            Arc::new(self.network.take().ok_or_else(|| {
-                Error::Encoding("endpoint ingress network owner is missing".into())
-            })?);
+        let network = Arc::new(
+            self.network
+                .take()
+                .ok_or_else(|| started_once("endpoint ingress network owner is missing"))?,
+        );
         self.started = Arc::downgrade(&network);
         let seat_number = seats.number().clone();
         let server_seat = server.map(|coordinator| {
@@ -420,7 +429,7 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         roles: crate::seat::SeatRoles,
         capacity: usize,
     ) -> Result<crate::seat::ClientSeat<T>, Error> {
-        let not_running = || Error::Encoding("endpoint ingress is not running".into());
+        let not_running = || self.not_running();
         if self.lifecycle != Lifecycle::Running {
             return Err(not_running());
         }
@@ -443,7 +452,7 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         &self,
         coordinator: Arc<crate::coordinator::OutboundTransactionCoordinator>,
     ) -> Result<crate::seat::ServerSeat<T>, Error> {
-        let not_running = || Error::Encoding("endpoint ingress is not running".into());
+        let not_running = || self.not_running();
         if self.lifecycle != Lifecycle::Running {
             return Err(not_running());
         }
@@ -453,6 +462,21 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
             coordinator,
             self.queue_capacity,
         )
+    }
+
+    /// What a call that needs the ingress running finds instead, from its
+    /// own state (#1833): not started yet, a stop under way, or shut for
+    /// good, as a start that failed, a stop that ended or a layer that has
+    /// gone leaves it: an ingress starts once.
+    fn not_running(&self) -> Error {
+        let state = match self.lifecycle {
+            Lifecycle::Ready => error::Lifecycle::NotRunning,
+            Lifecycle::Stopping => error::Lifecycle::Stopping,
+            Lifecycle::Starting | Lifecycle::Running | Lifecycle::Stopped => {
+                error::Lifecycle::Closed
+            }
+        };
+        Error::state(state, "endpoint ingress is not running")
     }
 
     /// What ingress dropped because a queue of its own was full, by class
@@ -491,13 +515,15 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
     /// (#2617), whether or not the seated roles themselves are still alive.
     /// Their sends after that fail with the transport's stopped error, and
     /// dropping them later changes nothing. A seated server's own stop is
-    /// best run first: it joins its work and settles its saves.
+    /// best run first: it joins its work and settles its saves. Dropping
+    /// the ingress instead aborts the layer, with the same end for the
+    /// seated roles but nothing graceful sent and nothing waited for.
     pub async fn stop(&mut self) -> Result<ClassifierExit, Error> {
         if !matches!(
             self.lifecycle,
             Lifecycle::Starting | Lifecycle::Running | Lifecycle::Stopping
         ) {
-            return Err(Error::Encoding("endpoint ingress is not running".into()));
+            return Err(self.not_running());
         }
         if self.lifecycle == Lifecycle::Starting
             && let Some(network) = self.network.take()
@@ -522,12 +548,17 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         let result = match self.session_task.as_mut() {
             Some(task) => match task.await {
                 Ok(result) => result,
-                Err(error) => Err(Error::Encoding(format!(
-                    "endpoint ingress session failed: {error}"
-                ))),
+                // The task panicked or was aborted: whatever it held is
+                // gone with it, and the ingress never starts again.
+                Err(join) => Err(Error::State(
+                    error::Lifecycle::Closed,
+                    Refusal::text(format!("endpoint ingress session failed: {join}")),
+                )),
             },
-            None => Err(Error::Encoding(
-                "endpoint ingress session task is missing".into(),
+            // Only a stop takes the task: this one found it gone.
+            None => Err(Error::state(
+                error::Lifecycle::Closed,
+                "endpoint ingress session task is missing",
             )),
         };
         self.session_task.take();
@@ -536,6 +567,12 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
     }
 }
 
+/// A drop aborts, never waits: the seats' queues close, the session task is
+/// aborted, and the started layer is aborted through the shared reference
+/// (#2617), so a seated client still alive keeps no link up. It sends
+/// nothing more, the transport's sockets go as the runtime drops its aborted
+/// tasks, and nothing graceful goes out; [`EndpointIngress::stop`] is the
+/// graceful path.
 impl<T: TransportPort> Drop for EndpointIngress<T> {
     fn drop(&mut self) {
         if let Some(seats) = &self.seats {
@@ -549,6 +586,9 @@ impl<T: TransportPort> Drop for EndpointIngress<T> {
         }
         if let Some(task) = self.session_task.take() {
             task.abort();
+        }
+        if let Some(network) = self.started.upgrade() {
+            network.abort();
         }
         // An aborted session task reports no tail of its own.
         let _ = self.drops.flush();
@@ -647,6 +687,22 @@ enum EgressDrive {
     Exit(ClassifierExit),
 }
 
+/// A deadline-bound send whose deadline passed (#1833): before the send
+/// began (`started` false: nothing went), or while the transport carried
+/// it (it may have gone). This side's link didn't carry it in time, so an
+/// I/O timeout of the link, not [`Error::Timeout`], which says a peer gave
+/// no answer.
+#[cold]
+#[inline(never)]
+fn send_deadline_expired(started: bool) -> Error {
+    let text = if started {
+        "endpoint send deadline expired"
+    } else {
+        "endpoint send expired before execution"
+    };
+    Error::Transport(std::io::Error::new(std::io::ErrorKind::TimedOut, text))
+}
+
 // A select! result consumed on the spot, never stored: boxing the APDU would
 // add a heap allocation per APDU received while a send is in flight.
 #[allow(clippy::large_enum_variant)]
@@ -678,9 +734,7 @@ async fn drive_network_service<T: TransportPort + 'static>(
         || deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now())
     {
         let _ = completion.send(EndpointSendOutcome {
-            result: Err(Error::Encoding(
-                "endpoint send expired before execution".into(),
-            )),
+            result: Err(send_deadline_expired(false)),
             attempted: false,
         });
         return EgressDrive::Complete;
@@ -719,7 +773,7 @@ async fn drive_network_service<T: TransportPort + 'static>(
                     _ = &mut *cancel_rx => PendingEvent::Cancelled,
                     _ = &mut expiry => {
                         let _ = completion.send(EndpointSendOutcome {
-                            result: Err(Error::Encoding("endpoint send deadline expired".into())), attempted: true,
+                            result: Err(send_deadline_expired(true)), attempted: true,
                         });
                         return EgressDrive::Complete;
                     },
@@ -733,7 +787,7 @@ async fn drive_network_service<T: TransportPort + 'static>(
                     _ = &mut *cancel_rx => PendingEvent::Cancelled,
                     _ = &mut expiry => {
                         let _ = completion.send(EndpointSendOutcome {
-                            result: Err(Error::Encoding("endpoint send deadline expired".into())), attempted: true,
+                            result: Err(send_deadline_expired(true)), attempted: true,
                         });
                         return EgressDrive::Complete;
                     },
@@ -802,7 +856,7 @@ fn validate_effective_group_apdu(
 
     match decode_apdu(apdu.to_vec().into()) {
         Ok(Apdu::UnconfirmedRequest(_)) => Ok(()),
-        _ => Err(Error::Encoding(EFFECTIVE_GROUP_APDU_ERROR.into())),
+        _ => Err(Error::invalid_argument(EFFECTIVE_GROUP_APDU_ERROR)),
     }
 }
 

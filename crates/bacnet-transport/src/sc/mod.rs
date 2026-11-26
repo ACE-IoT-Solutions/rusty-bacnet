@@ -23,7 +23,8 @@ use crate::sc_frame::{BROADCAST_VMAC, ScFunction, Vmac, decode_sc_message, encod
 use crate::sc_frame::{ScMessage, decode_sc_bvlc_result};
 use bacnet_npdu::NpduLimits;
 use bacnet_types::data_link::DataLink;
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, Lifecycle};
+use bacnet_types::sync::MutexExt;
 
 mod address_resolution;
 mod advertisement;
@@ -72,10 +73,10 @@ mod unknown_function;
 pub use connection::{ScConnection, ScConnectionState};
 #[cfg(feature = "sc-tls")]
 pub use connector::ScHubDialer;
+use connector::WebSocketConnector;
 pub use connector::dial_within;
 #[cfg(feature = "sc-tls")]
 pub(crate) use connector::enter_dial_stage;
-use connector::{WebSocketConnector, dial_failover_ws};
 pub use control_rate::ScControlRateLimit;
 pub use errors::{
     ScCertificateRejection, ScConnectError, ScDialStage, ScTlsAlert, ScTlsFailure,
@@ -145,6 +146,8 @@ pub struct ScTransport<W: WebSocketPort> {
     recv_task: StdMutex<Option<JoinHandle<()>>>,
     /// One stop at a time (#2617).
     stop_gate: crate::stopping::StopGate,
+    /// Set by an abort through `&self` (#2617): every later send fails.
+    abort_mark: Arc<lifecycle::AbortMark>,
     connect_timeout_ms: u64,
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
@@ -177,8 +180,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         // A stop, before a start or after one, lets go of the hub sockets
         // the transport was given (#2617).
         if self.stop_gate.is_stopped() {
-            return Err(Error::Encoding(
-                "BACnet/SC transport was stopped: a stopped SC transport cannot start again".into(),
+            return Err(Error::state(
+                Lifecycle::Closed,
+                "BACnet/SC transport was stopped: a stopped SC transport cannot start again",
             ));
         }
         if let Some(config) = &self.reconnect_config {
@@ -199,10 +203,10 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         self.npdu_admission_policy.validate()?;
 
         if self.device_uuid == [0; 16] {
-            return Err(Error::Encoding("SC device UUID is all-zero".into()));
+            return Err(Error::invalid_config("SC device UUID is all-zero"));
         }
         if self.local_vmac == [0; 6] || self.local_vmac == BROADCAST_VMAC {
-            return Err(Error::Encoding("SC VMAC is zero or broadcast".into()));
+            return Err(Error::invalid_config("SC VMAC is zero or broadcast"));
         }
 
         // The capacity is the admission's aggregate cap (256, as on B/IP).
@@ -216,22 +220,16 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         let conn = Arc::new(Mutex::new(connection));
         self.connection = Some(conn.clone());
 
-        let primary_ws = self
-            .ws
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| Error::Encoding("BACnet/SC transport already started".into()))?;
+        let primary_ws = self.ws.get_mut_locked().take().ok_or(Error::state(
+            Lifecycle::AlreadyStarted,
+            "BACnet/SC transport already started",
+        ))?;
 
         // Every hub socket goes through the frame tap (tap.rs).
         let tap = &self.frame_tap;
         let primary_ws = Arc::new(TappedSocket::new(primary_ws, tap, self.initial_hub));
-        let mut failover_ws = (self
-            .failover_ws
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take())
-        .map(|ws| Arc::new(TappedSocket::new(ws, tap, ScActiveHub::Failover)));
+        let mut failover_ws = (self.failover_ws.get_mut_locked().take())
+            .map(|ws| Arc::new(TappedSocket::new(ws, tap, ScActiveHub::Failover)));
         let primary_connector = (self.primary_connector.as_ref())
             .map(|dial| tapped_connector(dial, tap, ScActiveHub::Primary));
         let failover_connector = (self.failover_connector.as_ref())
@@ -263,6 +261,12 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         }
         let active_ws = Arc::new(Mutex::new(Some(ws.clone())));
         self.ws_shared = Some(active_ws.clone());
+        self.abort_mark
+            .started_on(tokio::runtime::Handle::current());
+        let release = lifecycle::ReleaseOnAbort {
+            slot: active_ws.clone(),
+            mark: self.abort_mark.clone(),
+        };
 
         // Receive loop (handshake already done — no ConnectAccept handling needed)
         let heartbeat_interval_ms = self.heartbeat_interval_ms;
@@ -284,6 +288,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         let direct = self.direct.clone();
         let mut direct_intake = std::mem::take(&mut self.direct_intake);
         let task = tokio::spawn(async move {
+            let _release = release;
             let mut primary_restore_interval =
                 failover::restore_interval(Duration::from_millis(restore_interval_ms));
             // Last solicited-Advertisement send for the AB.3.2 anti-storm
@@ -597,7 +602,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                                 primary_attempt = None;
                             }
                         }
-                        _ = primary_restore_interval.tick(), if restore_enabled && active_hub == ScActiveHub::Failover && primary_attempt.is_none() => {
+                        // Restore needs something to try: the primary
+                        // connector, or the kept primary socket.
+                        _ = primary_restore_interval.tick(), if restore_enabled && active_hub == ScActiveHub::Failover && primary_attempt.is_none() && (primary_connector.is_some() || primary_ws.is_some()) => {
                             let c = conn.lock().await;
                             if c.state != ScConnectionState::Connected || !c.connect_retry_allowed {
                                 continue;
@@ -680,6 +687,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
                     primary_connector: &primary_connector,
                     failover_connector: &failover_connector,
                     failover_ws: &mut failover_ws,
+                    primary_ws: &mut primary_ws,
                     conn: &conn,
                     active_ws: &active_ws,
                     state_tx: &state_tx,
@@ -705,10 +713,7 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
             }
         });
 
-        *self
-            .recv_task
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(task);
+        *self.recv_task.get_mut_locked() = Some(task);
         self.stop_gate.open();
         Ok(npdu_rx)
     }
@@ -716,8 +721,9 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
     /// Stop through a shared reference (#2617): the hub hears a
     /// Disconnect-Request and a close, within the stop's budget, the direct
     /// links end, the receive task is joined, and the hub socket is taken
-    /// out, after which every send fails with [`crate::port::stopped`]'s
-    /// error. The transport does not start again.
+    /// out, after which every send fails with
+    /// [`crate::port::stopped_for_good`]'s error. The transport does not
+    /// start again.
     async fn stop(&self) -> Result<(), Error> {
         let Some(stopping) = self.stop_gate.enter().await else {
             return Ok(());
@@ -727,11 +733,12 @@ impl<W: WebSocketPort> TransportPort for ScTransport<W> {
         stopped
     }
 
-    /// Unlike `stop()`, abort (and drop) cannot join the receive task, so a
-    /// reconnect finishing on another worker may still report `Connected`
-    /// after the `LocalClose` this sends.
-    fn abort(&mut self) {
-        self.abort_background_task_and_drop_sockets();
+    /// Abort through `&self` (#2617), as `ScTransport::abort_and_release`
+    /// describes. Unlike `stop()`, abort (and drop) cannot join the receive
+    /// task, so a reconnect finishing on another worker may still report
+    /// `Connected` after the `LocalClose` this sends.
+    fn abort(&self) {
+        self.abort_and_release();
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {

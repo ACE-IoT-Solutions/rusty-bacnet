@@ -1,9 +1,10 @@
 """Registration, command defaults and discovery of points on one shared endpoint."""
 
-import socket
-import unittest
+import asyncio
 
 from async_compat import async_timeout
+import socket
+import unittest
 
 import rusty_bacnet as rb
 from test_bip_modes import accepted_registration
@@ -77,11 +78,13 @@ class EndpointPointBuilders(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([(row.object_identifier, row.object_name) for row in found],
                              [(rb.ObjectIdentifier(O.MULTI_STATE_OUTPUT, 1), "multistate_output")])
             self.assertEqual(await peer.who_has_replies("Unregistered", scope=address, wait=1), [])
+            seen = set()
             async with async_timeout(10):
                 async for frame in frames:
                     summary = rb.decode_frame(frame.octets, frame.link)
                     service = (summary.service or "").lower().replace("-", "").replace("_", "")
-                    if frame.direction == "inbound" and service == "whohas":
+                    seen.add((frame.direction, service))
+                    if {("inbound", "whohas"), ("outbound", "ihave")} <= seen:
                         break
                 else:
                     self.fail("endpoint closed the frame stream during discovery")

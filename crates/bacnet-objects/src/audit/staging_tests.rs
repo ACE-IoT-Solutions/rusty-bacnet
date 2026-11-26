@@ -65,7 +65,9 @@ impl AuditLogPersistence for SlowPersistence {
             let _ = go.recv();
         }
         if self.fail.load(Ordering::SeqCst) {
-            return Err(Error::Encoding("injected commit failure".into()));
+            return Err(Error::from(crate::snapshot::backend_failed(
+                "injected commit failure",
+            )));
         }
         *self.snapshot.lock().unwrap() = Some(snapshot.clone());
         self.commits.fetch_add(1, Ordering::SeqCst);
@@ -458,8 +460,14 @@ fn staging_skips_a_write_with_nothing_to_commit() {
         None,
         &PropertyValue::Unsigned(0),
     )));
+    // A NULL to Description changes nothing, so it commits nothing (#2407).
     assert!(skipped(log.stage_write(
         PropertyIdentifier::DESCRIPTION,
+        None,
+        &PropertyValue::Null,
+    )));
+    assert!(skipped(log.stage_write(
+        PropertyIdentifier::OBJECT_NAME,
         None,
         &PropertyValue::CharacterString("x".into()),
     )));

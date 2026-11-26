@@ -51,12 +51,12 @@ fn port(
                     attributes: frame.attributes,
                     complete,
                 })
-                .map_err(|_| Error::Encoding("test wire closed".into()));
+                .map_err(|_| Error::Transport(std::io::Error::other("test wire closed")));
             async move {
                 queued?;
                 completion
                     .await
-                    .map_err(|_| Error::Encoding("test send refused".into()))?
+                    .map_err(|_| Error::Transport(std::io::Error::other("test send refused")))?
             }
         })
         .build()
@@ -85,10 +85,10 @@ pub(super) async fn start_any<A: super::LocalApduReceiver>(
             let (sent, wire) = mpsc::unbounded_channel();
             let limit = Arc::new(AtomicU16::new(1497));
             (
-                RouterPort {
-                    transport: port(index as u8 + 1, incoming, sent, limit.clone()),
-                    network_number: (index as u16 + 1) * 1000,
-                },
+                RouterPort::new(
+                    port(index as u8 + 1, incoming, sent, limit.clone()),
+                    (index as u16 + 1) * 1000,
+                ),
                 Peer {
                     frames,
                     sent: wire,

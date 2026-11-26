@@ -7,11 +7,13 @@
 //! Time is paused; each test leases the IDs itself, so nothing but the
 //! server's own notifications ends a lease unless the test drops one.
 use super::cov_wire_test_support::*;
-use super::notification_transactions::{NotificationReservation, SEAT_LEASES};
-use super::warn_spy::WarnSpy;
+use super::notification_transactions::NotificationReservation;
 use super::*;
 use crate::server::test_transport::{SendLog, TestTransport};
 use bacnet_device_core::cov::{CovNotificationKind, CovSubscription};
+use bacnet_endpoint_core::coordinator::{
+    NOTIFICATION_RESERVE, OutboundTransactionCoordinator, REQUESTER_RESERVE,
+};
 use bacnet_endpoint_core::endpoint_ingress::{EndpointIngress, IngressReceivers};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_services::cov::{COVNotificationRequest, SubscribeCOVRequest};
@@ -77,22 +79,23 @@ pub(super) fn lease_all(h: &Harness) -> Vec<NotificationReservation> {
     h.server.notification_transactions.lease_every_invoke_id()
 }
 
-/// Refusals for want of an invoke ID logged so far: one per reservation
-/// refused, since none is retried until an ID comes back.
-pub(super) fn refusals(spy: &WarnSpy) -> usize {
-    spy.warnings()
-        .iter()
-        .filter(|warning| warning.message.starts_with("No free invoke ID"))
-        .count()
+/// Reports refused for want of an invoke ID so far: one per reservation
+/// refused, since none is retried until an ID comes back. Counted, as the
+/// warning is throttled (#2671).
+pub(super) fn refusals(h: &Harness) -> u64 {
+    h.server
+        .cov_counters
+        .notifications_throttled_invoke_id
+        .load(Relaxed)
 }
 
-/// `(queued, delivered, dropped)` owed-ID revisits.
+/// `(queued, delivered, dropped)` revisits owed room.
 pub(super) fn owed_counts(h: &Harness) -> (u64, u64, u64) {
     let counters = &h.server.cov_counters;
     (
-        counters.owed_id_revisits_queued.load(Relaxed),
-        counters.owed_id_revisits_delivered.load(Relaxed),
-        counters.owed_id_revisits_dropped.load(Relaxed),
+        counters.owed_revisits_queued.load(Relaxed),
+        counters.owed_revisits_delivered.load(Relaxed),
+        counters.owed_revisits_dropped.load(Relaxed),
     )
 }
 
@@ -155,13 +158,12 @@ async fn a_value_back_at_its_baseline_before_the_look_sends_nothing() {
 /// value: the subscription is owed one look however often it is refused.
 #[tokio::test(start_paused = true)]
 async fn changes_while_refused_coalesce_into_one_report_of_the_latest() {
-    let (spy, _guard) = WarnSpy::install();
     let h = standalone().await;
     let mut held = lease_all(&h);
     for value in [1.0, 2.0, 3.0, 4.0] {
         h.write_local(value).await;
     }
-    assert_eq!(refusals(&spy), 4);
+    assert_eq!(refusals(&h), 4);
     assert_eq!(owed(&h).await.len(), 1);
 
     drop(held.pop());
@@ -250,7 +252,6 @@ async fn a_stop_with_references_waiting_sends_nothing_after() {
 /// one each however long the wait.
 #[tokio::test(start_paused = true)]
 async fn references_refused_together_go_in_the_order_they_were_refused() {
-    let (spy, _guard) = WarnSpy::install();
     let av2 = ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 2).unwrap();
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
         db.add(Box::new(
@@ -265,13 +266,13 @@ async fn references_refused_together_go_in_the_order_they_were_refused() {
     let mut held = lease_all(&h);
     h.write_local_to(av2, 5.0).await;
     h.write_local(6.0).await;
-    assert_eq!(refusals(&spy), 4);
+    assert_eq!(refusals(&h), 4);
     // Let the server run with every ID leased: it tries nothing more.
     for _ in 0..200 {
         tokio::task::yield_now().await;
     }
     tokio::time::sleep(Duration::from_secs(60)).await;
-    assert_eq!(refusals(&spy), 4, "nothing is tried while no ID is free");
+    assert_eq!(refusals(&h), 4, "nothing is tried while no ID is free");
     h.no_notification().await;
 
     // One ID, passed on by each Ack.
@@ -285,7 +286,7 @@ async fn references_refused_together_go_in_the_order_they_were_refused() {
         h.settle().await;
     }
     assert_eq!(served, [1, 2, 3, 4]);
-    assert_eq!(refusals(&spy), 4);
+    assert_eq!(refusals(&h), 4);
     assert_eq!(owed_counts(&h), (4, 4, 0));
 }
 
@@ -327,8 +328,10 @@ async fn seated() -> Seated {
     let sent = transport.sent();
     let mut ingress = EndpointIngress::new(transport, 8);
     let receivers = ingress.start().await.unwrap();
-    let coordinator =
-        Arc::new(bacnet_endpoint_core::coordinator::OutboundTransactionCoordinator::new());
+    let coordinator = Arc::new(OutboundTransactionCoordinator::with_reserves(
+        REQUESTER_RESERVE,
+        NOTIFICATION_RESERVE,
+    ));
     let seat = ingress.server_seat(coordinator).unwrap();
     let identity = bacnet_objects::DeviceIdentity::new(2661, 0).unwrap();
     let mut db = identity.clone().build_database().unwrap();
@@ -413,16 +416,17 @@ impl Seated {
     }
 }
 
-/// On a node's seat the server holds at most 64 invoke IDs: a change refused
-/// one there is reported once one of the server's own leases ends.
+/// On a node's seat the server holds at most the pool less the client's
+/// reserve (#2617): a change refused an ID there is reported once one of the
+/// server's own leases ends.
 #[tokio::test(start_paused = true)]
-async fn a_seated_change_refused_at_the_cap_goes_once_a_lease_ends() {
+async fn a_seated_change_refused_at_the_ceiling_goes_once_a_lease_ends() {
     let mut s = seated().await;
     let pool = Arc::clone(&s.server.notification_transactions);
-    let mut held: Vec<_> = (0..SEAT_LEASES)
+    let mut held: Vec<_> = (0..256 - REQUESTER_RESERVE)
         .map(|_| {
             pool.reserve(canonical_direct_peer(&[0x22]), COV)
-                .expect("an ID within the cap")
+                .expect("an ID within the ceiling")
         })
         .collect();
     s.subscribe().await;

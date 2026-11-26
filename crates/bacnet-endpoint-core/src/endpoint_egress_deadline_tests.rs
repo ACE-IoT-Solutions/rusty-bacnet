@@ -62,7 +62,8 @@ async fn endpoint_egress_discards_expired_and_canceled_commands_before_transport
     assert!(first.complete().await.result.is_ok());
     let outcome = expired.complete().await;
     assert!(!outcome.attempted);
-    assert!(outcome.result.is_err());
+    // The link's own deadline, not a peer's silence (#1833).
+    assert!(timed_out(&outcome.result), "{:?}", outcome.result);
     assert!(final_send.complete().await.result.is_ok());
     assert_eq!(emissions.recv().await.unwrap(), vec![5]);
     assert!(emissions.try_recv().is_err());
@@ -73,8 +74,15 @@ async fn endpoint_egress_discards_expired_and_canceled_commands_before_transport
         .await
         .unwrap();
     assert!(outcome.attempted);
-    assert!(outcome.result.is_err());
+    assert!(timed_out(&outcome.result), "{:?}", outcome.result);
     ingress.stop().await.unwrap();
+}
+
+/// Whether `result` is a send deadline that passed on this side: an I/O
+/// timeout of the link, not [`Error::Timeout`], which says a peer gave no
+/// answer (#1833).
+fn timed_out(result: &Result<(), Error>) -> bool {
+    matches!(result, Err(Error::Transport(io)) if io.kind() == std::io::ErrorKind::TimedOut)
 }
 
 #[tokio::test]
@@ -133,66 +141,16 @@ async fn network_number_egress_cancellation_retracts_queued_and_in_progress_comm
     );
     assert_eq!(emissions.recv().await.unwrap(), vec![4]);
     assert!(emissions.try_recv().is_err());
-    assert!(
+    assert!(matches!(
         receivers
             .egress
             .send_network_number_is(vec![1, 0, 0x10, 8])
-            .await
-            .is_err()
-    );
-    ingress.stop().await.unwrap();
-    assert!(receivers.egress.send_network_number_is(npdu).await.is_err());
-}
-
-#[tokio::test]
-async fn owned_command_cancellation_is_independent_of_deadline() {
-    let (_input, receiver) = mpsc::channel(4);
-    let (sent, mut emissions) = mpsc::channel(4);
-    let gate = Arc::new(Semaphore::new(0));
-    let mut ingress = EndpointIngress::new(gate_transport(receiver, sent, gate.clone()), 1);
-    let receivers = ingress.start().await.unwrap();
-    let enqueue = |mac| {
-        receivers.egress.admit_owned_apdu(
-            vec![0x10, 8],
-            EndpointApduDestination::Direct {
-                destination_mac: MacAddr::from_slice(&[mac]),
-            },
-            false,
-            NetworkPriority::Normal,
-            Vec::new(),
-        )
-    };
-    let first = enqueue(2).unwrap();
-    assert_eq!(
-        timeout(Duration::from_secs(1), emissions.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        [2]
-    );
-    let canceled = enqueue(3).unwrap();
-    assert!(matches!(
-        enqueue(4),
-        Err(EndpointEgressAdmissionError::QueueFull)
+            .await,
+        Err(Error::InvalidArgument(_))
     ));
-    drop(canceled);
-    gate.add_permits(1);
-    assert!(first.complete().await.result.is_ok());
-    receivers.egress.wait_for_capacity().await.unwrap();
-    let last = enqueue(5).unwrap();
-    assert_eq!(
-        timeout(Duration::from_secs(1), emissions.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        [5]
-    );
-    gate.add_permits(1);
-    assert!(last.complete().await.result.is_ok());
     ingress.stop().await.unwrap();
     assert!(matches!(
-        enqueue(6),
-        Err(EndpointEgressAdmissionError::Closed)
+        receivers.egress.send_network_number_is(npdu).await,
+        Err(Error::State(error::Lifecycle::Closed, _))
     ));
-    assert!(emissions.try_recv().is_err());
 }

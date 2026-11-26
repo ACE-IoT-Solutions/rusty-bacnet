@@ -81,16 +81,88 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--mstp-max-info-frames <N>` | `1` | Frames this station sends each time it holds the token (Max_Info_Frames), 1 to 255 |
 | `--mstp-rt-priority <N>` | | Linux only: run the station's token handling under `SCHED_FIFO` at priority N, 1 to 99. See [MS/TP](#mstp) |
 | `--mstp-cpus <CPUS>` | | Linux only: pin the station's token handling to these CPUs, such as `2,3` |
-| `--format <FMT>` | auto | Output format: `table` or `json`; `csv` too for [`inventory`](#device-inventory) |
-| `--json` | | JSON output shorthand |
+| `--format <FMT>` | auto | Output format: `table` or `json`, and `csv` for [`inventory`](#device-inventory) alone; a format the command doesn't print is refused. See [Output formats](#output-formats) |
+| `--json` | | JSON output shorthand; it outranks `--format` |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
 | `--allow-write` | | Let a command that changes a device run; see [Write guard](#write-guard) |
 | `--no-tui` | | With no command, print the usage instead of opening the terminal UI; see [Plain `bacnet`](#plain-bacnet) |
 | `--yes` | | Confirm communication control and reinitialize without typing the target; needed when stdin is not a terminal |
 
+**Loopback:** with `-i 127.0.0.1` and the default `-b 255.255.255.255`, a
+local broadcast (`discover` without `--bbmd`, a Who-Has, a bare instance
+resolved locally) fails before anything is sent: the socket is bound to
+`0.0.0.0`, so the host would route the broadcast onto the LAN (#2691).
+Unicast commands are unaffected. Pass `-b 127.255.255.255` to discover on
+loopback on Linux; see the
+[Python guide](python-api.md#loopback-interfaces-and-broadcasts) for macOS
+and Windows.
+
 Output auto-detects: tables in TTY, JSON when piped. Log lines (warnings, and
 more with `-v`) go to stderr in every mode, so stdout carries only the
 command's output and a warning can't corrupt its JSON.
+
+<a id="output-formats"></a>**Output formats:** `--format table|json|csv` or
+`--json` picks the output, and `--json` outranks `--format`. Every one-shot
+command prints `table` and `json`, except these:
+
+| Command | Formats |
+|---|---|
+| `inventory` | `table`, `json` and `csv` |
+| `export 223-experimental` | none: it writes Turtle |
+| `tui`, `mcp` | none |
+
+A command that changes a device prints a status line as its `table`, and
+`{"status": "ok", "message": ...}` as its `json`. An unknown `--format`, or
+one the command doesn't print (`csv` outside `inventory`, either flag on a
+command with none), is a usage error: the CLI exits with status 2 before
+anything is sent, and stderr names the formats the command prints, as in
+`bacnet read: --format csv is not available; this command supports table and
+json`. `--format` is checked even when `--json` outranks it.
+
+<a id="json-streams"></a>**JSON documents and streams:** a command that prints
+once prints one JSON document. The two long-running commands, `subscribe` and
+`capture`, print [JSON Lines](https://jsonlines.org/) instead: one compact JSON
+object a line, from the first line to the last, each written and flushed when
+it happens, and nothing else on stdout (notes, progress and log lines go to
+stderr). Each object names its kind in `type`:
+
+| `type` | Line |
+|---|---|
+| `subscribed` | `subscribe`'s first line, once the subscription is in place: `status` (`ok`) and `message` |
+| `cov` | A notification `subscribe` received (see [COV Subscriptions](#cov-subscriptions)) |
+| `packet` | A packet `capture` read (see [Packet Capture](#packet-capture)) |
+| `missed` | A gap: `count` notifications or packets the stream lost because the command fell behind (below). For `subscribe` it counts every notification the client received and the command never read, for any object, device or process id, including ones `subscribe` would not have printed |
+| `error` | The last line of a stream that fails once it is running, with `message` as stderr prints it after `Error: `; the exit status is the usual 1 |
+
+A command that can't keep up, as when its reader is slow, loses what comes
+meanwhile; a `missed` line, `{"count":3,"type":"missed"}`, says so in the
+stream, stderr notes it in every format, and the stream goes on. In
+`subscribe` it comes exactly where the gap is: `count` is how many
+notifications overflowed the client's buffer of 64 (a notification lost on
+the network can't be counted). A consumer that needs a value current should
+read it again (`bacnet read`) rather than wait for its next change. A live
+`capture` counts the packets the operating system dropped, where libpcap
+reports drops (some platforms report none). Its line marks a count, not a
+boundary: it comes when the capture learns of the drops, so up to a
+buffer's worth of packets after it can still precede the gap, though none
+from after the gap comes before it. Reading a file loses nothing.
+
+An error before a stream starts (a subscription the device refuses, a capture
+device that won't open) leaves stdout empty, as with any command. A stream
+stopped by Ctrl+C, SIGTERM, `--count` or the end of a capture file ends with
+no closing line. So does one whose reader goes away (`| head -1`): the
+command stops quietly with status 0, as at Ctrl+C, and `subscribe` cancels a
+finite subscription first. It notices only when it next writes a line, so a
+subscription whose value doesn't change keeps running until a notification
+arrives, and the cancel can take as long as the request timeout and its
+retries (`--timeout`, 6 seconds by default, tried four times). Any other
+failed write to stdout, such as a full disk, is an error (status 1). A
+consumer can read the stream a line at a time:
+
+```bash
+bacnet --json subscribe 192.168.1.100 ai:1 \
+  | jq --unbuffered -r 'select(.type == "cov") | .values.PRESENT_VALUE'
+```
 
 **Device text:** strings a device supplies (values, object names, state
 texts, event messages) are cleaned in table and text output, as the terminal
@@ -150,6 +222,7 @@ Commands that take a `<target>` argument accept several formats:
 | Device instance | `1234` | Looks up address from discovered device cache |
 | DNET:instance | `2:1234` | Routed device (network:instance) |
 | DNET:0xMAC | `2:0x05` | Routed station by its MAC on that network (MS/TP station 5 here) |
+| DNET:0xMAC:one-station | `5:0xFF:one-station`, `9:0x0012:one-station` | Routed station whose MAC looks like a broadcast or group address but is one station (below) |
 
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
@@ -158,7 +231,28 @@ When using a device instance number, the device must have been previously found 
 `create-object`, `delete-object` and `ack-alarm` (`ack`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, `DNET:instance` sends a Who-Is for that instance on the named network.
-`DNET:0xMAC` directs its Who-Is to the named station. The CLI waits up to
+`DNET:0xMAC` directs its Who-Is to the named station. A MAC that is a
+broadcast or group form on its network (`2:0xFF`, two octets starting `0x00`
+or `0xFF`, `0xFFFFFF`, six octets starting `FF:FF:FF:FF`) is refused as no
+station. A station that really is at such a MAC, an ARCNET station 255
+(`5:0xFF`) or a gateway's two-octet virtual station (`9:0x0012`), is written
+with a third field, `5:0xFF:one-station` or `9:0x0012:one-station` (#2738):
+you say the address is one station, and the request goes there. The suffix is
+for exactly the MACs it lifts, the one octet `0xFF` and two octets from
+`0x0001` to `0x00FF` or `0xFF00` to `0xFFFE`, and the CLI refuses it
+anywhere else, naming why (an ordinary station, `0x0000`, `0xFFFF`, three or
+six octets, a device instance). A device at such an address is named by its
+address, never by `DNET:instance`. The write ledger, the audit file and
+the targets the CLI resolves write the suffix, so a saved target reads back
+as it was. Discovery and COV-source tables show a device's routed source
+as the router passed it on, without the suffix: the suffix is the
+operator's word that the MAC is one station, and an I-Am can't give it
+(typing such a row back is refused, naming the suffixed form). A device
+that is the only claimant of an instance at such an address is named by
+that address too.
+The TUI's device table lists no device at such an address (an I-Am can't
+mark itself), so its commands refuse the form and point to the one-shot
+commands and the MCP tools. The CLI waits up to
 three seconds for a reply, then sends the service request through the router
 that relayed it. `read-range --all` keeps every metadata read and range request routed
 to that device while paging its log. `file-read` routes every stream or record
@@ -198,27 +292,70 @@ anything, and so are a router named as a device or as a station behind a
 router (`1234`, `5:0x0a`) and one path named twice, however its router is
 written. A path's limit lasts for the run only. `tui`, `mcp`, plain `bacnet`,
 `capture`, `sc-check` and `mstp-ports` refuse the flag rather than ignore it.
+In the TUI, the command bar's `path-limit DEVICE SIZE` sets the limit of the
+path to a device for the session, and `path-limit DEVICE clear` puts the
+default back. DEVICE is a device from the device table as `watch` takes it
+(`1234`, `5:1234`, `5:0x0a`) or `.` for the device open in Browse or selected
+on the Devices screen; the path is the router and network the client reaches
+that device through, and a device on this network, which has none, is
+refused. `path-limit ROUTER/NETWORK=SIZE` and `path-limit ROUTER/NETWORK
+clear` name the path by its router instead, in the flag's forms but one: a
+B/IPv6 router is named by its `bip6:0x...` VMAC, since the TUI refuses a
+socket address rather than ask the router for its VMAC. A router form always
+has a `/` between the router and the network and a device never has one, so
+the first word says which form it is. They send nothing, and work at every
+write level. When a device behind a router stops answering after a small
+request was refused there, the browser says so under its failed read and
+names the command, the device form first.
 
 After the command, the CLI prints the client's routed paths to stderr when
 something happened that the command line didn't ask for: a path learned a
-limit from a router, or the client dropped a too-long reject. With `-v` it
+limit from a router, the client dropped a too-long reject, or it refused an
+answer that came by another path than its request took (#2831). With `-v` it
 prints them whenever a path holds a limit. Stdout stays the command's own
 output. With table output it is a table, one row a path (the router in the
 link's own form, the network, the limit in force, where it comes from:
 `default`, `configured` or `learned`, the configured and learned limits, and
-whether a small request was refused there), and a line with the two counts of
-rejects the client did not believe. With JSON output it is one line:
+whether a small request was refused there), a line with the two counts of
+rejects the client did not believe, and a line with the count of answers it
+refused for the path they came by. With JSON output it is one line:
 
 ```json
-{"routed_paths":[{"router":"192.168.1.20:47808","network":5,"max_npdu":228,"source":"default","configured_max_npdu":null,"learned_max_npdu":null,"below_minimum_reject_seen":true}],"too_long_reject_drops":0,"below_minimum_reject_drops":4,"hint":"a router refused a request of 228 NPDU octets or fewer as too long, ..."}
+{"routed_paths":[{"router":"192.168.1.20:47808","network":5,"max_npdu":228,"source":"default","configured_max_npdu":null,"learned_max_npdu":null,"below_minimum_reject_seen":true}],"too_long_reject_drops":0,"below_minimum_reject_drops":4,"off_path_answer_drops":0,"hint":"a router refused a request of 228 NPDU octets or fewer as too long, ..."}
 ```
 
 `too_long_reject_drops` counts rejects that could answer a larger frame of an
 earlier request on the same path, and clears by itself;
 `below_minimum_reject_drops` counts rejects for a request of 228 octets or
-fewer. When the command timed out after such a reject, `hint` (a `Hint:` line
+fewer. `off_path_answer_drops` counts answers for a device's open request
+that came from another station than a routed request's router, or were
+relayed with this network's own number as SNET for a request sent straight
+to the device: a rise means a station is answering for other devices. When
+the
+command timed out after such a reject, `hint` (a `Hint:` line
 in a table) names the flag to set for each path that drew one; otherwise it is
 `null`.
+
+<a id="network-rejects"></a>**Network rejects.** A router that won't pass a
+request on toward its network for another reason ends the command at once,
+with no retry, and the error names the router in the link's own form, the
+network, the reason by name and number, and whether the device can have the
+request (#2724):
+
+```text
+Reject-Message-To-Network from router 192.168.1.20:47808: no route to network 5 (not-directly-connected, reason 1); the request never reached the device
+```
+
+That is reason 1 (no route), 6 (an address length the router found invalid),
+0 (other), 5, or a reason the standard doesn't define. After a retry the
+error ends "an earlier attempt may have reached the device" instead: a write
+may have taken effect. A reject a farther router sent reads "through router
+X, from 5:0x0A". A busy router (reason 2) leaves the request to its retries;
+if they run out, the timeout names the router ("BACnet abort: tsm-timeout;
+on the way, Reject-Message-To-Network from router ...: busy for network 5").
+The TUI's browser shows the same text under a failed read, and MCP's reads
+return it as a `network-reject` error, or a timeout with `router_busy`. The
+next request to that network goes through the same router again.
 
 **B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
 not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance
@@ -294,9 +431,12 @@ JSON in this shape, which scripts can rely on:
 |---|---|
 | 0 | The command completed |
 | 1 | It failed while running: a timeout, an error or reject from the device, a bad value, a transport that wouldn't start |
-| 2 | Usage error from the argument parser (an unknown flag, a missing argument, or no command where the terminal UI can't open); nothing is sent |
+| 2 | Usage error from the argument parser (an unknown flag, a missing argument, a [format](#output-formats) the command doesn't print, or no command where the terminal UI can't open); nothing is sent |
 | 3 | `sc-check` could not complete (see [the SC check guide](sc-check.md)) |
 | 4 | The write guard refused the command; nothing is sent |
+
+A usage error (2) is decided before the write guard (4): `write` with a
+format it doesn't print exits 2 whether or not `--allow-write` is given.
 
 ## Commands
 
@@ -444,13 +584,19 @@ for a hand-written file) and kept from then on, so the device UUID stays the
 same across restarts. An SC profile reconnects with backoff after it loses its
 hub, primary-only profiles included, so a long session survives a hub restart:
 by default the first retry comes after 10 s, the delay doubles up to 10 min,
-and 10 attempts are made before a failover hub, if one is set, is tried.
-`reconnect = false` turns this off (a lost hub then stays down) and is refused
-with a failover URL, since the failover hub is reached by reconnecting. The
-backoff (`reconnect_initial_delay_ms`, `reconnect_max_delay_ms`,
-`reconnect_max_retries`) and the connect timeout (`connect_timeout_ms`, 1 to
-600000, default 10000) can be set in the file; the editor offers the connect
-timeout and reconnect on/off. `--sc-failover-url`, `--sc-reconnect` and
+and 10 rounds are made, each trying the primary and then a failover hub, if
+one is set. `reconnect_max_retries = 0` gives up at the first loss, and
+`reconnect_max_retries = "unlimited"` keeps trying for as long as a hub can be
+dialled, which needs `reconnect_initial_delay_ms` of at least 1000; a file
+without the key makes the 10 rounds. The connection view shows the rounds,
+`0` as no recovery. `reconnect = false` turns this off (a lost hub then stays
+down) and is refused with a failover URL, since the failover hub is reached by
+reconnecting. The backoff (`reconnect_initial_delay_ms`,
+`reconnect_max_delay_ms`, at most 600000, ten minutes, the most Annex AB.6.1
+lets the reconnect wait grow to, and `reconnect_max_retries`) and the connect
+timeout (`connect_timeout_ms`, 1 to 600000, default 10000) can be set in the
+file, and a value out of range is a profile error naming its key; the editor
+offers the connect timeout and reconnect on/off. `--sc-failover-url`, `--sc-reconnect` and
 `--sc-connect-timeout` override a profile like the other flags, and give a
 flags-only session the same settings (reconnect stays off there unless one of
 the first two is given).
@@ -540,7 +686,7 @@ connect_timeout_ms = 10000
 reconnect = true                  # false: a lost hub stays down (no failover then)
 reconnect_initial_delay_ms = 10000
 reconnect_max_delay_ms = 600000
-reconnect_max_retries = 10
+reconnect_max_retries = 10        # 0: no recovery; "unlimited": no limit
 
 [safety]
 writes = "session"
@@ -612,7 +758,7 @@ table is refreshed from the client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture / the agent pane, the attached agents' MCP calls and the write requests waiting for you (only while the profile's MCP listener runs; otherwise `8` stays and says so). The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port, Agents with a listener), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `find --dnet N NAME`, `find --global NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `find --dnet N NAME`, `find --global NAME`, `path-limit DEVICE SIZE`, `path-limit DEVICE clear`, `path-limit ROUTER/NETWORK=SIZE`, `path-limit ROUTER/NETWORK clear`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -1475,10 +1621,12 @@ A constructed element's `text` is for display, like the table: its wording
 may change, so don't parse it. Branch on `element`; structured fields may
 join it later without removing `text`. The kinds are `access-rule`,
 `action-list`, `address-binding`, `authentication-factor`,
-`authentication-factor-format`, `authentication-policy`, `calendar-entry`,
-`cov-subscription`, `daily-schedule`, `date-range`, `destination`,
-`device-object-property-reference`, `device-object-reference`,
-`event-parameter`, `name-value`, `object-property-reference`,
+`authentication-factor-format`, `authentication-policy`, `bdt-entry`,
+`calendar-entry`, `cov-subscription`, `daily-schedule`, `date-range`,
+`destination`, `device-object-property-reference`,
+`device-object-reference`, `event-parameter`, `fdt-entry`, `host-n-port`
+(a Network Port's FD_BBMD_Address and BACnet_IP_Global_Address, shown as
+a BDT entry shows its BBMD), `name-value`, `object-property-reference`,
 `port-permission`, `prescale`, `property-access-result`,
 `read-access-result`, `read-access-specification`, `recipient`, `scale`,
 `shed-level`, `special-event`, `stage-limit-value`, `tagged`, `time-stamp`
@@ -1595,7 +1743,8 @@ anything that doesn't decode ends the list as `[raw ..]`.
 
 ```bash
 bacnet inventory 192.168.1.100                           # every object: name, units, states
-bacnet inventory 1234 --values                           # with each Present_Value and Status_Flags
+bacnet inventory 1234 --values                           # with each value, state and priority in control
+bacnet inventory 1234 --details                          # with each Device_Type and Profile_Name
 bacnet inventory 2:1234 --types ai,ao,msv --values       # some object types only
 bacnet inventory 192.168.1.100 --format csv > ahu1.csv   # one row an object
 bacnet inventory 192.168.1.100 --values --json > ahu1.json
@@ -1611,21 +1760,53 @@ included.
 | Flag | Description |
 |------|-------------|
 | `--types <TYPES>` | Only these object types, comma-separated, by the target grammar's names (`ai`, `msv`, `trend-log` and so on) |
-| `--values` | Also read each object's Present_Value and Status_Flags |
-| `--settings` | Also read each object's COV_Increment, Min_Pres_Value, Max_Pres_Value and Relinquish_Default, where its type has them |
+| `--values` | Also read each object's Present_Value, Status_Flags, Event_State and Reliability, and the priority in control of one that takes commands: four more properties an object (five on an output), so a request holds 3 to 5 objects instead of 6 to 16 |
+| `--settings` | Also read each object's COV_Increment, Min_Pres_Value, Max_Pres_Value, Relinquish_Default and Polarity, where its type has them |
+| `--details` | Also read each object's Device_Type and Profile_Name: two more properties an object |
 | `--format table\|json\|csv`, `--json` | How to print; a table at a terminal and JSON through a pipe unless given |
-| `--csv-exact` | With `--format csv`: write device text exactly, without the formula guard |
+| `--csv-exact` | Write device text exactly in the CSV, without the formula guard; needs `--format csv`, and is refused with any other output (status 2) |
 
 - **What is read.** Object_Name and Description of every object; Units of
   the analog and integer types, Accumulator and Pulse Converter; a binary
   object's Active_Text and Inactive_Text; a multi-state object's
-  Number_Of_States and State_Text. An output is commandable by its type; a
-  value object, or an object of a type this release doesn't know, is
-  commandable when it has a Priority_Array, which is read to find out. An
-  optional property an object lacks is left empty. A property that should
+  Number_Of_States and State_Text. With `--settings`, a binary input's or
+  output's Polarity too (`normal` or `reverse`); a binary value has none.
+  With `--values`, each object's Event_State and Reliability, named
+  (`normal`, `no-fault-detected`), and the priority in control of one
+  that takes commands: an output's (or Access Door's, or a lighting
+  output's) own Current_Command_Priority, which the 2020 tables require
+  there but is treated as optional, since a device built to an earlier
+  revision may not have it (left empty, no problem), or what a value
+  object's Priority_Array
+  shows, at no request of its own. It reads `8 (operator, manual)`, `10
+  (site defined)`, or `relinquish default` when no priority holds a
+  command. With `--details`, each object's Device_Type and Profile_Name,
+  as the device wrote them. Event_State is required on the types whose
+  property tables require it outright, such as the analog, binary and
+  multi-state objects. Reliability is treated as optional on every type,
+  though some tables require it (Access Door, Schedule, Network Port and
+  others), for the same reason; Device_Type and Profile_Name are optional.
+  An output is commandable by its type; a value object, or an object of a
+  type this release doesn't know, is commandable when it has a
+  Priority_Array, which is read to find out. An
+  optional property an object lacks is left empty; only the device's
+  answer that the property is unknown counts as lacking it, and any other
+  error for it is listed as a problem. A property that should
   have read and didn't is listed with the device's error under the object's
   problems and never fails the command; an object the device refuses is a
-  row whose properties are all problems.
+  row whose properties are all problems. A value of another datatype than
+  the property has on that object type is a problem too, naming what came
+  back (`not a Real (got an Unsigned, 5)`), and is left empty; so is one
+  that can't be decoded, such as text in a character set this tool doesn't
+  convert. A State_Text entry that isn't a string is a problem the same
+  way, with or without `--settings`. A value a point list couldn't be
+  built with is shown as the device gave it and named under problems: an
+  empty name, units past 65535, a state count outside 1 to 1024 or state
+  texts that don't match it, an analog setting that isn't a finite number,
+  a negative COV increment, a minimum above the maximum, a polarity past
+  1, and where the object holds a relinquish default (an output, or a
+  value with a priority array) a binary one past 1 or a multi-state one
+  that names no state.
 - **What it costs.** The device summary, the Object_List, then one
   ReadPropertyMultiple for each batch, filled in Object_List order up to
   16 objects or 32 properties, whichever comes first: 10 analog inputs, 8
@@ -1634,21 +1815,31 @@ included.
   that each read p properties take N divided by the batch's size, rounded
   up, where the size is the smaller of 16 and 32/p rounded down: 31 analog
   inputs, at three properties each, take 4 requests. That is about N/8 + 2
-  requests for a typical controller, N/5 + 2 with `--values`, one at a
-  time. A target
-  given by address costs one more, a read of the Device object by the
-  wildcard instance. A device that can't send a batch's answer for its
+  requests for a typical controller, N/4 + 2 with `--values`, one at a
+  time. `--values` adds four properties an object (five on an output,
+  its Current_Command_Priority among them), so 4 analog inputs or outputs
+  go in a batch and 3 binary or multi-state outputs. `--settings` adds up
+  to four properties an object, so fewer objects fit a batch and a device
+  with many of them takes more requests: a binary input then reads five
+  (its Polarity among them) and goes six a batch, a binary output six and
+  goes five. `--details` adds two: 6 analog inputs a batch, 5 binary
+  inputs. A target given by address
+  costs one more, a read of the Device object by the wildcard instance. A device that can't send a batch's answer for its
   size is asked for that batch an object at a time, and for at most half
   as many objects a batch from then on, down to one: at most four such
-  refused batches. A device that
+  refused batches. A device that fails a whole ReadPropertyMultiple with
+  an error of its own, not a refusal of the service, has that batch read
+  by ReadProperty and the next one tried by ReadPropertyMultiple again:
+  one wasted request a batch. A device that
   refuses ReadPropertyMultiple costs one refused request, then a
   ReadProperty a property: 13 for the summary, one for the Object_List, and
-  two to five an object (two more with `--values`).
+  two to five an object (four more with `--values`, five on an output;
+  two more with `--details`).
 - **Output.** Stdout carries only the data, and a one-line summary goes to
   stderr in every format. The table cleans device text for the screen
-  (control characters as spaces), and shows the values' and settings'
-  columns when they were read and a problems column when any object has
-  one. JSON keeps device text exactly as the device sent it, and so does
+  (control characters as spaces), and shows the values', settings' and
+  details' columns when they were read and a problems column when any
+  object has one. JSON keeps device text exactly as the device sent it, and so does
   CSV but for its formula guard (below).
 - **Exit status.** 0 when every object was read, also when the device has
   none of the selected types (stderr says so). 1 when the device doesn't
@@ -1681,6 +1872,8 @@ error's text, is set:
       "object": { "type": "analog-input", "type_number": 0, "instance": 1 },
       "name": "Zone Temp",
       "description": "Room 101",
+      "device_type": null,
+      "profile_name": null,
       "units": { "value": 64, "name": "degrees-fahrenheit", "symbol": "°F" },
       "state_texts": { "active": null, "inactive": null, "states": [] },
       "number_of_states": null,
@@ -1689,8 +1882,12 @@ error's text, is set:
       "cov_increment": null,
       "min_present_value": null,
       "max_present_value": null,
+      "polarity": null,
       "present_value": { "value": "72.5 °F", "decoded": 72.5 },
+      "command_priority": null,
       "status_flags": { "value": "none", "decoded": { "bits": "0000", "names": [] } },
+      "event_state": { "value": "normal", "decoded": { "value": 0, "name": "normal" } },
+      "reliability": { "value": "no-fault-detected", "decoded": { "value": 0, "name": "no-fault-detected" } },
       "problems": []
     }
   ],
@@ -1699,7 +1896,10 @@ error's text, is set:
 }
 ```
 
-Every record has every field, `null` where there is nothing to say. A
+Every record has every field, `null` where there is nothing to say. An
+object's priority in control is `{"value": "8 (operator, manual)",
+"decoded": 8}`, its `decoded` `null` with the value `relinquish default`
+when no priority holds a command. A
 problem is `{"property": "units", "error": "PROPERTY:UNKNOWN_PROPERTY"}`.
 Property names, in `problems` and as the keys of `device.properties`, are
 in kebab case (`units`, `vendor-name`).
@@ -1709,9 +1909,9 @@ The field names are stable.
 these and in this order:
 
 ```text
-device,device_instance,object,name,description,units,state_texts,number_of_states,commandable,relinquish_default,cov_increment,min_present_value,max_present_value,present_value,status_flags,problems
-192.168.1.100:47808,1234,analog-input:1,Zone Temp,"Room 101, east",degrees-fahrenheit,,,false,,,,,72.5 °F,none,
-192.168.1.100:47808,1234,multi-state-value:1,Mode,,,Off|Low|High,3,true,,,,,2 (Low),none,
+device,device_instance,object,name,description,device_type,profile_name,units,state_texts,number_of_states,commandable,relinquish_default,cov_increment,min_present_value,max_present_value,polarity,present_value,command_priority,status_flags,event_state,reliability,problems
+192.168.1.100:47808,1234,analog-input:1,Zone Temp,"Room 101, east",,,degrees-fahrenheit,,,false,,,,,,72.5 °F,,none,normal,no-fault-detected,
+192.168.1.100:47808,1234,multi-state-value:1,Mode,,,,,Off|Low|High,3,true,,,,,,2 (Low),"8 (operator, manual)",none,normal,no-fault-detected,
 ```
 
 - `object` is `type:instance`, the form the other commands take; `units` is
@@ -1724,8 +1924,8 @@ device,device_instance,object,name,description,units,state_texts,number_of_state
   quotes with its quotes doubled (RFC 4180); other fields are bare, and an
   empty field means nothing to say. Rows end with a line feed.
 - A spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`, a tab or
-  a carriage return as a formula. So a `name`, `description` or
-  `state_texts` cell that starts with one (for `state_texts`, the joined
+  a carriage return as a formula. So a `name`, `description`,
+  `device_type`, `profile_name` or `state_texts` cell that starts with one (for `state_texts`, the joined
   cell) gets an apostrophe before it, which a spreadsheet shows as text:
   `=1+1` is written `'=1+1`. Leading spaces and line breaks before such a
   character don't hide it. A program that reads the CSV back sees the
@@ -1777,7 +1977,7 @@ types.
   different devices with the same node.
 - Stdout carries only the Turtle, or nothing with `-o FILE`, which writes a
   new file and refuses one that exists. A summary goes to stderr either
-  way; `--format` and `--json` don't apply. When the device has no object
+  way; `--format` and `--json` are refused. When the device has no object
   of the selected types, the model is empty, the header and stderr say so,
   and the exit status is 0.
 - It reads as [`inventory`](#device-inventory) does, the ten exported
@@ -1981,6 +2181,26 @@ its lifetime.
 
 Each notification's values are decoded for the monitored object, as `read`
 decodes them; JSON adds their typed forms under `decoded`, keyed by property.
+Its sender, the link peer it came from (the router, for a routed device),
+prints in the link's own form, as other commands print a peer: `source=` in
+the text and `source_mac` in JSON, `192.168.1.100:47808` on BACnet/IP, a
+`bip6:` VMAC on BACnet/IPv6, `mstp:5` on MS/TP and hex octets on BACnet/SC.
+A routed device's station is `routed_source` (`2:0x05`); each reads back as a
+target.
+
+With `--json` (or through a pipe) the watch is a stream of
+[JSON Lines](#json-streams): the `subscribed` line, then a `cov` line a
+notification, as each arrives. A renewal or cancel that fails ends it with an
+`error` line. Notifications that overflow the watch's buffer while it falls
+behind are noted on stderr and, in JSON, marked by a `missed` line where
+they would have come, with their count ([gaps](#json-streams)); read the
+object again if you need its present value. For example, the opening line
+and the device's first notification:
+
+```json
+{"message":"Subscribed to ANALOG_INPUT:1 (process_id=4242; lifetime 300s, renewed while watching, cancelled on exit). Watching... (Ctrl+C to stop)","status":"ok","type":"subscribed"}
+{"decoded":{"PRESENT_VALUE":72.5,"STATUS_FLAGS":{"bits":"0000","names":[]}},"delivery":"unconfirmed","device":"device:1234","object":"ANALOG_INPUT:1","routed_source":null,"source_mac":"192.168.1.100:47808","source_network":null,"time_remaining":300,"type":"cov","values":{"PRESENT_VALUE":"72.5","STATUS_FLAGS":"none"}}
+```
 
 **Alias:** `cov` = subscribe
 
@@ -2191,7 +2411,8 @@ concurrent-writer no-clobber guarantee.
 
 ```bash
 bacnet whois-router                       # routers and the networks they reach
-bacnet whois-router --via 192.0.2.1:47808 --dnet 2 --wait 5     # only the router to network 2
+bacnet whois-router --dnet 2 --wait 5     # only the router to network 2
+bacnet whois-router --router 192.0.2.1:47808   # ask one router alone
 ```
 
 `whois-router` broadcasts a Who-Is-Router-To-Network by default. With
@@ -2205,6 +2426,14 @@ named. With `--json` it prints an array, empty when no router answered:
 ```json
 [{ "router": "192.168.1.1:47808", "networks": [2, 3] }]
 ```
+
+With `--router ADDRESS` the question goes to that one router on the local
+network, and only its own answers are listed; an empty, broadcast or group
+address is refused with nothing sent. A router asked about a network it
+does not know may ask further before it answers. The router answers with a
+local broadcast, not to the asker alone, so a B/IP router on another IP
+subnet takes the question but its answer arrives only through a BBMD
+(`--foreign-bbmd`). Without one, an empty list is the expected result.
 
 A device on one of those networks is then a routed target, such as
 `bacnet read 2:1234 ai:1 pv` for device 1234 on network 2.
@@ -2393,6 +2622,11 @@ bacnet capture --device eth0 --filter "host 10.0.0.1" --decode --save filtered.p
 
 Note: `--read` and `--device` are mutually exclusive; `--quiet` requires `--save`.
 
+A capture runs until Ctrl+C, SIGTERM or SIGHUP (on Unix), `--count`, the end
+of the file, or its reader going away; each ends it cleanly, with the summary
+(`Captured N packets`) on stderr and status 0. A live capture notices the
+signal within a second.
+
 **Output example (summary):**
 ```
 12:34:56.789  192.168.1.100:47808 -> 192.168.1.255:47808  ORIGINAL_BROADCAST_NPDU  WHO_IS
@@ -2407,6 +2641,19 @@ Note: `--read` and `--device` are mutually exclusive; `--quiet` requires `--save
   NPDU: version=1, no-routing
   APDU: Confirmed-Request, invoke-id=1, seg=no
   Service: READ_PROPERTY
+```
+
+**JSON output** is a stream of [JSON Lines](#json-streams), one `packet` line
+a packet (`detail` holds the decode lines with `--decode`). Packets the
+operating system dropped because the capture fell behind are noted on stderr
+and, in JSON, counted by a `missed` line ([gaps](#json-streams)); the
+capture asks for that count before each packet it prints, and with
+`--quiet` at most every 250 ms, for stderr's note alone. A read that
+fails part way, such as a file cut short, ends the stream with an `error`
+line:
+
+```json
+{"type":"packet","timestamp":"12:34:56.789","src":"192.168.1.100:47808","dst":"192.168.1.255:47808","bvlc":"ORIGINAL_BROADCAST_NPDU","service":"WHO_IS"}
 ```
 
 ### Transport Variants

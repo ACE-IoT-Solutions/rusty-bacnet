@@ -27,15 +27,18 @@ impl Default for GetAlarmSummaryBudget {
 impl GetAlarmSummaryBudget {
     /// Reject zero; larger positive values are an operator policy choice.
     pub fn validate(&self) -> Result<(), Error> {
-        for (name, value) in [
-            ("alarm_summary_max_objects", self.max_objects),
+        for (label, value) in [
             (
-                "alarm_summary_max_service_ack_bytes",
+                "alarm_summary_max_objects must be positive",
+                self.max_objects,
+            ),
+            (
+                "alarm_summary_max_service_ack_bytes must be positive",
                 self.max_service_ack_bytes,
             ),
         ] {
             if value == 0 {
-                return Err(Error::Encoding(format!("{name} must be positive")));
+                return Err(Error::invalid_config(label));
             }
         }
         Ok(())
@@ -106,22 +109,25 @@ mod tests {
                 TestTransport::never_start(),
             )
             .await
+            .map_err(Error::from)
             .err();
             let generic = BACnetServer::generic_builder()
                 .transport(TestTransport::never_start())
                 .get_alarm_summary_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             let bip = BACnetServer::bip_builder()
                 .port(0)
                 .get_alarm_summary_budget(budget)
                 .build()
                 .await
+                .map_err(Error::from)
                 .err();
             for error in [direct, generic, bip] {
                 assert!(
-                    matches!(error, Some(Error::Encoding(m)) if m.contains("alarm_summary_max_"))
+                    matches!(error, Some(Error::InvalidConfig(m)) if m.to_string().contains("alarm_summary_max_"))
                 );
             }
         }

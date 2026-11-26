@@ -71,7 +71,7 @@ fn capture_transport() -> (TestTransport, CaptureHandle) {
                     data_attributes: frame.attributes,
                 })
                 .await
-                .map_err(|_| Error::Encoding("capture receiver closed".into()))
+                .map_err(|_| Error::Transport(std::io::Error::other("capture receiver closed")))
             }
         })
         .build();
@@ -338,7 +338,8 @@ async fn effective_group_destinations_reject_confirmed_and_malformed_apdus_witho
                         Vec::new(),
                     )
                     .await,
-                Err(Error::Encoding(message)) if message == EFFECTIVE_GROUP_ERROR
+                Err(Error::InvalidArgument(message))
+                    if message.to_string() == EFFECTIVE_GROUP_ERROR
             ));
         }
     }

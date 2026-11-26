@@ -8,7 +8,7 @@ from rusty_bacnet import BACnetClient, ScReconnect
 class ScReconnectOptionsTests(unittest.TestCase):
     def test_keyword_only_defaults_and_frozen_values(self):
         signature = inspect.signature(ScReconnect)
-        expected = dict(initial_delay_ms=10_000, max_delay_ms=600_000, max_retries=10, retry_forever=False)
+        expected = dict(initial_delay_ms=10_000, max_delay_ms=600_000, max_retries=10)
         self.assertEqual(list(signature.parameters), list(expected))
         options = ScReconnect()
         for name, default in expected.items():
@@ -25,9 +25,13 @@ class ScReconnectOptionsTests(unittest.TestCase):
     def test_semantic_validation_and_unsigned_conversion(self):
         for kwargs in [dict(initial_delay_ms=0), dict(max_delay_ms=0),
                        dict(initial_delay_ms=200, max_delay_ms=100),
-                       dict(max_delay_ms=86_400_001)]:
+                       dict(max_delay_ms=600_001), dict(max_delay_ms=86_400_000)]:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ScReconnect(**kwargs)
+        # Ten minutes is the cap (Annex AB.6.1), and the default.
+        with self.assertRaisesRegex(ValueError, "must not exceed 600000"):
+            ScReconnect(max_delay_ms=600_001)
+        self.assertEqual(ScReconnect(initial_delay_ms=600_000).max_delay_ms, 600_000)
         for name, bits in [("initial_delay_ms", 64), ("max_delay_ms", 64),
                            ("max_retries", 32)]:
             for value in [-1, 1 << bits]:
@@ -35,15 +39,31 @@ class ScReconnectOptionsTests(unittest.TestCase):
                     ScReconnect(**{name: value})
         zero = ScReconnect(initial_delay_ms=1, max_delay_ms=1, max_retries=0)
         self.assertEqual(zero.max_retries, 0)
-        unlimited = ScReconnect(max_retries=0, retry_forever=True)
-        self.assertTrue(unlimited.retry_forever)
-        self.assertEqual(unlimited.max_retries, 0)
-        self.assertIn("retry_forever=True", repr(unlimited))
+        self.assertEqual(repr(zero),
+                         "ScReconnect(initial_delay_ms=1, max_delay_ms=1, max_retries=0)")
+        # None is unlimited recovery, which needs a one-second initial delay.
+        unlimited = ScReconnect(initial_delay_ms=1_000, max_delay_ms=1_000, max_retries=None)
+        self.assertIsNone(unlimited.max_retries)
+        self.assertEqual(
+            repr(unlimited),
+            "ScReconnect(initial_delay_ms=1000, max_delay_ms=1000, max_retries=None)")
+        self.assertIsNone(ScReconnect(max_retries=None).max_retries)
+        for initial in [1, 999]:
+            with self.subTest(initial=initial), \
+                    self.assertRaisesRegex(ValueError, "at least 1000 with unlimited"):
+                ScReconnect(initial_delay_ms=initial, max_retries=None)
+        with self.assertRaises(TypeError):
+            ScReconnect(retry_forever=True)
 
     def test_client_keyword_is_appended_and_sc_only(self):
         parameters = inspect.signature(BACnetClient).parameters
-        names = list(parameters)
-        self.assertEqual(names[names.index("multicast") + 1], "reconnect")
+        self.assertEqual(list(parameters)[-13:], ["reconnect", "sc_npdu_per_origin_limit",
+                                                  "sc_failover_hub", "sc_connect_timeout_ms",
+                                                  "sc_control_rate_limit", "router",
+                                                  "write_policy", "resolve_scope",
+                                                  "accept_complex_ack_for_simple_services",
+                                                  "watch_lifetime", "watch_poll_interval",
+                                                  "watch_subscribe", "confirmed_cov_subscription_limit"])
         self.assertEqual(parameters["reconnect"].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertIsNone(parameters["reconnect"].default)
         for transport in ["bip", "ipv6", "mstp", "unknown"]:

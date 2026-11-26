@@ -161,8 +161,96 @@ fn element_kinds_have_fixed_names() {
             "shed-level",
             "authentication-factor",
             "event-parameter",
+            "bdt-entry",
+            "fdt-entry",
+            "host-n-port",
         ]
     );
+}
+
+/// #2710: FD_BBMD_Address and BACnet_IP_Global_Address show the host and
+/// port as a BDT row shows its BBMD; a value that isn't one host and port
+/// keeps the generic view.
+#[test]
+fn network_port_host_n_ports_show_as_addresses() {
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(O::NETWORK_PORT, &texts, Floats::Exact);
+    for property in [P::FD_BBMD_ADDRESS, P::BACNET_IP_GLOBAL_ADDRESS] {
+        let show = |octets: &str| format.value(property, &hex_octets(octets));
+        assert_eq!(show("0e1cc00002020f1abac0"), "192.0.2.2:47808");
+        assert_eq!(show("0e2c006875620f197b"), "hub:123");
+        assert_eq!(show("0e080f1900"), "none");
+        assert_eq!(
+            show("0e1d1020010db80000000000000000000000020f1abac0"),
+            "[2001:db8::2]:47808"
+        );
+        assert_eq!(
+            format.data(property, &hex_octets("0e1cc00002020f1abac0")),
+            Datum::Constructed {
+                element: "host-n-port".into(),
+                text: "192.0.2.2:47808".into(),
+                fields: None,
+            }
+        );
+        // A host and port with octets after it isn't one value.
+        assert!(!show("0e1cc00002020f1abac021").contains("192.0.2.2:47808"));
+    }
+}
+
+/// #2690: a Network Port's BDT and FDT show one entry per row, as
+/// `read-bdt` and `read-fdt` print their addresses; an empty table and a
+/// value that isn't the entries keep the generic view.
+#[test]
+fn network_port_tables_show_their_entries() {
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(O::NETWORK_PORT, &texts, Floats::Exact);
+    let bdt = |octets: &str| {
+        let octets = hex_octets(octets);
+        format.value(P::BBMD_BROADCAST_DISTRIBUTION_TABLE, &octets)
+    };
+    // 192.0.2.2:47808 with a mask; a name without one; no host; IPv6.
+    assert_eq!(
+        bdt("0e0e1cc00002020f1abac00f1cffffff00"),
+        "[192.0.2.2:47808 mask 255.255.255.0]"
+    );
+    assert_eq!(
+        bdt("0e0e2c006875620f197b0f0e0e080f19000f"),
+        "[hub:123, none]"
+    );
+    assert_eq!(
+        bdt("0e0e1d1020010db80000000000000000000000020f1abac00f"),
+        "[[2001:db8::2]:47808]"
+    );
+    let fdt = hex_octets("0d06c0000203bac0193c2932");
+    assert_eq!(
+        format.value(P::BBMD_FOREIGN_DEVICE_TABLE, &fdt),
+        "[192.0.2.3:47808 ttl 60s remaining 50s]"
+    );
+    assert_eq!(
+        format.data(P::BBMD_FOREIGN_DEVICE_TABLE, &fdt),
+        Datum::List(vec![Datum::Constructed {
+            element: "fdt-entry".into(),
+            text: "192.0.2.3:47808 ttl 60s remaining 50s".into(),
+            fields: None,
+        }])
+    );
+    assert_eq!(format.value(P::BBMD_FOREIGN_DEVICE_TABLE, &[]), "(empty)");
+    // A mask of three octets isn't an entry: the tags are shown instead.
+    assert!(!bdt("0e0e1cc00002020f1abac00f1bffffff").contains("mask"));
+    // The same octets on another object type aren't a table.
+    let other = ValueFormat::new(O::ANALOG_INPUT, &texts, Floats::Exact);
+    assert!(
+        !other
+            .value(P::BBMD_FOREIGN_DEVICE_TABLE, &fdt)
+            .contains("ttl")
+    );
+}
+
+fn hex_octets(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+        .collect()
 }
 
 /// #2098: a DateTime Value's Priority_Array is sixteen elements, a set slot

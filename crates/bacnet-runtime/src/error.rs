@@ -92,6 +92,9 @@ impl RuntimeError {
             }
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
             bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
+            bacnet_types::error::Error::InvalidConfig(_)
+            | bacnet_types::error::Error::InvalidArgument(_) => (ErrorCode::InvalidConfig, false),
+            bacnet_types::error::Error::State(_, _) => (ErrorCode::DeviceUnavailable, false),
             _ => (ErrorCode::Internal, false),
         };
         Self {
@@ -113,6 +116,11 @@ impl RuntimeError {
             | bacnet_types::error::Error::Structured { .. } => (ErrorCode::BacnetError, false),
             bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
+            bacnet_types::error::Error::RequestCutOff { sent } => {
+                (ErrorCode::DeviceUnavailable, !sent)
+            }
+            bacnet_types::error::Error::State(_, _) => (ErrorCode::DeviceUnavailable, false),
+            bacnet_types::error::Error::LimitReached(_) => (ErrorCode::Backpressure, true),
             _ => (ErrorCode::Internal, false),
         };
         Self {
@@ -159,6 +167,17 @@ fn is_bind_conflict(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ErrorCode, RuntimeError, is_bind_conflict};
+
+    #[test]
+    fn a_cut_off_request_is_retryable_only_before_send() {
+        let id = crate::AttachmentId::from(1);
+        for sent in [false, true] {
+            let error =
+                RuntimeError::operation(id, bacnet_types::error::Error::RequestCutOff { sent });
+            assert_eq!(error.code, ErrorCode::DeviceUnavailable);
+            assert_eq!(error.retryable, !sent);
+        }
+    }
 
     #[test]
     fn remote_responses_keep_runtime_categories_and_retry_policy() {

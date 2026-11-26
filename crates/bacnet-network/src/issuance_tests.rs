@@ -20,7 +20,9 @@ fn layer(fail: bool) -> (NetworkLayer<TestTransport>, Arc<AtomicUsize>) {
             );
             async move {
                 if fail {
-                    Err(Error::Encoding("injected transport failure".into()))
+                    Err(Error::Transport(std::io::Error::other(
+                        "injected transport failure",
+                    )))
                 } else {
                     std::future::pending().await
                 }
@@ -90,7 +92,12 @@ async fn encoding_failure_never_issues_and_transport_failure_does_not_undo_issua
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::Encoding(s) if s.contains("DNET")));
+    assert!(
+        matches!(&error, Error::InvalidArgument(refusal) if refusal.to_string()
+            == "dest_network 0 is not a network number; \
+                pass no destination (no DNET) for a local peer"),
+        "{error:?}"
+    );
     assert_eq!(issued.load(Ordering::SeqCst), 0);
     assert!(network.transport.sent().is_empty());
     assert!(

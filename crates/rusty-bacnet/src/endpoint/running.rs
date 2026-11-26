@@ -22,12 +22,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_endpoint::session::EndpointSession;
+use bacnet_types::error::Lifecycle;
+use bacnet_types::sync::MutexExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::app_transport::AppTransport;
 use crate::client::{BACnetClient, ClientInner, Liveness};
-use crate::errors::to_py_err;
+use crate::endpoint::common::not_running;
+use crate::errors::{lifecycle_error, to_py_err};
 use crate::server::{BACnetServer, SeatedHost};
 
 #[cfg(test)]
@@ -88,10 +91,7 @@ impl Running {
         state: ClientInner,
         cov_limit: Option<std::num::NonZeroUsize>,
     ) -> PyResult<Arc<Py<BACnetClient>>> {
-        let mut slot = self
-            .client
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self.client.locked();
         if let Some(seated) = slot.as_ref() {
             match seated.state.liveness() {
                 Liveness::Started if seated.cov_limit != cov_limit => {
@@ -101,26 +101,34 @@ impl Running {
                 }
                 Liveness::Started => return Ok(Arc::clone(&seated.object)),
                 Liveness::Stopping => {
-                    return Err(PyRuntimeError::new_err(
+                    return Err(lifecycle_error(
+                        Lifecycle::Stopping,
                         "the endpoint's client is stopping: await its stop() before asking \
                          for another",
                     ));
                 }
+                // Its stop has not finished: another stop() may still.
                 Liveness::Failed(cause) => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "the endpoint's last client failed to stop ({cause}): await its stop() \
-                         again before asking for another"
-                    )));
+                    return Err(lifecycle_error(
+                        Lifecycle::Stopping,
+                        format!(
+                            "the endpoint's last client failed to stop ({cause}): await its \
+                             stop() again before asking for another"
+                        ),
+                    ));
                 }
                 Liveness::Stopped => {}
             }
         }
         let mut options = bacnet_client::client::ClientOptions::default();
         options.confirmed_cov_subscription_limit = cov_limit;
-        let core = self.session.full_client_with(options).map_err(to_py_err)?;
+        let core = self.session.client_with(options).map_err(to_py_err)?;
         let own_instance = self.session.identity().map(|identity| identity.instance());
+        // Not reached: the candidate is new and its slot empty, and nothing
+        // else holds it yet. Kept as a guard against a second seat.
         if !state.seat(core, own_instance) {
-            return Err(PyRuntimeError::new_err(
+            return Err(lifecycle_error(
+                Lifecycle::AlreadyStarted,
                 "the endpoint's new client is already started",
             ));
         }
@@ -158,7 +166,9 @@ impl super::lifecycle::Session for Running {
             if self.session.is_running() {
                 let _ = self.session.stop().await;
             }
-            return Err(to_py_err(error));
+            // Its database goes: the next start builds the objects again
+            // from their registrations (#2766).
+            return Err(to_py_err(error.into()));
         }
         Ok(())
     }
@@ -172,11 +182,7 @@ impl super::lifecycle::Session for Running {
     /// stop fails keeps its state; the error says the link is released.
     async fn stop(&mut self) -> PyResult<()> {
         let stopped = self.session.stop().await.map(drop).map_err(to_py_err);
-        let seated = self
-            .client
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let seated = self.client.get_mut_locked().take();
         let closed = match seated {
             Some(seated) => crate::client::close(seated.state).await.map_err(|error| {
                 PyRuntimeError::new_err(format!(
@@ -246,11 +252,13 @@ pub(crate) async fn server(
     let run = {
         let guard = session.read().await;
         let running = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+            not_running("endpoint not started — use 'async with' or await start()")
         })?;
-        running
-            .server_of_run(running.run)
-            .ok_or_else(|| PyRuntimeError::new_err("the endpoint's server is not running"))?;
+        // This run's server has stopped and won't start again: a handle's
+        // calls raise the same once the run is over.
+        running.server_of_run(running.run).ok_or_else(|| {
+            lifecycle_error(Lifecycle::Closed, "the endpoint's server is not running")
+        })?;
         running.run
     };
     let host = SeatedHost {
@@ -281,7 +289,7 @@ pub(crate) fn client(
         let chosen = {
             let guard = session.read().await;
             let running = guard.as_ref().ok_or_else(|| {
-                PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+                not_running("endpoint not started — use 'async with' or await start()")
             })?;
             running.client(Arc::clone(&candidate), state, cov_limit)?
         };

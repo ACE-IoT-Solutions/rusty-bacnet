@@ -39,7 +39,10 @@ pub struct Counters {
     /// Relays not sent because the hop count had run out.
     pub hop_count_drops: u32,
     /// Protected network messages [`Host::authorize`](super::Host::authorize)
-    /// refused.
+    /// refused, and Initialize-Routing-Table updates from another network
+    /// dropped because
+    /// [`Options::remote_table_updates`](super::Options::remote_table_updates)
+    /// is off.
     pub denied: u32,
     /// Received rejects that were neither for this router nor routable.
     pub unroutable_rejects: u32,
@@ -84,6 +87,24 @@ pub struct Counters {
     /// Requests the router's own application sent through the engine
     /// ([`Router::originate`](super::Router::originate), #1699).
     pub originated: u32,
+    /// Frames dropped because their way on lies between two isolated ports
+    /// ([`PortConfig::isolated`](super::PortConfig::isolated), #2684): a
+    /// message for a network behind the other port, a reject on its way to
+    /// one, or a Who-Is-Router for one. A fan-out that merely leaves an
+    /// isolated port out isn't counted.
+    pub isolated_drops: u32,
+    /// Route changes refused because they came from an isolated port
+    /// (#2684): each network of an I-Am-Router or of a routing table update
+    /// or Ack whose route goes through another port, each update entry
+    /// that names another isolated port, and a reject's mark on a route
+    /// through another isolated port (one on a route through an ordinary
+    /// port is applied). A reject that is also on its way to a node behind
+    /// the other isolated port counts here and in `isolated_drops`: one
+    /// for the mark refused, one for the frame not passed on. The count is
+    /// per list entry, so a network a message lists twice counts twice. An
+    /// I-Am-Router is counted to its end; a routing table Ack only up to
+    /// the entry where the route cap ends its learning.
+    pub isolated_refusals: u32,
 }
 
 impl Counters {
@@ -121,6 +142,8 @@ impl Counters {
         own_source_drops: 0,
         not_next_hop: 0,
         originated: 0,
+        isolated_drops: 0,
+        isolated_refusals: 0,
     };
 }
 

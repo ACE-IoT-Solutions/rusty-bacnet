@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_mac = MacAddr::from_slice(peer_net.local_mac());
 
     // Outbound: endpoint role initiates; peer answers 22.0.
-    let client = endpoint.cloned_client_handle().unwrap();
+    let client = endpoint.client().unwrap();
     let peer_mac_c = peer_mac.clone();
     let pending = tokio::spawn(async move {
         client
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Narrow admin while roles run + I-Am broadcast.
     endpoint.broadcast_i_am().await?;
-    let counters = endpoint.policy_counters().await;
+    let counters = endpoint.policy_counters();
     assert_eq!(endpoint.active_leases(), 0);
     println!("counters: {counters:?}");
 
