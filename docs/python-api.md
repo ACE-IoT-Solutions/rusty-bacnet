@@ -3371,8 +3371,9 @@ array index zero and omitted or zero counts for a selected range raise
 (-32768 to 32767) raises `OverflowError` before address parsing or I/O (#1360). Omitted reference values default
 to zero; zero position/sequence references are valid and may return no matches.
 The typed `ReadRangeResult` dictionary preserves raw item bytes, the result
-flags as a `BitString` and optional first sequence number. Endpoint responses must be
-unsegmented; the standalone client's existing segmentation support is unchanged.
+flags as a `BitString` and optional first sequence number. Both a standalone
+client and the full client returned by `await endpoint.client()` reassemble
+segmented ReadRange responses within their receive limits.
 
 `range_type="time"` (#1533) reads the `count` items logged after
 `reference_time`, or before it for a negative count. `reference_time` is a

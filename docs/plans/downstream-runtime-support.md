@@ -1,17 +1,24 @@
 # Downstream BACnet runtime support
 
-The ACE private Python index ships `ace-rusty-bacnet==0.17.2` from commit
-`aa5c452364663155b77429729b2dd84f46f74b8f`. Its 0.17.1 base was
-`753eec9ff`. The edge migration branch
-`feature/rusty-bacnet-migration` records its requirements in
-`docs/reviews/bacnet-rusty-full-parity-2026-11-24.md` at local commit
-`b718d9dc`. The reference Python backend at `39256f1` includes local receive
-readiness (`cf6f40a`) and Linux `SO_REUSEADDR` behavior (`39256f1`).
+The published adapter baseline is `ace-rusty-bacnet==0.17.2`, tag `v0.17.2`
+at `aa5c452364663155b77429729b2dd84f46f74b8f`. Unreleased work through
+`5118145ad` adds native diagnostics, value decoding, Rust runtime ownership
+fixes and integration evidence. Local candidate wheels still carry version
+0.17.2. Use their source commit and SHA-256 to identify the installed build.
+
+The current downstream contract is
+`docs/reviews/bacnet-rusty-0172-parity-2026-11-25.md` at `ddeb861e` on
+the local Edge branch `feature/rusty-bacnet-migration`. It supersedes the
+November 24 review at `b718d9dc`. The Python reference at `39256f1` includes
+local receive readiness and Linux socket reuse. Edge currently allows exactly
+0.17.1 and 0.17.2 for experimental use.
 
 ## Published 0.17.2
 
 CI, Native and the build-only release workflow passed on the published source
 commit. The release workflow built and smoke-tested artifacts on five platforms.
+The source tag and public release are available on GitHub.
+[Release v0.17.2](https://github.com/ACE-IoT-Solutions/rusty-bacnet/releases/tag/v0.17.2).
 [CI](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45644635261) ·
 [Native](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45644640939) ·
 [Release build](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45646121969)
@@ -46,179 +53,103 @@ each filename, size and digest. `sdist-verification.json` records the offline
 check, `release-readiness.json` records the gates and installation smokes, and
 `linux-qualification/release-*.json` contains the COV and cross-UID traces.
 
-## Native behavior available to the adapter
+### Protocol behavior in the published release
 
-| Downstream use | Native contract | Local evidence |
-| --- | --- | --- |
-| Segmented reads | The client acknowledges segment zero before waiting for the negotiated window. The standalone client and shared endpoint client use this receiver. | With `7b59ac33d`, a bacpypes3 peer limited to 480 service bytes returned identical values through both owners. RP used 13 segments and 7 SegmentACKs. RPM used 26 and 14. The largest response APDU was 485 bytes. |
-| Trend and file pages | The same receiver delivers a reassembled service payload to ReadRange and AtomicReadFile. The lenient ReadRange API preserves a reported first sequence number of zero and reports the associated validation violation. | The strict peer fixture waits for ACK 0, 2 and 3. It checks a decoded trend record, raw item data, result flags and sequence zero, and a decoded file window beginning at offset 3072 with 1800 octets and EOF. |
-| Local B/IP readiness | A running endpoint exposes receive-loop health, required and active subnet listeners, and multicast socket state via `status()["transport_health"]`. Reading it sends no packets. | At `57a523f73`, local tests exercise listener loss while unicast continues, recoverable invalid input, and stop/restart. Foreign-device registration has its own status API. |
-| Confirmed COV | A positive `confirmed_cov_subscription_limit` starts an empty bounded registry. Retain an expectation lease for each confirmed single-object subscription. Matching notifications receive a SimpleACK. Unknown subscriptions receive an Error and produce no event. | At `96b8436e2` and `a3f7eb01e`, Rust and Python tests cover admission, capacity, source qualification, learned or configured local-network aliases, and lease cleanup across seats. |
+| Use | Contract and evidence |
+| --- | --- |
+| Segmented reads | Shared and standalone clients acknowledge segment zero before the peer sends the negotiated window. The bacpypes3 probe with 480 service bytes per segment returned equal values through both owners. RP used 13 segments and seven SegmentACKs, RPM used 26 and 14, and the largest response APDU was 485 bytes. |
+| Trend and file reads | ReadRange and AtomicReadFile use the same receiver. The strict sender at `dc3e77de2` waits for ACK 0, 2 and 3. Tests preserve trend record bytes, flags and lenient sequence zero, and a file window at offset 3072 with 1,800 octets and EOF. |
+| Receive health | `BipEndpoint.status()["transport_health"]` reports primary receive and required/active broadcast listeners independently of foreign registration. Tests at `57a523f73` cover listener loss with working unicast, recoverable input errors and restart. |
+| Confirmed COV | A positive `confirmed_cov_subscription_limit` creates an empty bounded registry. Retain a source-qualified expectation lease before subscribing. Matching single-object notifications receive SimpleACK. Unknown subscriptions, including confirmed Multiple in strict mode, receive an Error and produce no event. Both incoming confirmed COV forms support bounded reassembly when the endpoint Device declares Receive or Both. The default Device declares None. Passive unconfirmed delivery remains available. |
 
-The initial segmented-read wheel used CPython 3.13 on macOS arm64. Its SHA-256
-was `b63d39958898333569747555398154614749ac319f3569569c85e9fb6de659ff`.
-The local build record is `dist/segmentation-7b59ac33d-verification.json`.
-Twenty downstream contract and parity tests passed in an isolated environment.
-The [Python API guide](../python-api.md) documents the endpoint status and
-subscription lifecycle.
+A full worker queue drops excess receive work. Endpoint shutdown joins the
+worker even when a Rust client handle survives. Replaying a whole request can
+publish again. Process-ID allocation, expectations and subscription renewal
+belong to the caller. Immediate reuse of the same wire identity can admit a
+late notification. [Python API guide](../python-api.md)
 
-Strict COV admission currently covers single-object notifications. The strict
-client returns unknown-subscription for confirmed multiple-object notifications.
-Both confirmed COV forms can be reassembled before admission. An identified
-endpoint enables this with Device receive or both. Its default Device still
-declares no segmentation. A completed nonzero final segment cannot repeat an
-event, while a retransmission of the whole request can.
-Unconfirmed events remain available to passive consumers. The adapter owns
-SubscribeCOV, renewals, cancellation, process identifier allocation and event
-scheduling. Reusing an identifier immediately can admit a late notification
-whose wire identity matches the new subscription.
-
-## Candidate qualification
-
-Commit `b0f1bed41` added bounded reassembly of incoming segmented confirmed
-COV. At `bcc0422c2`, a full worker queue drops excess segments and requester
-Aborts, and endpoint shutdown waits for the worker. Paused-clock tests
-exercise a retransmitted final segment with the original still queued, and
-a retained client with an active transfer during node shutdown.
-
-On macOS arm64, 4,520 all-feature tests and 45 doctests passed across the
-client, endpoint, endpoint-core and server crates. One release timing
-benchmark was intentionally skipped. The clean CPython 3.13 release wheel
-and probe record are under `dist/bcc0422c2/`. The wheel's SHA-256 is
+Historical pre-release checks at `bcc0422c2` passed 4,520 macOS tests and 45
+doctests, plus 4,524 Linux arm64 tests and 11 Linux health cases. The candidate
+macOS wheel SHA-256 was
 `14ce13bc0fe1dc62777ef3a41357bbf61239e82efa42ba1774b85ea0c6413f97`.
+The 216-sample standalone instruction-count comparison against `dc3e77de2`
+passed all six RP/RPM/WP rows with unchanged allocation counts. These records
+are scoped to those revisions. Historical records include
+`dist/segmentation-7b59ac33d-verification.json`, `dist/bcc0422c2/` and
+`target/downstream-linux/perf-bcc0422c2/summary.json`.
 
-With this wheel, the original bacpypes3 read probe again returned equal RP
-and RPM values through the shared endpoint and standalone client. The RP
-response used 13 segments and 7 acknowledgments, and RPM used 26 and 14.
-The largest response APDU was 485 bytes. In the opposite direction, the
-bacpypes3 peer sent each confirmed COV in 13 segments with a window of two.
-Both owners acknowledged sequences 0, 2, 4, 6, 8, 10 and 12, then returned
-an unknown-subscription Error or the admitted subscription's SimpleACK. Only
-the admitted notification produced an event, including its 6,000-character
-description. The peer learned the endpoint's capability from its I-Am.
-The standalone probe supplied the peer's cache entry.
+## Unreleased native changes
 
-On Linux arm64 at the same commit, 4,524 all-feature tests and 11 targeted
-transport health tests passed. Both owners passed the segmented COV probe
-using a CPython 3.13 debug wheel. A rootless Podman test ran endpoints as
-UIDs 10001 and 10002 on separate loopback addresses sharing port 47808.
-Both received broadcasts and answered with their own source address and
-Device identity. A third UID could not bind an occupied address. After a
-failed replacement, the first binding was restored and the second stayed
-readable. The logs under `target/downstream-linux/results/` include
-`native-bcc0422c2.log`, `health-bcc0422c2.log`, both COV traces and
-`cross-uid-bcc0422c2.json`. The tests used an isolated network namespace.
+| Source | Contract available to downstream callers |
+| --- | --- |
+| `f90a6b430`, `35d9abb2f`, `ae9a86178` | Structured native decode failures reach Python as `BacnetDecodingError`. A validated RP/RPM value that fails projection can retain its exact selector and raw value. RPM rows preserve independent local projection and remote property errors. Single and Multiple COV rows always retain received value octets in `raw`. Proven whole-payload truncation in an RP, RPM, ReadRange or decoded AtomicReadFile ACK reports the first absent byte and required/available sizes. Other failures can still be base `BacnetError`. |
+| `125d4780a`, `3f9f14175` | The Rust B/IP runtime retains attachment owners and pending shutdown futures through timeout or cancellation. Once admitted, whole-set reconciliation finishes even when its waiter drops. Failed cleanup fences commands and retains unresolved owners. Successful rollback preserves the prior revision/generation. Stop first waits for lifecycle admission, then applies its shutdown budget. Keep the executor alive and retry stop to finish outstanding joins. The native API remains Rust-only. [Runtime contract](../rust-api.md) |
+| `979cf2d69` | Valid big-endian UCS-4 CharacterStrings project to Python text. Exact-wire consumers use `read_context.raw` or COV row `raw`. For example, a received UCS-4 Ω retains its original value bytes, while `.octets` emits the canonical UTF-8 write encoding. Unsupported DBCS/JIS values retain their opaque handling. |
+| `f4a152d8c` | Private publication verifies the remote source tag and uses the canonical artifacts staged by the tagged release workflow. Extracted source checks and builds carry the pinned Rust toolchain. The local helper builds and validates candidate artifacts. |
 
-### Standalone performance
+## Native qualification by artifact and topology
 
-The instruction-count harness compared `bcc0422c2` with two byte-identical
-baseline builds of `dc3e77de2`. It collected 216 samples using the pinned
-image `93ce15bf` through a temporary Docker CLI shim for Podman. Each build
-used a separate host-backed volume and two jobs. Measurements ran without
-competing builds or tests.
+- **Concurrent routed workload.** At `424391ce5`, a shared endpoint exercised
+  RP, RPM, ReadRange and AtomicReadFile on four destination networks with
+  interleaved segmented COV, a cancelled RP, a file-segment retransmission
+  and opposing directions sharing one invoke ID. The same-network case
+  submitted competing calls behind one active router/DNET request. Checks
+  covered exact values, sequence zero, file offset/EOF, frame loss, admission,
+  a usable follow-up read, and shutdown waking pending work. The functional
+  wire tests ran on macOS arm64 with the `f90a6b430` SDK. The separate
+  measurement harness reports RP-first/RPM-first strata, raw samples, CPU and
+  peak RSS. Its matched Linux arm64 `aa5c45236` and `97015c3d3` wheels were
+  built. A quiet comparative Python workload run remains open. [Measurement
+  protocol](../shared-endpoint-workload.md)
+- **Independent software peer.** BACnet4J 6.1.1 on Java 17 served segmented RP
+  and two-selector RPM through both client owners against published 0.17.2
+  and the `97015c3d3` candidate. The candidate's shared endpoint also accepted
+  a registered segmented COV and rejected the unknown subscription.
+  [Java fixture, wheel hashes and segment counts](../../scripts/interop/bacnet4j/README.md)
+- **Separate host-network containers.** Linux arm64 `97015c3d3` passed the
+  two-attachment, common-port test on distinct loopback IPs in the Podman
+  guest host namespace. Distinct mapped UIDs returned the correct I-Am source
+  and Device name. Occupied bind refusal, failed replacement, readable neighbor
+  and restoration all passed. [Host-network fixture](../../scripts/interop/host_network/README.md)
 
-All six standalone client workloads passed. In current-thread and
-multithread Tokio runs respectively, the changes in gated instructions per
-request were −1.9 and −2.3 for ReadProperty, +0.2 and +2.6 for
-ReadPropertyMultiple, and +1.5 and +5.7 for WriteProperty. Each change was
-within its measured noise floor, and allocation call counts matched across
-builds. The current-thread ReadProperty run also recorded 54 more system
-allocator instructions per request, a report-only measure. The complete
-results are in `target/downstream-linux/perf-bcc0422c2/summary.md` and
-`summary.json`.
+The following three fixtures used the same Linux arm64 CPython 3.13 development
+wheel built from `880c92577320549d14a1165c93ca5282d4063974`, SHA-256
+`424fe226d2a9d0ad86f062f2ffd093e8f0e447d17f3b829e9cd7698abdaac9d3`.
+The installed native extension matched the wheel. The fixture commits identify
+the oracle and receipts for each run.
 
-## Mixed shared-endpoint workload
+| Fixture | Observation and limits |
+| --- | --- |
+| [Normal B/IP traffic](../../scripts/interop/traffic_capture/README.md), `d94e3fb21` | In separate loopback-only namespaces each owner produced the expected 29 captured records, including boundary markers. Idle, local health and expectation operations were quiet over the finite interval. The first directed Who-Is emitted What-Is-Network-Number before Who-Is, the second only Who-Is. RP, RPM, explicit subscription/renew/cancel, segmented COV ACKs and late rejection matched the ledger. Capture reported zero kernel drops. An injected unrelated-port datagram failed the audit. |
+| [Foreign registration and routed return](../../scripts/interop/foreign_routed/README.md), `aee6b9ce4` | Both local-number profiles remained receive-ready through registration refusal and lease expiry. A routed RP succeeded during lapse. A forwarded I-Am identified its BBMD and the separate return router. Only the configured forwarder's passive COV was admitted, and the strict confirmed COV ACK went to the router. Registration recovered, and a distinct-TTL replacement rebound the same port. The three scripted peers recorded 33 datagrams for the default unknown number and 31 for configured network 7. Only the unknown profile asked for the number on first routed arrival and after recovery. Post-close observation was finite. Real BBMD remote expiry policy remains a deployment check. |
+| [Distinct interface broadcasts](../../scripts/interop/distinct_links/README.md), `5118145ad` | Two named-interface endpoints shared port 47808 on separate internal rootless Linux bridges. Both had two required and two active listeners. Limited broadcasts produced the two opposite-interface warnings with actual indices 2 and 3. Limited broadcast, directed broadcast and unicast each admitted only the intended I-Am/COV. Both endpoints replied from their own IP:47808 and the COV streams closed with zero missed events. Three offline oracle controls rejected altered evidence. This run used two disjoint virtual subnets. |
 
-Two loopback tests exercise one B/IP socket, an explicitly named router and
-strict confirmed COV admission. On four destination networks the peer
-receives one RP, RPM, ReadRange and AtomicReadFile before answering any of
-them. It sends a late answer to the cancelled RP. The file response and an
-incoming segmented COV use the same station and invoke ID in opposite
-directions. The peer waits for each initial SegmentACK and withholds file
-segment one to force a NAK and retransmission. The client returns all 1,024
-file octets at offset 40 with EOF, both RPM rows including the indexed error,
-and the original ReadRange record, flags, count and first sequence number zero.
+Per-worktree receipts are archived under `dist/verification/<fixture-commit>/`.
+The normal traffic fixture retains complete pcaps. The FDR and distinct-link
+fixtures retain scripted-peer exchanges and SDK observations.
 
-The second test uses one destination network. The routed path admits one
-outbound request per router and destination network. While the file holds
-that path, the client submits three more reads, receives a segmented COV,
-and cancels the RP. The peer observes the file followed by one RPM and one
-ReadRange in either order. A subsequent confirmed COV reply bounds the trace.
+## Verification snapshot before final branch gates
 
-The tests check the endpoint's UDP source and the destination station on replies,
-the admitted COV's provenance and value, and an unknown-subscription Error
-for the same registration fields from a different station. A capacity-one
-frame subscription reports loss while the COV iterator delivers its next
-distinct value. A follow-up read succeeds with zero active leases and a ready
-transport. Closing the endpoint wakes an unfinished read and pending COV and
-frame subscriptions. Three native tests cover cancelled path waiters, a full
-notification worker queue and shutdown while a client handle survives.
+| Scope | Completed evidence |
+| --- | --- |
+| `97015c3d3` release build only | Five-platform wheel build and installation smokes passed. [Build-only run](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45707435170) |
+| `844a5dc82` standalone request path | Hosted instruction-count gate passed before the Rust runtime and UCS-4 changes. [Performance run](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45713071918) |
+| `979cf2d69` native implementation | Linux CI passed. Local affected-crate checks passed 9,492 tests and 97 doctests, with Clippy and allocation/no-allocation checks. The macOS arm64 CPython 3.13 dev wheel passed 1,206 installed Python tests. Its SHA-256 is `a7291998260fc723b6032501f53d0ea64e0a3c95c038731101d2b0b916f1e5f5`. [Linux CI](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45716404696) |
+| `880c92577` documentation | Python and Rust reference freshness and the production site passed after regenerating the Python reference. Local validation included 485 browser tests. [Docs validation](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45717646354) |
+| `3df09dc54` Windows fixture correction | The Rust runtime suite passed 31 tests locally. Hosted Windows and macOS passed after the exclusive-bind regression recognized Windows error 10013. [Native tests](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45719976945) |
 
-Both cases in `test_endpoint_mixed_workload.py` ran on macOS arm64 loopback
-with CPython 3.13 and a local wheel built from `f90a6b430`. They cover the exchanges
-observed by the test peer. Deployment traffic captures and shared-client
-performance qualification remain open. The [shared-endpoint measurement
-harness](../shared-endpoint-workload.md) now records routed RP/RPM and
-segmented COV latency, endpoint process CPU and peak RSS against a scripted
-peer. Matched repeated runs yield local measurements for this specific workload.
-
-## Unreleased Python read diagnostics and property observations
-
-Direct and routed wire tests exercise whole service-payload truncation in
-ReadProperty, ReadPropertyMultiple, ReadRange and both decoded AtomicReadFile
-access methods on the standalone and shared client. A complete first RPM value
-followed by a truncated error row fails the full read. The error reports the
-first absent byte and required and available sizes. Published 0.17.2 predates
-these diagnostics.
-
-Single and Multiple COV rows preserve the received tagged value octets in
-`raw`. For both client owners, the wire tests distinguish a non-minimal
-unsigned encoding from its canonical write encoding, a BACnet Null, an
-empty octet string and an opaque string. An accepted RPM ACK can also carry
-a legacy value that the Python binding cannot project. The affected row
-keeps its bytes and reports its local `decode_error`. Neighboring values and
-remote property errors retain their own results. Edge projection and
-persistence checks remain in the acceptance table below.
-
-## Independent software peer
-
-BACnet4J 6.1.1 on Java 17 served both client owners from its regular Device
-object on isolated Linux arm64 loopback. The candidate at `97015c3d3` and
-published 0.17.2 passed segmented RP and two-selector RPM. The candidate
-also reassembled two Java confirmed COV requests on a shared endpoint and
-returned the strict admission Error and SimpleACK. The captured APDUs and
-returned values were checked on each path. [Fixture, exact wheel hashes and
-segment counts](../../scripts/interop/bacnet4j/README.md).
-
-## Separate rootless containers
-
-On Linux arm64 the candidate wheel from `97015c3d3` also passed the shared
-port and failed replacement sequence with the two attachments in separate
-containers using the Podman guest host network. The controller verified
-both I-Am source addresses and Device names, and a third UID's occupied bind
-failed. The neighbor remained readable across replacement and restoration.
-The receipt checks distinct Linux host UIDs, a common network namespace and
-release of the sockets. [Run instructions and loopback scope](../../scripts/interop/host_network/README.md).
-
-## Normal B/IP traffic capture
-
-The opt-in shared and standalone loopback fixture captures every record on the
-only interface in a private Linux namespace. Its expected trace includes
-startup, a finite idle period with local health/lease operations, two directed
-discoveries, RP/RPM and a strict segmented COV subscription with an explicit
-renewal and cancellation. With the local network number unknown, the first
-directed Who-Is emits a local What-Is-Network-Number followed by the requested
-Who-Is. A second directed Who-Is has no network-number question. The first
-question counts toward the downstream traffic budget. The run retains its pcap and reports any unexpected frame, including
-an unrelated-port UDP negative control. [Fixture and commands](../../scripts/interop/traffic_capture/README.md)
+Final branch acceptance requires CI, Native, Docs validation with publication
+disabled, and the standalone instruction-count comparison against `v0.17.2`
+on the exact handoff revision. Those results were pending at this snapshot.
 
 ## Remaining acceptance work
 
-| Owner | Required evidence |
+| Owner | Work and evidence needed |
 | --- | --- |
-| Edge value and inventory projection | Compare legacy enum labels, raw values, null and empty values and vendor declarations. Preserve Object_List completeness before tombstoning. Compare canonical state JSON and hashes for schedule, calendar, notification and reference projections. |
-| Edge trend and file consumers | Exercise a trend cursor through MAX → 0 → 1, committing its checkpoint only after PubAck. Reproduce the existing four-byte big-endian length framing for each record-file record. |
-| Edge COV lifecycle | Register and retain leases before subscribing. Exercise renewal, cancellation, late notifications and delivery across attachment replacement. |
-| Edge attachment lifecycle | Drain work by attachment generation during replacement. Exercise readiness in heartbeat and HTTP, failed replacement and rollback. Set device identity and router forwarding policy for multi-attachment deployments. |
-| Linux deployment | Qualify pinned x86_64 and aarch64 release wheels in the deployed host-network layout, including public interface broadcast isolation, source selection, bind failures and rebind. |
-| Wire and performance qualification | Compare the isolated normal-profile trace with the operational traffic budget, legacy trace and deployed Edge workload, including FDR and learned routes where used. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and a vendor controller in the deployment. BACnet4J supplies independent software-peer evidence on loopback. |
+| Edge packaging and configuration | Admit a future SDK version explicitly, pin the tested distribution and lock container installs on each deployment architecture. Set stable Device/gateway/Network Port identity, bind defaults, forwarding and foreign registration policy. |
+| Edge attachment and runtime integration | Connect the Python adapter to the production runtime/factory. Fence and drain work by attachment generation, connect receive and registration health to heartbeat/HTTP, and exercise replacement, failure, rollback and canary recovery. Native Rust lifecycle tests cover the Rust runtime's own owners and joins. |
+| Edge polling, discovery and metadata | Retain DriverReadLoop, governor budgets, scheduler priority, adaptive RPM and durable capability learning. Preserve explicit routes, bounded identity enrichment and complete Object_List scans before tombstoning. |
+| Edge values and errors | Preserve legacy enum labels, null/empty distinctions, raw and nested vendor values, references, bit names and date/time wildcards. Apply per-property decode outcomes and compare canonical JSON and hashes for schedules, calendars, notifications and references. |
+| Edge COV and writes | Install and retain strict leases before subscribe. Own renewal limits, passive/active deduplication, cache and event delivery, cancellation and cleanup across replacement. Preserve write authorization, priority, null relinquish and indeterminate timeout/cancellation outcomes. |
+| Edge persistence | Exercise trend MAX → 0 → 1 with checkpoints committed after PubAck. Reproduce four-byte big-endian length framing per record-file record and file-version deduplication. |
+| Field and operational performance | Run the deployment's locked Linux x86_64 and aarch64 images on physical interfaces with a vendor controller. Verify source, broadcast isolation, registration and return paths against the site's topology. Compare integrated traffic with the legacy trace and budgets, including sustained overload, cancellation, shared Python polling/COV latency, CPU and RSS on a quiet system. |
