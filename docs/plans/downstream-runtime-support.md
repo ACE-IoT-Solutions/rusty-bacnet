@@ -1,9 +1,9 @@
 # Downstream BACnet runtime support
 
 The published adapter baseline is `ace-rusty-bacnet==0.17.2`, tag `v0.17.2`
-at `aa5c452364663155b77429729b2dd84f46f74b8f`. Unreleased work through
-`5118145ad` adds native diagnostics, value decoding, Rust runtime ownership
-fixes and integration evidence. Local candidate wheels still carry version
+at `aa5c452364663155b77429729b2dd84f46f74b8f`. The 0.18.0 release includes work through
+`5118145ad`, adding native diagnostics, value decoding, Rust runtime ownership
+fixes and integration evidence. The pre-release qualification wheels carry version
 0.17.2. Use their source commit and SHA-256 to identify the installed build.
 
 The current downstream contract is
@@ -11,7 +11,8 @@ The current downstream contract is
 the local Edge branch `feature/rusty-bacnet-migration`. It supersedes the
 November 24 review at `b718d9dc`. The Python reference at `39256f1` includes
 local receive readiness and Linux socket reuse. Edge currently allows exactly
-0.17.1 and 0.17.2 for experimental use.
+0.17.1 and 0.17.2 for experimental use. Adopting 0.18.0 requires an Edge
+adapter update and validation of the revised UCS-4 value representation.
 
 ## Published 0.17.2
 
@@ -68,6 +69,8 @@ publish again. Process-ID allocation, expectations and subscription renewal
 belong to the caller. Immediate reuse of the same wire identity can admit a
 late notification. [Python API guide](../python-api.md)
 
+#### Candidate qualification
+
 Historical pre-release checks at `bcc0422c2` passed 4,520 macOS tests and 45
 doctests, plus 4,524 Linux arm64 tests and 11 Linux health cases. The candidate
 macOS wheel SHA-256 was
@@ -78,7 +81,7 @@ are scoped to those revisions. Historical records include
 `dist/segmentation-7b59ac33d-verification.json`, `dist/bcc0422c2/` and
 `target/downstream-linux/perf-bcc0422c2/summary.json`.
 
-## Unreleased native changes
+## Native changes in 0.18.0
 
 | Source | Contract available to downstream callers |
 | --- | --- |
@@ -128,7 +131,7 @@ Per-worktree receipts are archived under `dist/verification/<fixture-commit>/`.
 The normal traffic fixture retains complete pcaps. The FDR and distinct-link
 fixtures retain scripted-peer exchanges and SDK observations.
 
-## Verification snapshot before final branch gates
+## Verification of the 0.18.0 implementation
 
 | Scope | Completed evidence |
 | --- | --- |
@@ -138,15 +141,22 @@ fixtures retain scripted-peer exchanges and SDK observations.
 | `880c92577` documentation | Python and Rust reference freshness and the production site passed after regenerating the Python reference. Local validation included 485 browser tests. [Docs validation](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45717646354) |
 | `3df09dc54` Windows fixture correction | The Rust runtime suite passed 31 tests locally. Hosted Windows and macOS passed after the exclusive-bind regression recognized Windows error 10013. [Native tests](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45719976945) |
 
-Final branch acceptance requires CI, Native, Docs validation with publication
-disabled, and the standalone instruction-count comparison against `v0.17.2`
-on the exact handoff revision. Those results were pending at this snapshot.
+At `a3989363c`, the completed implementation and handoff passed CI, Native,
+Docs with publication disabled, and the standalone instruction-count comparison
+against `v0.17.2`. The five-platform release rehearsal also passed.
+These jobs used the source revision before the 0.18.0 version bump. The release
+commit and its tagged distribution have their own gates and artifact checks.
+[CI](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725869170) ·
+[Native](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725872673) ·
+[Docs](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725876265) ·
+[Perf counts](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725880427) ·
+[Release rehearsal](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45725993168)
 
 ## Remaining acceptance work
 
 | Owner | Work and evidence needed |
 | --- | --- |
-| Edge packaging and configuration | Admit a future SDK version explicitly, pin the tested distribution and lock container installs on each deployment architecture. Set stable Device/gateway/Network Port identity, bind defaults, forwarding and foreign registration policy. |
+| Edge packaging and configuration | Admit SDK 0.18.0 explicitly, pin the tested distribution and lock container installs on each deployment architecture. Set stable Device/gateway/Network Port identity, bind defaults, forwarding and foreign registration policy. |
 | Edge attachment and runtime integration | Connect the Python adapter to the production runtime/factory. Fence and drain work by attachment generation, connect receive and registration health to heartbeat/HTTP, and exercise replacement, failure, rollback and canary recovery. Native Rust lifecycle tests cover the Rust runtime's own owners and joins. |
 | Edge polling, discovery and metadata | Retain DriverReadLoop, governor budgets, scheduler priority, adaptive RPM and durable capability learning. Preserve explicit routes, bounded identity enrichment and complete Object_List scans before tombstoning. |
 | Edge values and errors | Preserve legacy enum labels, null/empty distinctions, raw and nested vendor values, references, bit names and date/time wildcards. Apply per-property decode outcomes and compare canonical JSON and hashes for schedules, calendars, notifications and references. |

@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.18.0] - 2026-11-25
+
+### Migration notes
+
+- The Edge experimental adapter currently allows ACE 0.17.1 and 0.17.2. Adopting 0.18.0 requires updating its allowlist and validating the UCS-4 representation change against the adapter's value projections.
+
+- **Breaking (release tooling):** Use `scripts/build-python-release.sh <version>` for local validation. Private publication runs through the tagged GitHub release workflow. The local build helper no longer takes `--build-only` or uploads distributions. ([80512dd](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/80512dd5b99df6df849d8c17aca5fcf83e1e24a2))
+
+- For exact UCS-4 bytes, read `value.read_context.raw` on RP/RPM results or `row["raw"]` on COV notifications. A decoded scalar string's `.octets` is its canonical UTF-8 write encoding. ([979cf2d](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/979cf2d697595e56ecd69fc0991f10b7af77e1c4))
+
+### Added
+
+- Add an independent BACnet4J loopback fixture that checks segmented property reads for both Python client owners and confirmed COV admission on the shared endpoint against a capture of the original datagrams. ([d68d876](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/d68d876af87f3fd23199ec80200a7b2293bc06bf))
+
+- A rootless Linux virtual-link probe checks that endpoints sharing a UDP port admit broadcasts from their own interface and return unicast replies from the expected address. ([5118145](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/5118145ad21cb47ffdc6c8c8c32393096b0295ce))
+
+- Shared B/IP endpoint qualification now exercises routed property, log and file reads alongside confirmed COV delivery, including cancellation, segment retransmission and shutdown. ([424391c](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/424391ce5c58fc338011cba50883605e6a7e188f))
+
+- An opt-in Python endpoint probe exercises unknown and configured local network numbers and checks that a foreign device can still read through a separate router when its registration lapses, then recover registration and reopen its port. ([6696a48](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6696a48bb851c2c040353e17b008ff63263ccf6d))
+
+- Added an opt-in loopback packet audit for shared and standalone B/IP clients that verifies idle traffic, directed discovery, polling and a segmented confirmed COV subscription lifecycle. ([d94e3fb](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/d94e3fb21f7fcc077e4d1eab76b43b704bc34729))
+
+- Python callers can catch `BacnetDecodingError` and inspect the fault kind and byte offset. If a validated ReadProperty response fails value projection, the exception also exposes the responder’s property reference and exact value bytes. ([f90a6b4](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/f90a6b4306859d5ba114deccc1696353a914bbb4))
+
+- Python COV notifications expose the original value octets for each reported property. ReadPropertyMultiple results retain local value decoding errors alongside the affected row's raw bytes and preserve the other property results. ([55c3ef2](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/55c3ef2453d41c24177dd86169ab656d55865d9a))
+
+- Add a rootless host-network probe for B/IP endpoints sharing a port across containers. It checks broadcast discovery, source addresses, readiness, bind refusal and recovery with the other endpoint still serving reads. Each container verifies its mounted inputs before opening a BACnet socket. ([424d5ee](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/424d5ee727804a946ca518a2e4e4b480b820c236))
+
+- Add a reproducible loopback workload for measuring shared-endpoint polling with segmented confirmed COV. Reports include validated read and notification latencies grouped by read admission order, endpoint process CPU and peak memory, and the scripted peer’s packet counts. ([4254e73](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/4254e734e8e60b224d12a22863b64a88f602ea6a))
+
+### Changed
+
+- Package publication now requires a verified source tag and a matching GitHub Release with the tested artifacts. The [downstream support plan](docs/plans/downstream-runtime-support.md#published-0172) records the ACE 0.17.2 private-index hashes, Linux checks and remaining adapter work. ([a0d2feb](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/a0d2feb2ef816d4aaf14e7edb329ae6971f04f61))
+
+- The downstream runtime handoff distinguishes published capabilities, source-specific qualification and outstanding Edge and field work. The Python ReadRange guide documents segmented response support through the full endpoint client. ([a398936](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/a3989363cd6606395836bad2f39b6e3bd923f8d7))
+
+- The generated Python reference now documents confirmed COV leases, B/IP receive health, exact property observation bytes, and structured decoding errors. ([880c925](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/880c92577320549d14a1165c93ca5282d4063974))
+
+- **Breaking (Python):** Valid UCS-4 CharacterString reads and COV values now return a `character_string` containing `str`. Earlier versions returned `application_data` containing the received bytes. ([979cf2d](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/979cf2d697595e56ecd69fc0991f10b7af77e1c4))
+
+### Fixed
+
+- The ACE private index receives the same source archive and selected Python wheels as the staged GitHub release. Publication verifies the remote version tag, tested commit and artifact hashes immediately before upload. Source lock repair and archive builds use the checkout’s Rust toolchain. ([80512dd](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/80512dd5b99df6df849d8c17aca5fcf83e1e24a2))
+
+- Update the first-read guide's integration check to verify the reported offset and sizes of a truncated property acknowledgment alongside the separate remote property error case. ([8cf1f56](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/8cf1f56676dc90717968893aa9e91143e0b04507))
+
+- Truncated ReadProperty, ReadPropertyMultiple, ReadRange and decoded AtomicReadFile acknowledgments report a structured missing-byte error when the parser identifies the complete service payload's end. The diagnostic includes the required and available sizes. ([ae9a861](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/ae9a86178e91ee858bb04ead93b02793f20554f0))
+
+- The native B/IP runtime resumes interrupted shutdowns and completes admitted replacements through caller cancellation. Failed cleanup preserves outstanding attachments for retry and keeps commands closed until recovery. ([125d478](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/125d4780a2743974be0deb8a56d2553fd9f46f49))
+
+- Runtime lifecycle tests now recognize Windows exclusive-bind conflicts when checking that a B/IP attachment still owns its socket during shutdown. ([3df09dc](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/3df09dc547ff83d37e6ff84d5bf786d1a0a90040))
+
 ## [0.17.2] - 2026-11-25
 
 ### Migration notes
