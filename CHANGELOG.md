@@ -1035,6 +1035,8 @@ Entries for the next release are fragment files in [`changelog.d/`](changelog.d/
 
 ### Fixed
 
+- The foreign-device and loopback capture checks verify the shared endpoint’s advertised response limits of more than 64 segments and 480 octets per APDU.
+
 - The concurrent Watch control tests now join the notification dispatcher before releasing the test client.
 
 - Router diagnostics preserve the ingress port and destination network for missing and unreachable routes. An isolated routing-table update records the isolation refusal. The public guide samples continue to use the upstream release shown on the site.

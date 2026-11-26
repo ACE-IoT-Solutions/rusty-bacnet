@@ -50,11 +50,12 @@ def scenario(owner, nonce):
     def marker(name):
         return Packet(name, MARKER, SINK, f"RUSTY-CAPTURE/{nonce}/{name}".encode())
 
-    # Confirmed request headers express the client's accepted response APDU size.
-    max_response = 5 if owner == "standalone" else 3
+    # Standalone leaves the segment count unspecified at 1476 octets. The seated
+    # Device accepts more than 64 segments and a 480-octet APDU.
+    response_limits = 0x05 if owner == "standalone" else 0x73
 
     def request(name, service, body):
-        apdu = bytes((2, max_response, 0, service)) + body
+        apdu = bytes((2, response_limits, 0, service)) + body
         return Packet(name, CLIENT, PEER, frame(apdu, True), name, 8, True)
 
     def reply(name, key, service, body=None):

@@ -164,7 +164,8 @@ async def read(client, target, peers, rb, value):
     frame = await peers.router_queue.get()
     # The invoke precedes the service and exact reference in either routed NPDU layout.
     invoke = frame[-len(PV_REFERENCE) - 2]
-    peers.require_routed(frame, bytes([2, 3, invoke, 12]) + PV_REFERENCE, reply_expected=True)
+    # The seated Device accepts more than 64 segments and a 480-octet APDU.
+    peers.require_routed(frame, bytes([2, 0x73, invoke, 12]) + PV_REFERENCE, reply_expected=True)
     raw_value = bytes((0x21, value))
     peers.send(ROUTER, routed(bytes([0x30, invoke, 12]) + PV_REFERENCE + b"\x3e" + raw_value + b"\x3f"))
     got = await requested
