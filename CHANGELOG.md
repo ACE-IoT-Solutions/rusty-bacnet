@@ -1035,6 +1035,8 @@ Entries for the next release are fragment files in [`changelog.d/`](changelog.d/
 
 ### Fixed
 
+- Release build jobs now allow 150 minutes so the cold macOS Intel build can finish compiling the CLI and checking artifacts after building all five Python wheels.
+
 - The foreign-device and loopback capture checks verify the shared endpoint’s advertised response limits of more than 64 segments and 480 octets per APDU.
 
 - The concurrent Watch control tests now join the notification dispatcher before releasing the test client.

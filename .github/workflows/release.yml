@@ -280,9 +280,10 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: validate
     runs-on: ${{ matrix.os }}
-    # The dist profile (fat LTO, #973) doubles build time: macos-x86_64 took
-    # 47 min in the first dry run, so leave headroom over that.
-    timeout-minutes: 90
+    # In rehearsal 45908347439 the five cold macOS Intel dist wheels took
+    # 70 minutes. The 90-minute limit interrupted fat-LTO CLI compilation.
+    # Leave time for that link and the remaining artifact checks.
+    timeout-minutes: 150
     permissions:
       contents: read
     strategy:
